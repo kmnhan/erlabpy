@@ -14,6 +14,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
+from erlab.interactive.imagetool._provenance._operations import ConcatOperation
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 
 if typing.TYPE_CHECKING:
@@ -21,6 +22,7 @@ if typing.TYPE_CHECKING:
 
     import xarray
 
+    from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
 from erlab.interactive.imagetool.manager._spreadsheet_metadata import (
@@ -382,6 +384,7 @@ class _ConcatDialog(QtWidgets.QDialog):
         option_group = QtWidgets.QGroupBox("Options")
         option_layout = QtWidgets.QFormLayout()
         option_group.setLayout(option_layout)
+        self._option_layout = option_layout
 
         self._dim_line = QtWidgets.QLineEdit()
         self._dim_line.setText("concat_dim")
@@ -502,20 +505,6 @@ class _ConcatDialog(QtWidgets.QDialog):
             "combine_attrs": self._combine_attrs_combo.currentText(),
         }
 
-    def _operation_code(
-        self, manager: ImageToolManager, selected: list[int | str]
-    ) -> str:
-        concat_kwargs = self.concat_kwargs()
-        input_names = [
-            manager._script_input_name_for_node(manager._node_for_target(target))
-            for target in selected
-        ]
-        return (
-            f"derived = xr.concat([{', '.join(input_names)}], "
-            + ", ".join(f"{key}={value!r}" for key, value in concat_kwargs.items())
-            + ")"
-        )
-
     def _remove_source_targets(
         self,
         manager: ImageToolManager,
@@ -560,22 +549,50 @@ class _ConcatDialog(QtWidgets.QDialog):
                     .copy(deep=False)
                     for idx in selected
                 ]
-                concat_kwargs = self.concat_kwargs()
-                operation_code = self._operation_code(manager, selected)
-                result_data = xr.concat(to_concat, **concat_kwargs)
+                operation = ConcatOperation(
+                    input_count=len(selected), **self.concat_kwargs()
+                )
+                slots = operation.input_slots()
+                result_data = operation.apply_with_inputs(
+                    to_concat[0], dict(zip(slots, to_concat[1:], strict=True))
+                )
+                input_names = tuple(
+                    manager._script_input_name_for_node(
+                        manager._node_for_target(target)
+                    )
+                    for target in selected
+                )
                 replacement_target = self.replacement_target()
-                if replacement_target is None:
+                replacement_node = (
+                    None
+                    if replacement_target is None
+                    else manager._node_for_target(replacement_target)
+                )
+
+                def provenance() -> ToolProvenanceSpec:
+                    return manager._multi_input_operation_provenance(
+                        selected,
+                        operation=operation,
+                        active_name="derived",
+                        start_label="Concatenate selected ImageTools",
+                        detached_input_uid=(
+                            None if replacement_node is None else replacement_node.uid
+                        ),
+                        data_role="source",
+                        input_names=input_names,
+                        primary_input=input_names[0],
+                        input_bindings=dict(zip(slots, input_names[1:], strict=True)),
+                    )
+
+                if replacement_node is None:
                     created_index = (
-                        manager._lineage_controller._show_multi_input_script_result(
+                        manager._lineage_controller._show_multi_input_result(
                             result_data,
                             selected,
-                            operation_label="Concatenate selected ImageTools",
-                            operation_code=operation_code,
-                            data_role="source",
+                            provenance=provenance,
                         )
                     )
                 else:
-                    replacement_node = manager._node_for_target(replacement_target)
                     controller = manager._workspace_controller
                     source_uids = tuple(
                         manager._node_for_target(target).uid for target in selected
@@ -595,17 +612,13 @@ class _ConcatDialog(QtWidgets.QDialog):
                     ):
                         replacement_node.replace_with_detached_data(
                             result_data,
-                            manager._lineage_controller._multi_input_script_provenance(
-                                selected,
-                                operation_label="Concatenate selected ImageTools",
-                                operation_code=operation_code,
-                                detached_input_uid=replacement_node.uid,
-                                data_role="source",
-                            ),
+                            provenance(),
                             propagate_descendants=True,
                             preserve_filter=False,
                             replay_source_data=to_concat[
-                                selected.index(replacement_target)
+                                selected.index(
+                                    typing.cast("int | str", replacement_target)
+                                )
                             ],
                         )
                     manager.tree_view.refresh(replacement_node.uid)

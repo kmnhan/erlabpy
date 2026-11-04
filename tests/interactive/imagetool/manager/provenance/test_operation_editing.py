@@ -21,6 +21,7 @@ from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import _kspace_conversion, itool
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
+    OperationGroupMarker,
     ReplayStep,
     ScriptInput,
     ToolProvenanceOperation,
@@ -37,6 +38,7 @@ from erlab.interactive.imagetool._provenance._model import (
 from erlab.interactive.imagetool._provenance._operations import (
     AffineCoordOperation,
     AssignAttrsOperation,
+    ConcatOperation,
     DenoiseOperation,
     DivideByCoordOperation,
     ExtensionRoutineOperation,
@@ -60,6 +62,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     UniformInterpolationOperation,
     _ModelFitParameterSpec,
 )
+from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 from erlab.interactive.imagetool.dialogs import SelectionDialog
 from erlab.interactive.imagetool.manager import fetch
 from erlab.interactive.imagetool.manager._provenance_edit import (
@@ -70,7 +73,10 @@ from erlab.interactive.imagetool.manager._provenance_edit import (
 )
 from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
 from erlab.interactive.kspace import KspaceTool
-from tests.interactive.imagetool.manager.helpers import _exec_generated_code
+from tests.interactive.imagetool.manager.helpers import (
+    _exec_generated_code,
+    select_tools,
+)
 
 from ._common import (
     _fake_edit_controller,
@@ -272,6 +278,259 @@ def test_manager_provenance_native_edit_mode_uses_dialog_accept_validation(
 
     assert warnings_shown
     assert dialog.result() != int(QtWidgets.QDialog.DialogCode.Accepted)
+
+
+def test_manager_concat_operation_editor_restores_and_validates_options(
+    qtbot, monkeypatch
+) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    operation = ConcatOperation(
+        input_count=3,
+        dim="sample temperature",
+        coords="all",
+        compat="equals",
+        join="inner",
+        combine_attrs="drop",
+        group=OperationGroupMarker(kind="action", id="concat", index=0, size=1),
+    )
+    dialog = provenance_editors._ConcatOperationEditDialog(
+        operation, typing.cast("typing.Any", parent)
+    )
+    qtbot.addWidget(dialog)
+    dialog.open()
+    assert dialog.concat_kwargs() == operation.kwargs
+    assert all(
+        widget.isHidden()
+        for widget in (
+            dialog._result_combo,
+            dialog._replace_target_combo,
+            dialog._sources_combo,
+        )
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, "warning", lambda *_args: warnings.append("invalid")
+    )
+    dialog._dim_line.clear()
+    dialog.accept()
+    assert dialog.result() != int(QtWidgets.QDialog.DialogCode.Accepted)
+    dialog._dim_line.setText("run")
+    dialog._coords_combo.setCurrentText("different")
+    dialog._compat_combo.setCurrentText("override")
+    dialog.accept()
+    assert dialog.result() != int(QtWidgets.QDialog.DialogCode.Accepted)
+    assert len(warnings) == 2
+    dialog._coords_combo.setCurrentText("minimal")
+    dialog.accept()
+    assert dialog.result() == int(QtWidgets.QDialog.DialogCode.Accepted)
+    assert dialog.operation() == ConcatOperation(
+        input_count=3,
+        dim="run",
+        coords="minimal",
+        compat="override",
+        join="inner",
+        combine_attrs="drop",
+        group=operation.group,
+    )
+
+
+@pytest.mark.parametrize("target_count", [1, 2])
+@pytest.mark.parametrize("cancel", [False, True])
+def test_manager_edit_concat_preserves_bound_inputs(
+    qtbot, accept_dialog, manager_context, monkeypatch, target_count, cancel
+) -> None:
+    inputs = [
+        xr.DataArray(
+            np.arange(6.0).reshape(2, 3) + offset,
+            dims=("y", "x"),
+            coords={"y": [0, 1], "x": [0, 1, 2]},
+            name="spectrum",
+        )
+        for offset in (0, 10)
+    ]
+    with manager_context() as manager:
+        for data in inputs:
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(data), show=False
+            )
+        nodes = []
+        for index in range(target_count):
+            manager.tree_view.clearSelection()
+            select_tools(manager, [0, 1])
+            accept_dialog(
+                manager.concat_action.trigger,
+                pre_call=lambda dialog: dialog._dim_line.setText("scan"),
+            )
+            nodes.append(manager._node_for_target(index + 2))
+        manager.tree_view.clearSelection()
+        select_tools(manager, [node.index for node in nodes])
+        specs = [node.provenance_spec for node in nodes]
+        snapshots = [node.snapshot_token for node in nodes]
+        before = [node.current_source_data().copy(deep=True) for node in nodes]
+        rows = [
+            next(
+                row
+                for row in spec.display_rows()
+                if row.edit_ref == _ProvenanceStepRef("operation", operation_index=0)
+            )
+            for spec in specs
+        ]
+        controller = manager._provenance_edit_controller
+        monkeypatch.setattr(
+            controller, "_show_unavailable", lambda reason: pytest.fail(reason)
+        )
+        monkeypatch.setattr(
+            controller,
+            "_show_failed",
+            lambda _title, exc: pytest.fail(str(exc)),
+        )
+        targets = tuple((node.uid, row) for node, row in zip(nodes, rows, strict=True))
+        assert controller.can_edit_rows(targets) == (True, "")
+
+        def configure(dialog: provenance_editors._ConcatOperationEditDialog) -> None:
+            assert dialog.operation() == specs[0].operations[0]
+            dialog._dim_line.setText("run")
+            dialog._combine_attrs_combo.setCurrentText("drop")
+
+        edit = (
+            (lambda: controller._edit_operation_row(nodes[0], rows[0]))
+            if target_count == 1
+            else lambda: controller.edit_rows(targets)
+        )
+        accept_dialog(
+            edit,
+            pre_call=configure,
+            accept_call=(lambda dialog: dialog.reject()) if cancel else None,
+        )
+        for node, original, token, previous in zip(
+            nodes, specs, snapshots, before, strict=True
+        ):
+            current = node.provenance_spec
+            assert current.script_inputs == original.script_inputs
+            assert current.primary_input == original.primary_input
+            assert current.steps[0].input_bindings == original.steps[0].input_bindings
+            assert current.operations[0].input_count == 2
+            assert (
+                provenance_code_trust_entries(current, location_prefix="edited") == ()
+            )
+            if cancel:
+                assert current == original
+                assert node.snapshot_token == token
+                xr.testing.assert_identical(node.current_source_data(), previous)
+            else:
+                assert current.operations[0].dim == "run"
+                expected = xr.concat(
+                    inputs,
+                    dim="run",
+                    coords="minimal",
+                    compat="override",
+                    join="outer",
+                    combine_attrs="drop",
+                )
+                xr.testing.assert_identical(node.current_source_data(), expected)
+                code = current.display_code()
+                namespace = _exec_generated_code(
+                    code, {"data_0": inputs[0], "data_1": inputs[1]}
+                )
+                xr.testing.assert_identical(namespace["derived"], expected)
+        for index, data in enumerate(inputs):
+            xr.testing.assert_identical(
+                manager._node_for_target(index).current_source_data(), data
+            )
+
+
+def test_manager_concat_editor_keeps_complete_operation_groups() -> None:
+    concat, selection_operation = stamp_operation_group(
+        (ConcatOperation(input_count=2, dim="scan"), IselOperation(kwargs={"x": 0})),
+        kind="action",
+    )
+    spec = recipe(
+        ReplayStep(operation=concat, input_bindings={"other_0": "second"}),
+        ReplayStep(operation=selection_operation),
+        start_label="Concatenate and select",
+        active_name="derived",
+        script_inputs=(ScriptInput(name="first"), ScriptInput(name="second")),
+        primary_input="first",
+    )
+    node = _fake_edit_node(spec)
+    controller = _fake_edit_controller(node)
+    row = next(
+        row
+        for row in spec.display_rows()
+        if row.edit_ref == _ProvenanceStepRef("operation", operation_index=0)
+    )
+    assert controller.can_edit_row(row)[0] is False
+
+
+@pytest.mark.parametrize("target_count", [1, 2])
+def test_manager_invalid_concat_edit_preserves_all_targets(
+    qtbot, accept_dialog, manager_context, monkeypatch, target_count
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("y", "x"),
+        coords={"y": [0, 1], "x": [0, 1, 2]},
+    )
+    with manager_context() as manager:
+        sources = [
+            data,
+            data + 10,
+            data + 20,
+            (data + 30).assign_coords(y=[1, 2]),
+        ]
+        for value in sources:
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(value), show=False
+            )
+        nodes = []
+        for pair in ((0, 1), (2, 3))[-target_count:]:
+            target = manager.ntools
+            manager.tree_view.clearSelection()
+            select_tools(manager, list(pair))
+            accept_dialog(manager.concat_action.trigger)
+            nodes.append(manager._node_for_target(target))
+        manager.tree_view.clearSelection()
+        select_tools(manager, [node.index for node in nodes])
+        specs = [node.provenance_spec for node in nodes]
+        snapshots = [node.snapshot_token for node in nodes]
+        previous = [node.current_source_data().copy(deep=True) for node in nodes]
+        rows = [
+            next(
+                row
+                for row in spec.display_rows()
+                if row.edit_ref == _ProvenanceStepRef("operation", operation_index=0)
+            )
+            for spec in specs
+        ]
+        controller = manager._provenance_edit_controller
+        targets = tuple((node.uid, row) for node, row in zip(nodes, rows, strict=True))
+        assert controller.can_edit_rows(targets) == (True, "")
+        failures: list[Exception] = []
+        monkeypatch.setattr(
+            controller, "_show_failed", lambda _title, exc: failures.append(exc)
+        )
+        monkeypatch.setattr(
+            controller, "_show_unavailable", lambda reason: pytest.fail(reason)
+        )
+        if target_count == 1:
+            with pytest.raises(provenance_edit_controller._ProvenanceReplayFailure):
+                accept_dialog(
+                    lambda: controller._edit_operation_row(nodes[0], rows[0]),
+                    pre_call=lambda dialog: dialog._join_combo.setCurrentText("exact"),
+                )
+        else:
+            accept_dialog(
+                lambda: controller.edit_rows(targets),
+                pre_call=lambda dialog: dialog._join_combo.setCurrentText("exact"),
+            )
+            assert len(failures) == 1
+        for node, spec, token, value in zip(
+            nodes, specs, snapshots, previous, strict=True
+        ):
+            assert node.provenance_spec == spec
+            assert node.snapshot_token == token
+            xr.testing.assert_identical(node.current_source_data(), value)
 
 
 def test_manager_edit_bound_shift_rebinds_without_script_code(

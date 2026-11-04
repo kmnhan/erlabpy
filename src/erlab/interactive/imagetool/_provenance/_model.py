@@ -2112,6 +2112,103 @@ def _normalize_script_code_operations(
     return spec.model_copy(update={"source_operations": operations})
 
 
+def _normalize_legacy_concat_script(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:
+    """Lower the standalone Manager concat template to bound inputs."""
+    # A bound recipe can reuse the primary input name for intermediate results.
+    # Leave code or context that can still read the original binding unchanged.
+    if (
+        spec.kind != "script"
+        or spec.active_name is None
+        or spec.seed_code is not None
+        or spec.file_load_source is not None
+        or spec.replay_primary_input is not None
+        or not spec.steps
+        or any(
+            step.context_names
+            or step.input_bindings
+            or step.input_policy is not None
+            or step.legacy_context is not None
+            for step in spec.steps
+        )
+        or any(_operation_is(step.operation, "script_code") for step in spec.steps[1:])
+    ):
+        return spec
+    first = spec.steps[0]
+    operation = first.operation
+    if (
+        not _operation_is(operation, "script_code")
+        or not getattr(operation, "copyable", False)
+        or not getattr(operation, "visible", False)
+        or not isinstance(code := getattr(operation, "code", None), str)
+    ):
+        return spec
+    input_names = tuple(item.name for item in spec.script_inputs)
+    if (
+        len(input_names) < 2
+        or len(set(input_names)) != len(input_names)
+        or "xr" in input_names
+    ):
+        return spec
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return spec
+    if (
+        len(module.body) != 1
+        or not isinstance(statement := module.body[0], ast.Assign)
+        or len(statement.targets) != 1
+        or not isinstance(statement.targets[0], ast.Name)
+        or statement.targets[0].id != spec.active_name
+        or not isinstance(call := statement.value, ast.Call)
+        or not isinstance(call.func, ast.Attribute)
+        or not isinstance(call.func.value, ast.Name)
+        or call.func.value.id != "xr"
+        or call.func.attr != "concat"
+        or len(call.args) != 1
+        or not isinstance(call.args[0], ast.List)
+        or not all(isinstance(item, ast.Name) for item in call.args[0].elts)
+    ):
+        return spec
+    names = tuple(typing.cast("ast.Name", item).id for item in call.args[0].elts)
+    if len(names) != len(input_names) or set(names) != set(input_names):
+        return spec
+    options: dict[str, str] = {}
+    for item in call.keywords:
+        if (
+            item.arg is None
+            or item.arg not in {"dim", "coords", "compat", "join", "combine_attrs"}
+            or item.arg in options
+            or not isinstance(item.value, ast.Constant)
+            or not isinstance(item.value.value, str)
+        ):
+            return spec
+        options[item.arg] = item.value.value
+    if set(options) != {"dim", "coords", "compat", "join", "combine_attrs"}:
+        return spec
+    try:
+        concat = _operation_instance(
+            "concat", input_count=len(names), **options, group=operation.group
+        )
+    except (TypeError, ValueError):
+        return spec
+    return spec.model_copy(
+        update={
+            "primary_input": names[0],
+            "steps": (
+                first.model_copy(
+                    update={
+                        "operation": concat,
+                        "input_bindings": dict(
+                            zip(concat.input_slots(), names[1:], strict=True)
+                        ),
+                    }
+                ),
+                *spec.steps[1:],
+            ),
+        }
+    )
+
+
 class FileDataSelection(pydantic.BaseModel):
     """Serializable selection of one displayable array from a loaded file object.
 
@@ -4261,8 +4358,10 @@ def parse_tool_provenance_spec(
         return None
     if isinstance(value, ToolProvenanceSpec):
         return value
-    return _normalize_script_code_operations(
-        _normalize_legacy_display_script(ToolProvenanceSpec.model_validate(value))
+    return _normalize_legacy_concat_script(
+        _normalize_script_code_operations(
+            _normalize_legacy_display_script(ToolProvenanceSpec.model_validate(value))
+        )
     )
 
 

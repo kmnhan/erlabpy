@@ -55,6 +55,74 @@ def _require_integer_mapping(value: typing.Any, *, field_name: str) -> typing.An
     return value
 
 
+class ConcatOperation(ToolProvenanceOperation):
+    """Concatenate the current array and ordered, separately bound input arrays."""
+
+    op: typing.Literal["concat"] = "concat"
+    live_applicable: typing.ClassVar[bool] = False
+    input_count: int = pydantic.Field(strict=True, ge=2)
+    dim: str = pydantic.Field(strict=True, min_length=1)
+    coords: typing.Literal["minimal", "different", "all"] = "minimal"
+    compat: typing.Literal[
+        "identical", "equals", "broadcast_equals", "no_conflicts", "override"
+    ] = "override"
+    join: typing.Literal["outer", "inner", "left", "right", "exact", "override"] = (
+        "outer"
+    )
+    combine_attrs: typing.Literal[
+        "drop", "identical", "no_conflicts", "drop_conflicts", "override"
+    ] = "override"
+
+    @pydantic.model_validator(mode="after")
+    def _validate_concat_options(self) -> typing.Self:
+        if self.coords == "different" and self.compat == "override":
+            raise ValueError("coords='different' cannot be used with compat='override'")
+        return self
+
+    @property
+    def kwargs(self) -> dict[str, typing.Any]:
+        return {
+            "dim": self.dim,
+            "coords": self.coords,
+            "compat": self.compat,
+            "join": self.join,
+            "combine_attrs": self.combine_attrs,
+        }
+
+    def input_slots(self) -> tuple[str, ...]:
+        return tuple(f"other_{index}" for index in range(self.input_count - 1))
+
+    def apply_with_inputs(
+        self,
+        data: xr.DataArray,
+        inputs: Mapping[str, xr.DataArray],
+        *,
+        authorization: object | None = None,
+    ) -> xr.DataArray:
+        del authorization
+        return xr.concat(
+            [data, *(inputs[slot] for slot in self.input_slots())], **self.kwargs
+        )
+
+    def derivation_label(self) -> str:
+        return f"Concatenate({_format_derivation_value(self.kwargs)})"
+
+    def expression_code_with_inputs(
+        self,
+        input_name: str,
+        inputs: Mapping[str, str],
+        *,
+        source_name: str | None = None,
+    ) -> str:
+        del source_name
+        input_names = [input_name, *(inputs[slot] for slot in self.input_slots())]
+        kwargs = ", ".join(
+            f"{name}={_provenance_value_code(value)}"
+            for name, value in self.kwargs.items()
+        )
+        return f"xr.concat([{', '.join(input_names)}], {kwargs})"
+
+
 class DenoiseOperation(ToolProvenanceOperation):
     """Record the inputs for machine learning denoising."""
 

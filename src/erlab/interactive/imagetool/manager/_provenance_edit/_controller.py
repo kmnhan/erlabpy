@@ -48,6 +48,7 @@ from erlab.interactive.imagetool._provenance._model import (
 )
 from erlab.interactive.imagetool._provenance._operations import (
     AffineCoordOperation,
+    ConcatOperation,
     DivideByCoordOperation,
     ExtensionRoutineOperation,
     GaussianFilterOperation,
@@ -65,6 +66,7 @@ from erlab.interactive.imagetool.manager._extensions._dialogs import (
 )
 from erlab.interactive.imagetool.manager._provenance_edit._editors import (
     _NATIVE_TERMINAL_CURRENT_DATA_EDITORS,
+    _ConcatOperationEditDialog,
     _dialog_match_for_operation_ref,
     _OperationDialogMatch,
     _ScriptCodeEditDialog,
@@ -1255,6 +1257,13 @@ class _ProvenanceEditController:
             descriptor, reason = self._extension_routine_edit_descriptor(operation)
             return descriptor is not None, reason
         if bound_shift:
+            return True, ""
+        if isinstance(operation, ConcatOperation):
+            if self._operation_action_block(spec, row.edit_ref, action="edit") is None:
+                return (
+                    False,
+                    "No editor is available for this complete operation group.",
+                )
             return True, ""
         dialog_match = _dialog_match_for_operation_ref(spec, row.edit_ref)
         if dialog_match is None:
@@ -2672,6 +2681,11 @@ class _ProvenanceEditController:
             if replacement is None:
                 return None
             return (replacement,)
+        if isinstance(operation, ConcatOperation):
+            replacement = self._edited_concat_operation(operation)
+            if replacement is None:
+                return None
+            return (replacement,)
         if isinstance(operation, ExtensionRoutineOperation):
             replacement = self._edited_extension_routine_operation(operation)
             if replacement is None:
@@ -2714,6 +2728,19 @@ class _ProvenanceEditController:
             return
         if isinstance(operation, ShiftFromInputOperation):
             self._edit_bound_shift_operation_row(node, row, spec, ref, operation)
+            return
+        if isinstance(operation, ConcatOperation):
+            replacement = self._edited_concat_operation(operation)
+            if replacement is None:
+                return
+            candidate = spec._replace_operation_ref(ref, (replacement,))
+            root_candidate = self._root_candidate_for_row(node, row, candidate)
+            self._validate_and_replace(
+                node,
+                row.scope,
+                root_candidate,
+                where="validating the edited concatenate options",
+            )
             return
         if isinstance(operation, ExtensionRoutineOperation):
             self._edit_extension_routine_operation_row(
@@ -2910,6 +2937,19 @@ class _ProvenanceEditController:
         if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
             return None
         return operation.model_copy(update={"code": dialog.code()})
+
+    def _edited_concat_operation(
+        self,
+        operation: ConcatOperation,
+    ) -> ConcatOperation | None:
+        dialog = _ConcatOperationEditDialog(operation, self._manager)
+        try:
+            if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
+                return None
+            return dialog.operation()
+        finally:
+            dialog.close()
+            dialog.deleteLater()
 
     def _extension_routine_edit_descriptor(
         self,

@@ -592,6 +592,25 @@ class _LineageController:
         data_role: ScriptInputDataRole = "displayed",
     ) -> int | None:
         input_targets = tuple(input_targets)
+        return self._show_multi_input_result(
+            data,
+            input_targets,
+            provenance=lambda: self._multi_input_script_provenance(
+                input_targets,
+                operation_label=operation_label,
+                operation_code=operation_code,
+                data_role=data_role,
+            ),
+        )
+
+    def _show_multi_input_result(
+        self,
+        data: xr.DataArray,
+        input_targets: Iterable[int | str],
+        *,
+        provenance: Callable[[], ToolProvenanceSpec],
+    ) -> int | None:
+        """Capture input provenance inside the result's ownership transaction."""
         tool = erlab.interactive.itool(data, manager=False, execute=False)
         if not isinstance(tool, ImageTool):
             return None
@@ -616,12 +635,7 @@ class _LineageController:
                 tool,
                 show=True,
                 activate=True,
-                provenance_spec=self._multi_input_script_provenance(
-                    input_targets,
-                    operation_label=operation_label,
-                    operation_code=operation_code,
-                    data_role=data_role,
-                ),
+                provenance_spec=provenance(),
             )
         return created
 

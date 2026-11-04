@@ -2423,6 +2423,44 @@ def test_workspace_manifest_deduplicates_saved_imagetool_provenance(
     assert calls == [None]
 
 
+@pytest.mark.parametrize("extra_statement", [False, True])
+def test_workspace_manifest_normalizes_legacy_concat_owners(extra_statement) -> None:
+    code = (
+        "derived = xr.concat([data_21, data_23], dim='x', coords='minimal', "
+        "compat='override', join='outer', combine_attrs='override')"
+    )
+    if extra_statement:
+        code += "\nprint('custom statement')"
+    provenance = script(
+        ScriptCodeOperation(label="Concatenate selected ImageTools", code=code),
+        start_label="Run ImageTool manager action",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(name="data_21", label="ImageTool 21"),
+            ScriptInput(name="data_23", label="ImageTool 23"),
+        ),
+    )
+    workspace = _workspace_manifest_from_attrs(
+        {
+            "manager_node_provenance_spec": provenance.model_dump_json(),
+            "itool_provenance_spec": provenance.model_dump_json(),
+        }
+    )
+    workspace["provenance_revisions"] = [
+        {
+            "revision_id": "captured",
+            "provenance_spec": provenance.model_dump(mode="json"),
+        }
+    ]
+
+    manifest = workspace_code_trust_manifest(workspace)
+
+    assert manifest.has_executable_code is extra_statement
+    assert [entry.code for entry in manifest.entries] == (
+        [code, code] if extra_statement else []
+    )
+
+
 def test_workspace_manifest_ignores_legacy_tool_manager_provenance() -> None:
     recipe = FigureRecipeState(
         operations=(FigureOperationState.custom(label="custom", code="ax.plot([1])"),)
@@ -2832,6 +2870,172 @@ def test_trusted_workspace_local_code_edit_does_not_scan_manifest(
         assert manager._workspace_state.code_trust == trust
 
 
+@pytest.mark.parametrize("upstream_code", [False, True])
+def test_unsigned_structured_concat_preserves_input_code_trust(
+    qtbot, accept_dialog, tmp_path, manager_context, upstream_code
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("y", "x"),
+        coords={"y": np.arange(3), "x": np.arange(4)},
+    )
+    workspace = tmp_path / "unsigned-concat.itws"
+    source_code = "derived = derived + 1"
+    with manager_context() as manager:
+        for offset in (0, 1):
+            value = (data + offset).assign_coords(beta=offset)
+            manager.add_imagetool(
+                ImageTool(value, _in_manager=True),
+                provenance_spec=(
+                    full_data(ScriptCodeOperation(label="Offset", code=source_code))
+                    if upstream_code and offset == 0
+                    else None
+                ),
+                replay_source_data=value - 1 if upstream_code and offset == 0 else None,
+                show=False,
+            )
+        controller = manager._workspace_controller
+        controller._set_workspace_code_trust(
+            untrusted_document_trust(current_workspace_code_trust_manifest(manager))
+        )
+        select_tools(manager, [0, 1])
+        accept_dialog(
+            manager.concat_action.trigger,
+            pre_call=lambda dialog: dialog._dim_line.setText("beta"),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 3)
+        target = manager._node_for_target(2)
+        target.revision_id_for_role("source")
+        provenance = target.provenance_spec
+        assert provenance is not None
+        entries = provenance_code_trust_entries(provenance, location_prefix="runtime")
+        assert bool(entries) is upstream_code
+        assert all(entry.code == source_code for entry in entries)
+        assert [operation.op for operation in provenance.operations] == ["concat"]
+        if upstream_code:
+            assert target.slicer_area._stored_code_authorizer(entries) is None
+            assert not document_trust_is_trusted(manager._workspace_state.code_trust)
+        controller.saving._save_workspace_document(workspace)
+        assert not _trust_uses_saved_signature(manager._workspace_state.code_trust)
+
+    reset_saved_code_trust(domain=workspace_trust.WORKSPACE_CODE_TRUST_DOMAIN)
+    with manager_context() as manager:
+        assert _load_workspace(manager, workspace)
+        target = manager._node_for_target(2)
+        manifest = current_workspace_code_trust_manifest(manager)
+        assert manifest.has_executable_code is upstream_code
+        assert all(entry.code == source_code for entry in manifest.entries)
+        assert manager._workspace_state.code_trust.reason == (
+            CodeTrustReason.UNTRUSTED
+            if upstream_code
+            else CodeTrustReason.NO_EXECUTABLE_CODE
+        )
+        if upstream_code:
+            entries = provenance_code_trust_entries(
+                target.provenance_spec, location_prefix="runtime"
+            )
+            assert entries
+            assert target.slicer_area._stored_code_authorizer(entries) is None
+        else:
+            assert manager.code_trust_banner.isHidden()
+            updated = (data + 10).assign_coords(beta=0)
+            manager.get_imagetool(0).slicer_area.replace_source_data(updated)
+            assert manager._lineage_controller._reload_script_derived_target(2)
+            expected = xr.concat(
+                [updated, (data + 1).assign_coords(beta=1)],
+                dim="beta",
+                coords="minimal",
+                compat="override",
+                join="outer",
+                combine_attrs="override",
+            )
+            xr.testing.assert_identical(target.current_source_data(), expected)
+
+
+def test_saved_legacy_concat_becomes_structured_without_code_approval(
+    tmp_path, manager_context
+) -> None:
+    first = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("y", "x"),
+        coords={"y": [0, 1], "x": [0, 1, 2]},
+    )
+    second = (first + 10).assign_coords(x=[3, 4, 5])
+    kwargs = {
+        "dim": "x",
+        "coords": "minimal",
+        "compat": "override",
+        "join": "outer",
+        "combine_attrs": "override",
+    }
+    workspace = tmp_path / "legacy-concat.itws"
+    with manager_context() as manager:
+        for value in (first, second):
+            manager.add_imagetool(ImageTool(value, _in_manager=True), show=False)
+        input_names = [
+            manager._script_input_name_for_node(manager._node_for_target(target))
+            for target in (0, 1)
+        ]
+        code = (
+            f"derived = xr.concat([{', '.join(input_names)}], "
+            + ", ".join(f"{key}={value!r}" for key, value in kwargs.items())
+            + ")"
+        )
+        target = manager._lineage_controller._show_multi_input_script_result(
+            xr.concat([first, second], **kwargs),
+            (0, 1),
+            operation_label="Concatenate selected ImageTools",
+            operation_code=code,
+            data_role="source",
+        )
+        assert target == 2
+        controller = manager._workspace_controller
+        controller.saving._save_workspace_document(workspace)
+        saved = json.loads(
+            _current_workspace_payload_attrs(workspace, "2")[
+                _persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR
+            ]
+        )
+        assert saved["steps"][0]["operation"]["op"] == "script_code"
+        assert saved["steps"][0]["operation"]["code"] == code
+
+    reset_saved_code_trust(domain=workspace_trust.WORKSPACE_CODE_TRUST_DOMAIN)
+    with manager_context() as manager:
+        assert _load_workspace(manager, workspace)
+        node = manager._node_for_target(2)
+        provenance = node.provenance_spec
+        assert provenance is not None
+        assert [operation.op for operation in provenance.operations] == ["concat"]
+        assert not current_workspace_code_trust_manifest(manager).has_executable_code
+        assert (
+            manager._workspace_state.code_trust.reason
+            == CodeTrustReason.NO_EXECUTABLE_CODE
+        )
+        assert manager.code_trust_banner.isHidden()
+        updated = first + 5
+        manager.get_imagetool(0).slicer_area.replace_source_data(updated)
+        assert manager._lineage_controller._reload_script_derived_target(2)
+        expected = xr.concat([updated, second], **kwargs)
+        xr.testing.assert_identical(node.current_source_data(), expected)
+        manager._workspace_controller.saving._save_workspace_document(workspace)
+        saved = json.loads(
+            _current_workspace_payload_attrs(workspace, "2")[
+                _persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR
+            ]
+        )
+        assert saved["steps"][0]["operation"]["op"] == "concat"
+
+    with manager_context() as manager:
+        assert _load_workspace(manager, workspace)
+        node = manager._node_for_target(2)
+        provenance = node.provenance_spec
+        assert provenance is not None
+        assert [operation.op for operation in provenance.operations] == ["concat"]
+        assert not current_workspace_code_trust_manifest(manager).has_executable_code
+        assert manager.code_trust_banner.isHidden()
+        xr.testing.assert_identical(node.current_source_data(), expected)
+
+
 @pytest.mark.parametrize(
     "capture",
     [
@@ -2865,6 +3069,12 @@ def test_saved_concat_keeps_trust_after_owned_change(
                 ImageTool(
                     (data + offset).assign_coords(beta=offset, gamma=offset),
                     _in_manager=True,
+                ),
+                provenance_spec=full_data(
+                    ScriptCodeOperation(label="Offset", code="derived = derived + 1")
+                ),
+                replay_source_data=(data + offset - 1).assign_coords(
+                    beta=offset, gamma=offset
                 ),
                 show=False,
             )
@@ -2972,7 +3182,7 @@ def test_saved_concat_keeps_trust_after_owned_change(
         runtime = provenance_code_trust_entries(
             node.provenance_spec, location_prefix="runtime"
         )
-        assert runtime
+        assert bool(runtime) is (capture != "concat-new")
         assert node.slicer_area._stored_code_authorizer(runtime) is not None
         if revision_id is not None:
             record = manager._provenance_revisions.get(revision_id)
@@ -3024,7 +3234,9 @@ def test_saved_missing_concat_reload_keeps_trust(
         for source in range(target):
             manager.remove_imagetool(source)
         manager._workspace_controller.saving._save_workspace_document(workspace)
-        assert _trust_uses_saved_signature(manager._workspace_state.code_trust)
+        assert (
+            _trust_uses_saved_signature(manager._workspace_state.code_trust) is nested
+        )
 
     for path, value in zip(paths, inputs, strict=True):
         (value + 10).to_netcdf(path, engine="h5netcdf", mode="w")
@@ -3033,7 +3245,9 @@ def test_saved_missing_concat_reload_keeps_trust(
         expected = expected + 1
     with manager_context() as manager:
         assert _load_workspace(manager, workspace)
-        assert _trust_uses_saved_signature(manager._workspace_state.code_trust)
+        assert (
+            _trust_uses_saved_signature(manager._workspace_state.code_trust) is nested
+        )
         node = manager._node_for_target(target)
         manager.get_imagetool(target)
         qtbot.wait_until(
@@ -3049,11 +3263,15 @@ def test_saved_missing_concat_reload_keeps_trust(
         assert manager.code_trust_banner.isHidden()
         xr.testing.assert_identical(node.current_source_data(), expected)
         manager._workspace_controller.saving._save_workspace_document(workspace)
-        assert _trust_uses_saved_signature(manager._workspace_state.code_trust)
+        assert (
+            _trust_uses_saved_signature(manager._workspace_state.code_trust) is nested
+        )
 
     with manager_context() as manager:
         assert _load_workspace(manager, workspace)
-        assert _trust_uses_saved_signature(manager._workspace_state.code_trust)
+        assert (
+            _trust_uses_saved_signature(manager._workspace_state.code_trust) is nested
+        )
         xr.testing.assert_identical(
             manager._node_for_target(target).current_source_data(), expected
         )
