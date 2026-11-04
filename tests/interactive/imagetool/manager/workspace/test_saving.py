@@ -3169,6 +3169,10 @@ def test_workspace_gc_controller_lifecycle(
     pool.workers[-1].signals.finished.emit(False, "cleanup failed")
     assert not controller._workspace_gc_requested
     assert controller._workspace_gc_worker is None
+    # A completed worker cannot schedule more cleanup or use its retired receiver.
+    pool.workers[-1].signals.finished.emit(True, None)
+    assert not controller._workspace_gc_requested
+    assert scheduled == []
 
     controller._workspace_gc_requested = True
     controller._start_workspace_gc()
@@ -7100,6 +7104,10 @@ def test_workspace_save_worker_start_and_finish_error_branches(
             )
         ]
         assert not manager._workspace_state.save_in_progress
+        pool.worker.signals.waiting.emit()
+        pool.worker.signals.finished.emit(0.2, None)
+        assert len(status_messages) == 1
+        assert len(errors) == 1
 
 
 def test_background_workspace_save_finish_branches(

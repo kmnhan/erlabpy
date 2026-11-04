@@ -2614,6 +2614,11 @@ class _WorkspaceController:
             self._restore_workspace_save_actions_enabled(previous_action_states)
             self._manager._update_actions()
             receiver = self._background_save_receiver
+            if receiver is not None:
+                # Disconnect while the sender wrapper is still owned here. The
+                # pool can release it on another thread as the receiver is deleted.
+                worker.signals.waiting.disconnect(receiver.wait)
+                worker.signals.finished.disconnect(receiver.finish)
             self._background_save_receiver = None
             self._background_save_worker = None
             if receiver is not None:
@@ -2693,6 +2698,8 @@ class _WorkspaceController:
 
         def _finish(more: bool, error: str | None) -> None:
             receiver = self._workspace_gc_receiver
+            if receiver is not None:
+                worker.signals.finished.disconnect(receiver.finish)
             self._workspace_gc_receiver = None
             self._workspace_gc_worker = None
             if receiver is not None:
