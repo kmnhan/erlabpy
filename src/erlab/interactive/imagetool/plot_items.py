@@ -488,6 +488,7 @@ class ItoolPlotItem(pg.PlotItem):
         self._append_to_figure_action: QtGui.QAction | None = None
         self._new_window_separator: QtGui.QAction | None = None
         self._new_window_action: QtGui.QAction | None = None
+        self._dntool_action: QtGui.QAction | None = None
         self._menu_filter: _OptionKeyMenuFilter | None = None
         self._equal_aspect_action: QtGui.QAction | None = None
         self._equal_aspect_state_changed_slot: (
@@ -609,7 +610,12 @@ class ItoolPlotItem(pg.PlotItem):
         self._append_to_figure_action = None
         self._new_window_separator = None
         self._new_window_action = None
+        self._dntool_action = None
         self._menu_filter = None
+
+    def _update_dntool_action(self) -> None:
+        if self._dntool_action is not None:
+            self._dntool_action.setEnabled("eV" in self.current_data.dims)
 
     def _ensure_context_menu(self) -> QtWidgets.QMenu | None:
         raw_menu = typing.cast("ItoolViewBox", self.vb)._ensure_menu()
@@ -617,6 +623,7 @@ class ItoolPlotItem(pg.PlotItem):
             return None
         if self._context_menu_ready and self._context_menu is raw_menu:
             self._update_manager_figure_actions()
+            self._update_dntool_action()
             return raw_menu
         menu = typing.cast("typing.Any", raw_menu)
 
@@ -671,11 +678,23 @@ class ItoolPlotItem(pg.PlotItem):
             dtool_action = menu.addAction("dtool")
             dtool_action.triggered.connect(self.open_in_dtool)
 
+            dntool_action = menu.addAction("dntool")
+            dntool_action.setObjectName("itool_dntool_action")
+            dntool_action.triggered.connect(self.open_in_dntool)
+            self._dntool_action = dntool_action
+            menu.aboutToShow.connect(self._update_dntool_action)
+
             ftool_action = menu.addAction("ftool")
             ftool_action.triggered.connect(self.open_in_ftool)
 
             croppable_actions.extend(
-                (goldtool_action, restool_action, dtool_action, ftool_action)
+                (
+                    goldtool_action,
+                    restool_action,
+                    dtool_action,
+                    dntool_action,
+                    ftool_action,
+                )
             )
 
             menu.addSeparator()
@@ -713,6 +732,7 @@ class ItoolPlotItem(pg.PlotItem):
                     goldtool_action,
                     restool_action,
                     dtool_action,
+                    dntool_action,
                     ftool_action,
                 ):
                     act.setIcon(qtawesome.icon("mdi6.export"))
@@ -752,6 +772,7 @@ class ItoolPlotItem(pg.PlotItem):
         menu.installEventFilter(self._menu_filter)
         self._context_menu = raw_menu
         self._context_menu_ready = True
+        self._update_dntool_action()
         return raw_menu
 
     def ensure_manager_figure_actions(self) -> None:
@@ -1644,6 +1665,25 @@ class ItoolPlotItem(pg.PlotItem):
                 self.current_data.T,
                 data_name=self.get_selection_code(),
                 execute=False,
+            )
+            self._bind_tool_source_input(
+                tool, self.make_tool_source_spec(transpose=True)
+            )
+            self.slicer_area.add_tool_window(tool)
+
+    @QtCore.Slot()
+    def open_in_dntool(self) -> None:
+        if self.is_image:  # pragma: no branch
+            data = self.current_data.T
+            if "eV" not in data.dims:
+                QtWidgets.QMessageBox.critical(
+                    None,
+                    "Error",
+                    "Data must have an 'eV' dimension to be opened in dntool.",
+                )
+                return
+            tool = erlab.interactive.dntool(
+                data, data_name=self.get_selection_code(), execute=False
             )
             self._bind_tool_source_input(
                 tool, self.make_tool_source_spec(transpose=True)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import keyword
+import os
 import typing
 from collections.abc import Collection, Hashable, Mapping, Sequence
 from numbers import Integral
@@ -120,6 +121,77 @@ class ConcatOperation(ToolProvenanceOperation):
             for name, value in self.kwargs.items()
         )
         return f"xr.concat([{', '.join(input_names)}], {kwargs})"
+
+
+class DenoiseOperation(ToolProvenanceOperation):
+    """Record the inputs for machine learning denoising."""
+
+    op: typing.Literal["denoise"] = "denoise"
+    console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
+        ConsoleOperationPattern(
+            target="erlab.analysis.image.ml._denoise.denoise",
+            fields=("resize",),
+            defaults={
+                "resize": (300, 300),
+                "along": "alpha",
+                "model_path": None,
+                "tta": True,
+                "restore_scale": True,
+                "restore_size": True,
+                "num_threads": 0,
+            },
+        ),
+    )
+    resize: int | tuple[int, int] = (300, 300)
+    along: str = "alpha"
+    model_path: str | None = None
+    tta: pydantic.StrictBool = True
+    restore_scale: pydantic.StrictBool = True
+    restore_size: pydantic.StrictBool = True
+    num_threads: typing.Annotated[pydantic.StrictInt, pydantic.Field(ge=0)] = 0
+
+    @pydantic.field_validator("resize", mode="before")
+    @classmethod
+    def _validate_resize(cls, value: typing.Any) -> int | tuple[int, int]:
+        from erlab.analysis.image.ml._denoise import _parse_shape
+
+        shape = _parse_shape(value)
+        return int(value) if isinstance(value, Integral) else shape
+
+    @pydantic.field_validator("model_path", mode="before")
+    @classmethod
+    def _validate_model_path(cls, value: typing.Any) -> str | None:
+        return None if value is None else os.fsdecode(value)
+
+    @property
+    def kwargs(self) -> dict[str, typing.Any]:
+        return {
+            "resize": self.resize,
+            "along": self.along,
+            "model_path": self.model_path,
+            "tta": self.tta,
+            "restore_scale": self.restore_scale,
+            "restore_size": self.restore_size,
+            "num_threads": self.num_threads,
+        }
+
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
+        return erlab.analysis.image.ml.denoise(data, **self.kwargs)
+
+    def derivation_label(self) -> str:
+        return f"Denoise({_format_derivation_value(self.kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        return erlab.interactive.utils.generate_code(
+            erlab.analysis.image.ml.denoise,
+            [f"|{input_name}|"],
+            self.kwargs,
+            module="era.image.ml",
+            name="denoise",
+            remove_defaults=False,
+        )
 
 
 class RotateOperation(ToolProvenanceOperation):

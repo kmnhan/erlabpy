@@ -44,6 +44,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     BoxcarFilterOperation,
     CoarsenOperation,
     CorrectWithEdgeOperation,
+    DenoiseOperation,
     DivideByCoordOperation,
     DropScalarCoordsOperation,
     GaussianFilterOperation,
@@ -3303,6 +3304,120 @@ class _ImageDerivativeDialog(DataTransformDialog):
                 label="Derivative factor",
             )
         self._sync_method_controls()
+
+
+class _DenoiseDialog(DataTransformDialog):
+    """Parameter editor for denoising provenance."""
+
+    title = "Denoise"
+    enable_copy = True
+    operation_types = (DenoiseOperation,)
+
+    def setup_widgets(self) -> None:
+        self.along_combo = QtWidgets.QComboBox()
+        for dim in self.data.dims:
+            if isinstance(dim, str) and dim != "eV":
+                self.along_combo.addItem(dim, userData=dim)
+        _set_combo_data(self.along_combo, "alpha")
+        self.layout_.addRow("Angle dimension", self.along_combo)
+
+        self.energy_spin = QtWidgets.QSpinBox()
+        self.angle_spin = QtWidgets.QSpinBox()
+        for spin in (self.energy_spin, self.angle_spin):
+            spin.setRange(1, 10000)
+            spin.setValue(300)
+        self.layout_.addRow("Energy pixels", self.energy_spin)
+        self.layout_.addRow("Angle pixels", self.angle_spin)
+
+        self.tta_check = QtWidgets.QCheckBox("Average over 8 orientations")
+        self.scale_check = QtWidgets.QCheckBox("Restore intensity scale")
+        self.size_check = QtWidgets.QCheckBox("Restore original grid")
+        for check in (self.tta_check, self.scale_check, self.size_check):
+            check.setChecked(True)
+            self.layout_.addRow(check)
+        self.threads_spin = QtWidgets.QSpinBox()
+        self.threads_spin.setRange(0, 1024)
+        self.threads_spin.setSpecialValueText("Automatic")
+        self.layout_.addRow("# of threads", self.threads_spin)
+
+        self._model_path: str | None = None
+        self.model_label = QtWidgets.QLabel()
+        self.model_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self.layout_.addRow("Model", self.model_label)
+        model_buttons = QtWidgets.QHBoxLayout()
+        self.choose_model_btn = QtWidgets.QPushButton("Choose model…")
+        self.use_bundled_model_btn = QtWidgets.QPushButton("Use bundled model")
+        model_buttons.addWidget(self.choose_model_btn)
+        model_buttons.addWidget(self.use_bundled_model_btn)
+        self.layout_.addRow(model_buttons)
+        self.choose_model_btn.clicked.connect(self._choose_model)
+        self.use_bundled_model_btn.clicked.connect(self._use_bundled_model)
+        self._update_model_label()
+
+    def _update_model_label(self) -> None:
+        self.model_label.setText(
+            "Bundled model"
+            if self._model_path is None
+            else QtCore.QFileInfo(self._model_path).fileName()
+        )
+        self.model_label.setToolTip(
+            "Use the model included with ERLabPy."
+            if self._model_path is None
+            else QtCore.QDir.toNativeSeparators(self._model_path)
+        )
+        self.use_bundled_model_btn.setVisible(self._model_path is not None)
+
+    @QtCore.Slot()
+    def _choose_model(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Choose ONNX model",
+            self._model_path or "",
+            "ONNX models (*.onnx);;All files (*)",
+        )
+        if path:
+            self._model_path = path
+            self._update_model_label()
+
+    @QtCore.Slot()
+    def _use_bundled_model(self) -> None:
+        self._model_path = None
+        self._update_model_label()
+
+    def source_transform_operation(self) -> DenoiseOperation:
+        along = self.along_combo.currentData(QtCore.Qt.ItemDataRole.UserRole)
+        if "eV" not in self.data.dims or not isinstance(along, str):
+            raise ValueError("Denoising requires energy and angle dimensions")
+        return DenoiseOperation(
+            along=along,
+            resize=(self.energy_spin.value(), self.angle_spin.value()),
+            model_path=self._model_path,
+            tta=self.tta_check.isChecked(),
+            restore_scale=self.scale_check.isChecked(),
+            restore_size=self.size_check.isChecked(),
+            num_threads=self.threads_spin.value(),
+        )
+
+    def restore_transform_operation(self, operation: ToolProvenanceOperation) -> None:
+        if not isinstance(operation, DenoiseOperation):
+            return
+        if not _set_combo_data(self.along_combo, operation.along):
+            raise ValueError(f"Dimension {operation.along!r} is not available")
+        resize = (
+            (operation.resize, operation.resize)
+            if isinstance(operation.resize, int)
+            else operation.resize
+        )
+        _set_spin_value(self.energy_spin, resize[0], label="Energy pixels")
+        _set_spin_value(self.angle_spin, resize[1], label="Angle pixels")
+        _set_spin_value(
+            self.threads_spin, operation.num_threads, label="Number of threads"
+        )
+        self._model_path = operation.model_path
+        self._update_model_label()
+        self.tta_check.setChecked(operation.tta)
+        self.scale_check.setChecked(operation.restore_scale)
+        self.size_check.setChecked(operation.restore_size)
 
 
 class _RemoveMeshDialog(DataTransformDialog):

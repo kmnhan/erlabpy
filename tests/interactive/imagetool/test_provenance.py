@@ -144,6 +144,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     CoarsenOperation,
     ConcatOperation,
     CorrectWithEdgeOperation,
+    DenoiseOperation,
     DivideByCoordOperation,
     DropScalarCoordsOperation,
     ExtensionRoutineOperation,
@@ -550,6 +551,7 @@ def _representative_structured_operations() -> tuple[ToolProvenanceOperation, ..
         SqueezeOperation(),
         RenameOperation(name="renamed"),
         RotateOperation(angle=0.0, axes=("x", "y"), center=(0.0, 10.0)),
+        DenoiseOperation(along="x", resize=(32, 48)),
         ShiftOperation(shift=0.5, negate=True, along="x"),
         AverageOperation(dims=("x",)),
         QSelAggregationOperation(dims=("x",), func="sum"),
@@ -631,6 +633,54 @@ def _representative_structured_operations() -> tuple[ToolProvenanceOperation, ..
             method="leastsq",
             parameter="c1",
         ),
+    )
+
+
+@pytest.mark.parametrize("resize", [32, (32, 48)])
+def test_denoise_operation_round_trip_and_public_code(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    resize: int | tuple[int, int],
+) -> None:
+    calls: list[dict[str, typing.Any]] = []
+
+    def fake_denoise(data: xr.DataArray, **kwargs: typing.Any) -> xr.DataArray:
+        calls.append(kwargs)
+        return data * 2
+
+    monkeypatch.setattr(erlab.analysis.image.ml, "denoise", fake_denoise)
+    operation = DenoiseOperation(
+        resize=resize,
+        along="beta",
+        model_path=tmp_path / "model.onnx",
+        tta=False,
+        restore_scale=False,
+        restore_size=False,
+        num_threads=3,
+    )
+    restored = parse_tool_provenance_operation(operation.model_dump(mode="json"))
+    assert restored == operation
+    data = xr.DataArray(np.arange(12.0).reshape(3, 4), dims=("eV", "beta"))
+    expected = operation.apply(data)
+    namespace: dict[str, typing.Any] = {"era": erlab.analysis, "data": data}
+    exec(f"result = {restored.expression_code('data')}", namespace, namespace)  # noqa: S102
+    xr.testing.assert_identical(namespace["result"], expected)
+    assert calls == [operation.kwargs, operation.kwargs]
+    assert operation.derivation_label().startswith("Denoise(")
+
+
+def test_denoise_console_capture() -> None:
+    operation = operation_from_console_call(
+        ConsoleCall(
+            func=erlab.analysis.image.ml.denoise,
+            args=((32, 48),),
+            kwargs={"along": "beta", "tta": False, "num_threads": 2},
+            display_code="era.image.ml.denoise(data, (32, 48), along='beta')",
+            has_extra_tracked_inputs=False,
+        )
+    )
+    assert operation == DenoiseOperation(
+        resize=(32, 48), along="beta", tta=False, num_threads=2
     )
 
 
