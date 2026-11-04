@@ -10,7 +10,7 @@
 
   Adds ML-based denoising. The function can be accessed with `erlab.analysis.image.ml.denoise`, and can also be performed interactively with the new `dntool` available in ImageTool Manager.
 
-  Co-authored by Younsik Kim.
+  Co-authored by [Younsik Kim](https://github.com/Younsik-phys).
 
 - **io.plugins:** add loaders `fesuma` and `esqm` (#649) ([c01b15f](https://github.com/kmnhan/erlabpy/commit/c01b15f3abb4495a6f9a93ff13706f9af1bdcde0))
 
