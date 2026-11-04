@@ -197,6 +197,7 @@ class DenoiseTool(erlab.interactive.utils.ToolWindow):
         control_panel = QtWidgets.QWidget()
         control_panel.setFixedWidth(290)
         controls = QtWidgets.QVBoxLayout(control_panel)
+        controls.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(control_panel)
 
         grid_group = QtWidgets.QGroupBox("Processing grid")
@@ -315,6 +316,9 @@ class DenoiseTool(erlab.interactive.utils.ToolWindow):
         self._update_input_size()
         self._update_status()
         self._reset_history_stack()
+
+    def sizeHint(self) -> QtCore.QSize:
+        return super().sizeHint().expandedTo(QtCore.QSize(0, 800))
 
     def _update_input_size(self) -> None:
         along = next(dim for dim in self._data.dims if dim != "eV")
