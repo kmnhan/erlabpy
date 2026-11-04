@@ -1,3 +1,59 @@
+## v3.29.0 (2026-11-04)
+
+### ✨ Features
+
+- **plotting:** add Physical Review stylesheet for Matplotlib (#652) ([85733cd](https://github.com/kmnhan/erlabpy/commit/85733cd4f9b3af17c771dc0f7901b7a840eea4be))
+
+  Adds a new matplotlib stylesheet, `erlab.physrev`, that meets Physical Review guidelines.
+
+- **analysis.image:** implement ML-based denoising (#646) ([1ae1279](https://github.com/kmnhan/erlabpy/commit/1ae12796a7e7f2da810ec1fac503895f586fb136))
+
+  Adds ML-based denoising. The function can be accessed with `erlab.analysis.image.ml.denoise`, and can also be performed interactively with the new `dntool` available in ImageTool Manager.
+
+  ---------
+
+  Co-authored-by: Younsik Kim <82874859+Younsik-phys@users.noreply.github.com>
+
+- **io.plugins:** add loaders `fesuma` and `esqm` (#649) ([c01b15f](https://github.com/kmnhan/erlabpy/commit/c01b15f3abb4495a6f9a93ff13706f9af1bdcde0))
+
+  Adds the `fesuma` loader for `.h5` files produced by the Fermiologics FeSuMa analyzer and the `esqm` loader for the home lab setup at ESQM Lab @ Ajou University.
+
+### 🐞 Bug Fixes
+
+- **manager:** store concatenate actions as structured provenance (#653) ([9ae9423](https://github.com/kmnhan/erlabpy/commit/9ae94232e40cb3f1d65e7d83fe9afbfe92ef763a))
+
+  Fixes an issue where built-in Concatenate steps can ask for approval when reopening a saved workspace.
+
+- **manager:** preserve expression meaning in provenance code (#650) ([808cd89](https://github.com/kmnhan/erlabpy/commit/808cd89ee8771ff97ce6412a576ce7d8d4f6c0c3))
+
+  Fixes an issue where the meaning of grouped expressions or invalid python identifiers in console code were not preserved during code export or replay.
+
+- **interactive:** improve contrast for some UI elements under dark mode (#648) ([0f17663](https://github.com/kmnhan/erlabpy/commit/0f17663303a392abbea003781b006e04e248430f))
+
+- **manager:** improve error message for interrupted workspace writes (#647) ([ff60e8f](https://github.com/kmnhan/erlabpy/commit/ff60e8f9960314edea02a56ccc42f400f7ed6dba))
+
+  An interrupted workspace write can leave an HDF5 status flag set. Manager previously reported the workspace as already open, even when no process held the file. This change improves the error message to inform the user to try to reset the file flags using `h5clear`.
+
+- **manager:** keep workspace saves responsive during file contention (#645) ([70633fb](https://github.com/kmnhan/erlabpy/commit/70633fb10cf314142fd45026ae0cf8f0014cee6c))
+
+  Fixes an issue where saving a workspace can freeze ImageTool Manager while a cloud storage provider holds the file.
+
+- **goldtool:** allow larger spline smoothing parameters (#644) ([09aea44](https://github.com/kmnhan/erlabpy/commit/09aea448b4c8a82de633aec84149da1f4a974f34))
+
+  Removes the upper limit on the spline smoothing parameter input.
+
+- **interactive:** correct widget lifetimes during cleanup (#640) ([c8b2105](https://github.com/kmnhan/erlabpy/commit/c8b21054c9368a82f12547c2fb34487229b27fa7))
+
+- **interactive:** correct Qt object ownership and cleanup (#639) ([51c1564](https://github.com/kmnhan/erlabpy/commit/51c1564b0a349b781f1afb194925c58eaa43eb12))
+
+  Fixes rare crashes when closing Explorer tabs, cancelling extension work, or processing delayed updates after a window closes.
+
+### ⚡️ Performance
+
+- **manager:** reduce workspace file size (#643) ([4dc6c1c](https://github.com/kmnhan/erlabpy/commit/4dc6c1cf54991081a48cc62402ae5649393cf0a3))
+
+  Releases unused checkpoints that takes up space and also update to share identical arrays.
+
 ## v3.28.2 (2026-10-27)
 
 ### 🐞 Bug Fixes
