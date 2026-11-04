@@ -12,7 +12,7 @@ import time
 import types
 import typing
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import h5py
 import numpy as np
@@ -3095,14 +3095,32 @@ def test_serialize_workspace_node_error_without_optional_metadata() -> None:
         saver._serialize_workspace_node({}, pending, "0", include_children=False)
 
 
+@pytest.fixture
+def workspace_gc_manager(qapp) -> Iterator[QtCore.QObject]:
+    manager = QtCore.QObject()
+    try:
+        yield manager
+    finally:
+        # Receiver callbacks retain the controller and its manager. Delete the
+        # receivers while this fixture still keeps their parent alive.
+        QtWidgets.QApplication.sendPostedEvents(
+            None, int(QtCore.QEvent.Type.DeferredDelete.value)
+        )
+        manager.deleteLater()
+        QtWidgets.QApplication.sendPostedEvents(
+            None, int(QtCore.QEvent.Type.DeferredDelete.value)
+        )
+
+
 def test_workspace_gc_controller_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
+    workspace_gc_manager: QtCore.QObject,
 ) -> None:
     controller = workspace_controller._WorkspaceController.__new__(
         workspace_controller._WorkspaceController
     )
-    manager = QtCore.QObject()
+    manager = workspace_gc_manager
     manager._workspace_state = types.SimpleNamespace(
         save_in_progress=False, document_id="document", path=None
     )
@@ -3148,13 +3166,13 @@ def test_workspace_gc_controller_lifecycle(
         lambda delay, callback: scheduled.append((delay, callback)),
     )
     controller._start_workspace_gc()
-    pool.workers.pop().signals.finished.emit(False, "cleanup failed")
+    pool.workers[-1].signals.finished.emit(False, "cleanup failed")
     assert not controller._workspace_gc_requested
     assert controller._workspace_gc_worker is None
 
     controller._workspace_gc_requested = True
     controller._start_workspace_gc()
-    pool.workers.pop().signals.finished.emit(True, None)
+    pool.workers[-1].signals.finished.emit(True, None)
     assert controller._workspace_gc_requested
     assert scheduled[-1] == (0, controller._start_workspace_gc)
 
@@ -3174,13 +3192,16 @@ def test_workspace_gc_controller_lifecycle(
 
 @pytest.mark.parametrize("outcome", ["more", "error", "stale"])
 def test_workspace_gc_completion_resumes_or_rejects_pending_save(
-    monkeypatch: pytest.MonkeyPatch, tmp_path, outcome
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    outcome,
+    workspace_gc_manager: QtCore.QObject,
 ) -> None:
     path = tmp_path / "workspace.itws"
     controller = workspace_controller._WorkspaceController.__new__(
         workspace_controller._WorkspaceController
     )
-    manager = QtCore.QObject()
+    manager = workspace_gc_manager
     state = types.SimpleNamespace(
         save_in_progress=False,
         save_as_only=False,
