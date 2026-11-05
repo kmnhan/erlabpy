@@ -1,3 +1,11 @@
+## v3.29.1 (2026-11-05)
+
+### 🐞 Bug Fixes
+
+- **manager:** prevent workspace worker destruction races (#657) ([959acb6](https://github.com/kmnhan/erlabpy/commit/959acb6295b45753a0dc3c472269f3da037996f4))
+
+  Fixes a rare crash when saving.
+
 ## v3.29.0 (2026-11-04)
 
 ### ✨ Features
