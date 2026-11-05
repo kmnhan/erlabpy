@@ -239,12 +239,50 @@ default reader and writer switch.
   typed graph code and an earlier four-stage plan in `.agents/plans/provenance.md`.
   That plan uses operation nodes. Compare candidate code from it against the
   requirements here for data nodes and operation edges.
-- **Next task.** Read the repository instructions and inspect the current branch
-  and diff. Start with the existing typed operation contract and checkpoint store.
-  Implement the smallest Qt-free graph path that passes the first acceptance
-  test. [Repository instructions](../../AGENTS.md) ·
-  [Operation model](../../src/erlab/interactive/imagetool/_provenance/_model.py) ·
-  [Checkpoint store](../../src/erlab/interactive/imagetool/manager/_revisions.py)
-- **Status.** The acceptance test and performance measurements are pending.
-  At each handoff, record the branch, revision, exact checks run, and first
-  remaining case.
+- **Stage 1.** The working tree on `dev-provenance-redesign`, based on `e3315fbb`,
+  contains the Qt-free graph. Its acceptance test passes with Qt imports blocked. The
+  tests also cover a replaced derived input, a failed refresh, a file load shared
+  by two branches, and code generation for a concatenation with repeated inputs.
+  The graph executes synchronous requests on its owner thread. The caller supplies
+  the file reader. [Graph](../../src/erlab/_provenance/_graph.py) ·
+  [Tests](../../tests/test_provenance_graph.py)
+- **Graph cost.** Replacing the source of a 1,100-step chain visited each affected
+  entry once, including both branches and their shared result. Refresh evaluated
+  each stale step once. An independent branch received no visits. Repeated file
+  refreshes kept one checkpoint for the current file value and one for an
+  explicitly retained earlier result until its owner released it.
+- **Pending producer edits.** Replace now records the displayed input and keeps
+  its edited recipe for Refresh. The result stays stale until Refresh runs that
+  recipe. Regression tests cover repeated replacement, redirected sources, and
+  pins on virtual inputs.
+- **Next case.** Make B file-backed in the first acceptance test, replace B, and
+  change the file while C is stale. Settle which origins Reload of C must read,
+  then test Reload alongside Refresh. Auto scheduling, Manager integration, and
+  the workspace round trip are still pending.
+- **Later in the rewrite.** Move the provenance operation implementations and
+  their Python generation helpers out of the Qt package. Verify a catalog
+  operation can execute and emit Python with Qt imports blocked.
+
+The initial stage 1 checks passed from the repository root with the `ml` extra installed
+and `ERLAB_TEST_DATA_DIR` set to a local `erlabpy-data` checkout. Both Qt runs
+passed 178 tests.
+
+```sh
+uv run ruff format .
+uv run ruff check --fix .
+uv run mypy src
+uv run python -m scripts.ci_test_groups --check-partition
+for binding in pyqt6 pyside6; do
+    QT_API="$binding" PYTEST_QT_API="$binding" uv run pytest -q \
+        tests/test_provenance_graph.py \
+        tests/interactive/imagetool/manager/workspace/test_store.py \
+        tests/interactive/imagetool/test_module_split.py::test_provenance_layers_load_in_one_direction
+done
+```
+
+After the pending recipe fix, Ruff, mypy, and the partition check passed again.
+Running `uv run pytest -q tests/test_provenance_graph.py` with the same two
+binding settings passed all 19 graph tests in each run.
+
+At each handoff, record the branch, revision, exact checks run, and first remaining
+case.

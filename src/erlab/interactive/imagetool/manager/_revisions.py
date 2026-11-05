@@ -11,6 +11,7 @@ from dataclasses import dataclass, replace
 
 import xarray as xr
 
+from erlab._provenance._records import checkpoint_data
 from erlab.interactive.imagetool._provenance._model import (
     ReplayStep,
     ScriptInput,
@@ -195,8 +196,7 @@ class _ProvenanceRevisionStore:
         checkpoint = None if source is None else _RevisionCheckpoint(source)
         protected = None
         if data is not None:
-            # A deep copy alone preserves graphs that can read mutable external data.
-            protected = data.copy(deep=True).load()
+            protected = checkpoint_data(data)
             checkpoint = _RevisionCheckpoint()
         record = _ProvenanceRevision(
             revision_id=revision_id,
