@@ -659,3 +659,212 @@ def test_mixed_source_panel_separates_type_shape_and_keeps_alias_first(qtbot):
     assert tool.source_payloads()["renamed_fit"] is snapshot
     assert panel.current_name() == "renamed_fit"
     assert panel.source_alias_edit.text() == "renamed_fit"
+
+
+@pytest.mark.parametrize("dimension", [None, "scan"])
+def test_fit_parameter_provider_captures_numeric_data_and_follows_range(
+    qtbot, tmp_path, dimension
+):
+    import lmfit.models
+
+    import erlab
+    from erlab.interactive._figurecomposer._fit_sources import (
+        FigureFitParameterSourceSnapshot,
+    )
+
+    x = np.linspace(-1.0, 1.0, 21)
+    y = 2.0 * x + 3.0 + 0.01 * np.sin(np.arange(x.size))
+    data = xr.DataArray(y, dims="x", coords={"x": x}, name="spectra")
+    if dimension is not None:
+        data = xr.concat([data, 2.0 * data, 3.0 * data], dim="scan").assign_coords(
+            scan=[10.0, 20.0, 30.0]
+        )
+    model = lmfit.models.LinearModel()
+    tool = erlab.interactive.ftool(
+        data,
+        model=model,
+        params=model.make_params(),
+        data_name="spectra",
+        model_name="model",
+        execute=False,
+    )
+    qtbot.addWidget(tool)
+    provider = next(
+        provider
+        for provider in tool.figure_source_providers()
+        if provider.provider_id == "fit_parameters"
+    )
+    assert not provider.is_ready()
+    for index in [0] if dimension is None else [0, 2]:
+        if dimension is not None:
+            tool._set_current_index(index)
+        job = tool._fit_job()
+        result = tool._fit_data().xlm.modelfit(
+            "x", model=tool._model, params=tool._params
+        )
+        tool._set_fit_ds(tool._fit_result_for_job(result, job), 0.0)
+    assert provider.is_ready()
+    captured = provider.capture()
+    assert captured.selection == {}
+    snapshot = captured.payload
+    assert isinstance(snapshot, FigureFitParameterSourceSnapshot)
+    assert snapshot.parameter_names == ("slope", "intercept")
+    assert snapshot.dimension == dimension
+    assert set(snapshot.native_dataset) == {"modelfit_coefficients", "modelfit_stderr"}
+    assert not any(
+        array.dtype == object for array in snapshot.native_dataset.data_vars.values()
+    )
+    encoded = encode_source_payload(snapshot)
+    assert set(encoded.arrays) == {"modelfit_coefficients", "modelfit_stderr"}
+    restored = decode_source_payload("fit_parameters", encoded)
+    assert isinstance(restored, FigureFitParameterSourceSnapshot)
+    xr.testing.assert_identical(restored.native_dataset, snapshot.native_dataset)
+    composer = FigureComposerTool.from_source_payloads(
+        {"parameters": snapshot},
+        sources=(FigureSourceState(name="parameters", kind="fit_parameters"),),
+        operations=(),
+    )
+    qtbot.addWidget(composer)
+    restored_composer = _restored_figure_composer_from_netcdf(composer, qtbot, tmp_path)
+    persisted = restored_composer.source_payload(
+        "parameters", FigureFitParameterSourceSnapshot
+    )
+    assert persisted is not None
+    xr.testing.assert_identical(persisted.native_dataset, snapshot.native_dataset)
+    assert persisted.provenance_spec == snapshot.provenance_spec
+    modified = snapshot.native_dataset
+    modified["modelfit_coefficients"][:] = -123.0
+    assert not np.any(snapshot.native_dataset.modelfit_coefficients.values == -123.0)
+    if dimension is None:
+        provenance = snapshot.provenance_spec
+        assert provenance is not None
+        namespace = {"spectra": data, "model": model, "xr": xr, "np": np}
+        for step in provenance["steps"]:
+            exec(step["operation"]["code"], namespace)  # noqa: S102
+        xr.testing.assert_allclose(
+            namespace[provenance["active_name"]], snapshot.native_dataset
+        )
+    if dimension is not None:
+        assert snapshot.provenance_spec is None
+        assert np.isnan(
+            snapshot.native_dataset.modelfit_coefficients.sel(scan=20.0)
+        ).all()
+        tool.y_min_spin.setValue(2)
+        historical_selection = {
+            "dimension": "scan",
+            "indices": [0, 1, 2],
+            "coordinates": [1.0, 2.0, 3.0],
+        }
+        refreshed = provider.capture(historical_selection)
+        xr.testing.assert_identical(
+            refreshed.payload.native_dataset,
+            snapshot.native_dataset.isel(scan=slice(2, 3)),
+        )
+        assert tool.y_min_spin.value() == 2
+        assert refreshed.selection == {}
+        assert provider.is_ready(historical_selection)
+        np.testing.assert_array_equal(snapshot.native_dataset.scan, [10.0, 20.0, 30.0])
+        tool.y_min_spin.setValue(0)
+        other_model = lmfit.models.LinearModel(prefix="other_")
+        other_result = data.isel(scan=2).xlm.modelfit(
+            "x", model=other_model, params=other_model.make_params()
+        )
+        other_result.modelfit_results.item().params["other_slope"].stderr = None
+        tool._result_ds_full[2] = other_result
+        mixed = provider.capture(captured.selection).payload
+        assert mixed.parameter_names == (
+            "slope",
+            "intercept",
+            "other_slope",
+            "other_intercept",
+        )
+        assert np.isnan(
+            mixed.native_dataset.modelfit_coefficients.sel(
+                scan=10.0, param="other_slope"
+            )
+        )
+        assert np.isfinite(
+            mixed.native_dataset.modelfit_coefficients.sel(
+                scan=30.0, param="other_slope"
+            )
+        )
+        assert np.isnan(
+            mixed.native_dataset.modelfit_stderr.sel(scan=30.0, param="other_slope")
+        )
+
+
+def test_fit_parameter_source_omits_replay_for_stale_fit_configuration(qtbot):
+    import lmfit.models
+
+    import erlab
+
+    x = np.linspace(-1.0, 1.0, 21)
+    y = 2.0 * x + 3.0 + 0.01 * np.sin(np.arange(x.size))
+    data = xr.DataArray(
+        np.stack([y, 2.0 * y]),
+        dims=("scan", "x"),
+        coords={"scan": [10.0, 20.0], "x": x},
+        name="spectra",
+    )
+    model = lmfit.models.LinearModel()
+    tool = erlab.interactive.ftool(
+        data,
+        model=model,
+        params=model.make_params(),
+        data_name="spectra",
+        model_name="model",
+        execute=False,
+    )
+    qtbot.addWidget(tool)
+
+    def fit_current_slice():
+        job = tool._fit_job()
+        result = tool._fit_data().xlm.modelfit(
+            "x", model=tool._model, params=tool._params
+        )
+        tool._set_fit_ds(tool._fit_result_for_job(result, job), 0.0)
+
+    for index in range(2):
+        tool._set_current_index(index)
+        fit_current_slice()
+    original = tool.figure_parameter_source_snapshot()
+    assert original.provenance_spec is not None
+
+    tool.normalize_check.setChecked(True)
+    assert not tool._fit_is_current
+    stale = tool.figure_parameter_source_snapshot()
+    assert stale.provenance_spec is None
+    xr.testing.assert_identical(stale.native_dataset, original.native_dataset)
+
+    fit_current_slice()
+    assert tool._fit_is_current
+    mixed = tool.figure_parameter_source_snapshot()
+    assert mixed.provenance_spec is None
+    xr.testing.assert_identical(
+        mixed.native_dataset.sel(scan=10.0), original.native_dataset.sel(scan=10.0)
+    )
+    assert not np.array_equal(
+        mixed.native_dataset.modelfit_coefficients.sel(scan=20.0),
+        original.native_dataset.modelfit_coefficients.sel(scan=20.0),
+    )
+
+    provider = next(
+        provider
+        for provider in tool.figure_source_providers()
+        if provider.provider_id == "fit_parameters"
+    )
+    tool.y_min_spin.setValue(1)
+    tool.set_model(
+        lmfit.models.ExpressionModel("slope*x + intercept + x**2"), merge_params=True
+    )
+    fit_current_slice()
+    refreshed = provider.capture(
+        {"dimension": "scan", "indices": [0], "coordinates": [10.0]}
+    )
+    assert refreshed.selection == {}
+    assert refreshed.payload.parameter_names == ("slope", "intercept")
+    np.testing.assert_array_equal(refreshed.payload.native_dataset.scan, [20.0])
+    xr.testing.assert_allclose(
+        refreshed.payload.native_dataset.modelfit_coefficients,
+        tool._last_result_ds.modelfit_coefficients.expand_dims(scan=[20.0]),
+    )

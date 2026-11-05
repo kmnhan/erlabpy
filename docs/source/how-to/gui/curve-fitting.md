@@ -90,9 +90,18 @@ plot and choose {guilabel}`Open parameter values in ftool`. This action omits po
 without a finite, positive standard error. If no valid points remain, `ftool` does not
 open.
 
-When ftool is managed, parameter maps opened in ImageTool appear below the ftool row.
-Use {guilabel}`Refit after update` only when compatible input changes should repeat the
-same fit sequence.
+When ftool is managed, parameter values opened in ImageTool appear as children of ftool.
+
+To plot the selected parameters plot in Figure Composer, right-click the plot and choose
+{guilabel}`Add parameter plot to Figure…`. The figure stores the parameter values and
+standard errors directly from ftool. Use {guilabel}`Refresh` in the composer's
+{guilabel}`Sources` tab to capture completed fits in ftool's current scan range.
+The step keeps its selected parameter when the fit range or model changes, as long as
+the updated results contain that parameter name.
+
+For a one-dimensional fit, add its {guilabel}`Fit parameters` source from the
+composer's {guilabel}`Sources` tab. Use a {guilabel}`Fit parameters` step to select
+the parameter to plot.
 
 (how-to-gui-reopen-saved-fit)=
 

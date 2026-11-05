@@ -19,7 +19,7 @@ from erlab.interactive._figurecomposer._providers import (
 from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
 
     import xarray as xr
 
@@ -321,7 +321,7 @@ class _FigureComposerWorkflowController(QtCore.QObject):
     def _providers_for_target(
         self, target: int | str | FigureSourceTarget
     ) -> tuple[FigureSourceProvider, ...]:
-        return tuple(
+        providers = tuple(
             provider
             for provider in self._figure_providers_for_node(
                 self._source_node_for_target(target)
@@ -332,6 +332,17 @@ class _FigureComposerWorkflowController(QtCore.QObject):
             )
             and provider.is_ready()
         )
+        if not isinstance(target, FigureSourceTarget) and any(
+            provider.payload_kind == "fit" for provider in providers
+        ):
+            # Row actions keep the fit curve as their default plot. The parameter
+            # action and source picker select the parameter provider explicitly.
+            return tuple(
+                provider
+                for provider in providers
+                if provider.payload_kind != "fit_parameters"
+            )
+        return providers
 
     def _capture_figure_sources(
         self,
@@ -1165,26 +1176,57 @@ class _FigureComposerWorkflowController(QtCore.QObject):
 
     def add_fit_to_figure(self, fit_tool: Fit1DTool) -> str | None:
         """Add the current completed fit through the existing destination dialog."""
-        from erlab.interactive._figurecomposer import (
-            FigureComposerTool,
-            FigureOperationState,
+        from erlab.interactive._figurecomposer import FigureOperationState
+
+        return self._add_fit_source_to_figure(
+            fit_tool,
+            provider_id="fit",
+            create_operation=lambda source: FigureOperationState.fit_plot(
+                label="Fit", source=source
+            ),
         )
+
+    def add_fit_parameters_to_figure(
+        self, fit_tool: Fit1DTool, *, parameter: str
+    ) -> str | None:
+        """Add saved parameter values directly from their FitTool."""
+        from erlab.interactive._figurecomposer import FigureOperationState
+
+        return self._add_fit_source_to_figure(
+            fit_tool,
+            provider_id="fit_parameters",
+            create_operation=lambda source: FigureOperationState.fit_parameters(
+                label=parameter, source=source, parameter=parameter
+            ),
+        )
+
+    def _add_fit_source_to_figure(
+        self,
+        fit_tool: Fit1DTool,
+        *,
+        provider_id: str,
+        create_operation: Callable[[str], FigureOperationState],
+    ) -> str | None:
+        from erlab.interactive._figurecomposer import FigureComposerTool
         from erlab.interactive._figurecomposer._defaults import figure_options_context
         from erlab.interactive.imagetool.manager._figurecomposer import _dialogs
 
-        if not fit_tool.has_figure_fit_source():
+        if not any(
+            provider.provider_id == provider_id and provider.is_ready()
+            for provider in fit_tool.figure_source_providers()
+        ):
             return None
         tool_uid = self._host._node_uid_from_window(fit_tool)
         if tool_uid is None:
             return None
         sources, payloads, _name_map = self._capture_figure_sources(
-            (FigureSourceTarget(tool_uid, "fit"),)
+            (FigureSourceTarget(tool_uid, provider_id),)
         )
         if len(sources) != 1:
             return None
         source = sources[0]
         payload = payloads[source.name]
-        operation = FigureOperationState.fit_plot(label="Fit", source=source.name)
+        operation = create_operation(source.name)
         figure_uids = tuple(self._host._figure_uids())
         if not figure_uids:
             action = _dialogs._FIGURE_DIALOG_NEW
@@ -1196,7 +1238,7 @@ class _FigureComposerWorkflowController(QtCore.QObject):
                 operation,
                 allow_new_figure=True,
                 source_count=1,
-                source_kind="fit",
+                source_kind=source.kind,
                 selected_figure_uid=self._selected_figure_uid_for_figure_dialog(),
             )
             dialog.action_combo.setCurrentIndex(
@@ -1244,8 +1286,8 @@ class _FigureComposerWorkflowController(QtCore.QObject):
                 return None
             if action == _dialogs._FIGURE_DIALOG_ADD_STEP:
                 composer.add_operation(
-                    FigureOperationState.fit_plot(
-                        label="Fit", source=added.name_map[source.name], axes=axes
+                    create_operation(added.name_map[source.name]).model_copy(
+                        update={"axes": axes}
                     )
                 )
         self._host._mark_workspace_dirty(uid=figure_uid, data=True, state=True)

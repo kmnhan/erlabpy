@@ -18,6 +18,88 @@ if typing.TYPE_CHECKING:
 
 
 @dataclasses.dataclass(frozen=True)
+class FigureFitParameterSourceSnapshot:
+    """Saved parameter values and standard errors without an executable model."""
+
+    dataset: xr.Dataset
+    _provenance_json: str | None = None
+
+    @classmethod
+    def from_dataset(
+        cls,
+        result_ds: xr.Dataset,
+        *,
+        provenance_spec: Mapping[str, typing.Any] | None = None,
+    ) -> FigureFitParameterSourceSnapshot:
+        data = result_ds[["modelfit_coefficients", "modelfit_stderr"]].copy(deep=True)
+        data.attrs = {}
+        errors = data.modelfit_stderr
+        data["modelfit_stderr"] = errors.where(np.isfinite(errors) & (errors > 0))
+        if provenance_spec is not None:
+            from erlab.interactive.imagetool._provenance._model import (
+                ReplayStep,
+                parse_tool_provenance_spec,
+            )
+            from erlab.interactive.imagetool._provenance._operations import (
+                ScriptCodeOperation,
+            )
+
+            spec = parse_tool_provenance_spec(dict(provenance_spec))
+            if spec is None or spec.active_name is None:
+                provenance_spec = None
+            else:
+                name = spec.active_name
+                operation = ScriptCodeOperation(
+                    label="Extract fitted parameter values and standard errors",
+                    code=(
+                        f"{name} = {name}[\n"
+                        '    ["modelfit_coefficients", "modelfit_stderr"]\n'
+                        "]\n"
+                        f'{name}["modelfit_stderr"] = {name}.modelfit_stderr.where(\n'
+                        f"    ({name}.modelfit_stderr > 0)\n"
+                        f'    & (abs({name}.modelfit_stderr) < float("inf"))\n'
+                        ")\n"
+                        f"{name}.attrs = {{}}"
+                    ),
+                )
+                spec = spec.model_copy(
+                    update={"steps": (*spec.steps, ReplayStep(operation=operation))}
+                )
+                provenance_spec = json.loads(
+                    erlab.interactive.utils._model_dump_json(spec)
+                )
+        return cls(
+            data,
+            None if provenance_spec is None else json.dumps(dict(provenance_spec)),
+        )
+
+    @property
+    def parameter_names(self) -> tuple[str, ...]:
+        return tuple(str(value) for value in self.dataset.param.values)
+
+    @property
+    def dimension(self) -> str | None:
+        return next(
+            (
+                str(dim)
+                for dim in self.dataset.modelfit_coefficients.dims
+                if dim != "param"
+            ),
+            None,
+        )
+
+    @property
+    def native_dataset(self) -> xr.Dataset:
+        return self.dataset.copy(deep=True)
+
+    @property
+    def provenance_spec(self) -> dict[str, typing.Any] | None:
+        return (
+            None if self._provenance_json is None else json.loads(self._provenance_json)
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class FigureFitSourceSnapshot:
     """A detached fit result with safe access to its saved numeric arrays."""
 

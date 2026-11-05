@@ -7,6 +7,7 @@ import typing
 from erlab.interactive._figurecomposer._operations import (
     _bz_overlay,
     _custom_code,
+    _fit_parameters,
     _fit_plot,
     _line_profile,
     _photon_energy,
@@ -42,6 +43,7 @@ _OPERATION_SPECS = {
         _PLOT_SLICES_SPEC,
         _line_profile.SPEC,
         _fit_plot.SPEC,
+        _fit_parameters.SPEC,
         _bz_overlay.SPEC,
         _photon_energy.SPEC,
         _METHOD_SPEC,

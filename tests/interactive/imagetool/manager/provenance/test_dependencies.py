@@ -5321,6 +5321,94 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
         )
 
 
+def test_manager_fit2d_parameter_outputs_survive_range_and_model_changes(
+    qtbot, manager_context
+) -> None:
+    model = erlab.analysis.fit.models.PolynomialModel(degree=1)
+    t = np.linspace(0.0, 4.0, 25)
+    data = xr.DataArray(
+        np.stack([1.0 + (index + 1.0) * t for index in range(3)]),
+        dims=("y", "t"),
+        coords={"y": np.arange(3), "t": t},
+    )
+    with manager_context() as manager:
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1)
+        child_uid, child = make_fit2d_child(manager, 0, model)
+        parameters = []
+        for index in range(3):
+            params = child._params.copy()
+            params["c1"].set(value=index + 1.0)
+            params["c1"].stderr = 0.1 * (index + 1)
+            parameters.append(params)
+        _seed_fit2d_param_results(child, parameters)
+        child.param_plot_combo.setCurrentText("c1")
+        child.param_plot._show_parameter_values()
+        child.param_plot._show_parameter_stderr()
+        child_node = manager._child_node(child_uid)
+        qtbot.wait_until(lambda: len(child_node._childtool_indices) == 2)
+        values_uid, errors_uid = child_node._childtool_indices
+        values_node = manager._child_node(values_uid)
+        errors_node = manager._child_node(errors_uid)
+        output_ids = (
+            Fit2DTool._parameter_output_id(Fit2DTool.Output.PARAMETER_VALUES, "c1"),
+            Fit2DTool._parameter_output_id(Fit2DTool.Output.PARAMETER_STDERR, "c1"),
+        )
+        assert (values_node.output_id, errors_node.output_id) == output_ids
+
+        child.param_plot_combo.setCurrentText("c0")
+        child.y_min_spin.setValue(1)
+        for node in (values_node, errors_node):
+            assert node._update_from_parent_source()
+            assert node.source_state == "fresh"
+        np.testing.assert_array_equal(fetch(values_uid).y, [1, 2])
+        np.testing.assert_allclose(fetch(values_uid), [2.0, 3.0])
+        np.testing.assert_allclose(fetch(errors_uid), [0.2, 0.3])
+
+        child.set_model(erlab.analysis.fit.models.PolynomialModel(degree=2))
+        child._result_ds_full = [None for _ in child._result_ds_full]
+        child._last_result_ds = None
+        child._update_param_plot_options()
+        child._update_param_plot()
+        for node, output_id in zip((values_node, errors_node), output_ids, strict=True):
+            output = child.output_imagetool_data(output_id)
+            assert output is not None
+            np.testing.assert_array_equal(output.y, [1, 2])
+            assert np.isnan(output).all()
+            assert node._update_from_parent_source()
+            assert node.source_state == "fresh"
+            assert np.isnan(fetch(node.uid)).all()
+
+        child.set_model(erlab.analysis.fit.models.PolynomialModel(degree=0))
+        for node in (values_node, errors_node):
+            assert not node._update_from_parent_source()
+            assert node.source_state == "unavailable"
+        child.set_model(erlab.analysis.fit.models.PolynomialModel(degree=2))
+        for node in (values_node, errors_node):
+            assert node._update_from_parent_source()
+            assert node.source_state == "fresh"
+            assert np.isnan(fetch(node.uid)).all()
+
+        parameters = []
+        for index in range(3):
+            params = child._params.copy()
+            params["c1"].set(value=index + 5.0)
+            params["c1"].stderr = None if index == 2 else 0.25
+            parameters.append(params)
+        _seed_fit2d_param_results(child, parameters)
+        child.param_plot_combo.setCurrentText("c0")
+        child._notify_data_changed()
+        for node in (values_node, errors_node):
+            assert node._update_from_parent_source()
+            assert node.source_state == "fresh"
+        np.testing.assert_array_equal(fetch(values_uid).y, [1, 2])
+        np.testing.assert_allclose(fetch(values_uid), [6.0, 7.0])
+        np.testing.assert_allclose(fetch(errors_uid), [0.25, np.nan])
+        assert tuple(child_node._childtool_indices) == (values_uid, errors_uid)
+        assert (values_node.output_id, errors_node.output_id) == output_ids
+        assert manager.ntools == 1
+
+
 def test_manager_file_backed_fit2d_parameter_full_code_is_self_contained(
     qtbot,
     monkeypatch,

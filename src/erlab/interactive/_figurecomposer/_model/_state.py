@@ -472,6 +472,7 @@ class FigureOperationKind(enum.StrEnum):
     PLOT_SLICES = "plot_slices"
     LINE = "line"
     FIT_PLOT = "fit_plot"
+    FIT_PARAMETERS = "fit_parameters"
     BZ_OVERLAY = "bz_overlay"
     PHOTON_ENERGY_OVERLAY = "photon_energy_overlay"
     METHOD = "method"
@@ -646,6 +647,7 @@ class FigureOperationState(pydantic.BaseModel):
     )
 
     sources: tuple[str, ...] = ()
+    fit_parameter: str | None = None
     fit_numpoints: int | None = pydantic.Field(default=None, ge=2)
     fit_sigma: float | None = pydantic.Field(default=None, gt=0.0, allow_inf_nan=False)
     show_data: bool = True
@@ -950,6 +952,24 @@ class FigureOperationState(pydantic.BaseModel):
             kind=FigureOperationKind.FIT_PLOT,
             label=label,
             sources=(source,),
+            axes=axes or FigureAxesSelectionState(),
+        )
+
+    @classmethod
+    def fit_parameters(
+        cls,
+        *,
+        label: str = "Fit parameters",
+        source: str,
+        parameter: str | None = None,
+        axes: FigureAxesSelectionState | None = None,
+    ) -> FigureOperationState:
+        return cls(
+            kind=FigureOperationKind.FIT_PARAMETERS,
+            label=label,
+            sources=(source,),
+            fit_parameter=parameter,
+            fit_data_kw={"marker": "o", "linestyle": "none"},
             axes=axes or FigureAxesSelectionState(),
         )
 

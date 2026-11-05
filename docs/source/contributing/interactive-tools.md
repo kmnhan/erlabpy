@@ -252,8 +252,7 @@ instead when output data also changes.
 
 Override `figure_source_providers()` to expose a captured output directly to Figure
 Composer. A provider declares a stable ID and payload kind, checks readiness without
-capturing data, and returns a `FigureSourceCapture` when selected. Keep parameter
-exports as ImageTool outputs.
+capturing data, and returns a `FigureSourceCapture` when selected.
 
 Register a `SourceSpec` in `_figurecomposer._sources` for a new payload kind. It defines
 copying, storage, safe values, and optional model execution and trust inspection. Store

@@ -7,7 +7,10 @@ import dataclasses
 import typing
 import urllib.parse
 
-from erlab.interactive._figurecomposer._fit_sources import FigureFitSourceSnapshot
+from erlab.interactive._figurecomposer._fit_sources import (
+    FigureFitParameterSourceSnapshot,
+    FigureFitSourceSnapshot,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -195,6 +198,22 @@ def _fit_operation(alias: str) -> FigureOperationState:
     return FigureOperationState.fit_plot(source=alias)
 
 
+def _fit_parameter_operation(alias: str) -> FigureOperationState:
+    from erlab.interactive._figurecomposer._model._state import FigureOperationState
+
+    return FigureOperationState.fit_parameters(source=alias)
+
+
+def _decode_fit_parameters(
+    payload: EncodedSourcePayload,
+) -> FigureFitParameterSourceSnapshot:
+    import xarray as xr
+
+    return FigureFitParameterSourceSnapshot(
+        xr.Dataset(payload.arrays), payload.metadata.get("provenance")
+    )
+
+
 register_source_spec(
     SourceSpec(
         kind="array",
@@ -230,5 +249,23 @@ register_source_spec(
         materialize=lambda payload: payload.result_dataset(),
         trust_entries=_fit_trust_entries,
         default_operation=_fit_operation,
+    )
+)
+register_source_spec(
+    SourceSpec(
+        kind="fit_parameters",
+        label="Fit parameters",
+        payload_type=FigureFitParameterSourceSnapshot,
+        duplicate=lambda payload: FigureFitParameterSourceSnapshot(
+            payload.native_dataset, payload._provenance_json
+        ),
+        encode=lambda payload: EncodedSourcePayload(
+            {"provenance": payload._provenance_json},
+            {str(name): data for name, data in payload.dataset.data_vars.items()},
+        ),
+        decode=_decode_fit_parameters,
+        safe_value=lambda payload: payload.native_dataset,
+        describe=lambda payload: payload.parameter_names,
+        default_operation=_fit_parameter_operation,
     )
 )

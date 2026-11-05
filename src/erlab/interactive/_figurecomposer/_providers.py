@@ -139,3 +139,31 @@ class FitSourceProvider:
             selection=copy.deepcopy(dict(frozen_selection or {})),
             revision_token=str(self._tool.provenance_revision),
         )
+
+
+class FitParameterSourceProvider:
+    """Capture completed fit parameters directly from Fit1D or Fit2D."""
+
+    provider_id = "fit_parameters"
+    label = "Fit parameters"
+    payload_kind = "fit_parameters"
+
+    def __init__(self, tool: Fit1DTool) -> None:
+        self._tool = tool
+
+    def is_ready(self, selection: Mapping[str, typing.Any] | None = None) -> bool:
+        del selection
+        return self._tool.has_figure_parameter_source()
+
+    def capture(
+        self, selection: Mapping[str, typing.Any] | None = None
+    ) -> FigureSourceCapture:
+        del selection
+        snapshot = self._tool.figure_parameter_source_snapshot()
+        return FigureSourceCapture(
+            payload=snapshot,
+            name=self._tool.figure_parameter_source_name(),
+            label=self._tool.windowTitle(),
+            provenance_spec=copy.deepcopy(snapshot.provenance_spec),
+            revision_token=str(self._tool.provenance_revision),
+        )

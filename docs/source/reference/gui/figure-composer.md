@@ -25,7 +25,8 @@ Figure Composer can start with or without data sources. In ImageTool Manager,
 steps. Use {guilabel}`Add…` in the {guilabel}`Sources` tab, or drag ImageTool or fitted
 ftool rows from the Manager, to add sources later.
 
-The {guilabel}`Sources` tab lists the data and fit results stored with the figure. Use
+The {guilabel}`Sources` tab lists the data, fit results, and fit parameters stored with
+the figure. Use
 {guilabel}`Refresh` to update selected sources from their open tools. Use
 {guilabel}`Reveal in Manager` to select their source rows and bring the Manager to
 the front.
@@ -78,6 +79,8 @@ There are several step types:
   {func}`erlab.plotting.plot_slices`.
 - {guilabel}`Fit plot` for measured data, a completed model fit, optional measurement
   error bars, and a model confidence band. Uses {func}`erlab.plotting.plot_fit`.
+- {guilabel}`Fit parameters` for fitted parameter values and their standard errors.
+  Select a parameter from a one-dimensional fit or plot its values across a scan.
 - {guilabel}`Line/Profile` for extracted one-dimensional profiles. This also provides an
   ability to create MDC/EDC stack plots. You can either use this step as a simple
   interface to {meth}`xarray.DataArray.plot` with 1D data, or use it to extract multiple

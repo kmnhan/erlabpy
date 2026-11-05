@@ -63,8 +63,10 @@ if typing.TYPE_CHECKING:
     import lmfit
     import varname
 
-    from erlab.interactive._figurecomposer import FigureOperationState
-    from erlab.interactive._figurecomposer._fit_sources import FigureFitSourceSnapshot
+    from erlab.interactive._figurecomposer._fit_sources import (
+        FigureFitParameterSourceSnapshot,
+        FigureFitSourceSnapshot,
+    )
     from erlab.interactive.imagetool.manager import ImageToolManager
 
 else:
@@ -1939,6 +1941,7 @@ class Fit2DTool(Fit1DTool):
         *,
         y_vals: np.ndarray | None = None,
         params_list: list[lmfit.Parameters | None] | None = None,
+        include_missing: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         if not param_name:  # pragma: no cover
             return np.array([]), np.array([]), np.array([])
@@ -1954,6 +1957,10 @@ class Fit2DTool(Fit1DTool):
         param_errors = []
         for y, params in zip(y_vals, params_list, strict=True):
             if (params is None) or (param_name not in params):
+                if include_missing:
+                    plot_y.append(y)
+                    param_values.append(np.nan)
+                    param_errors.append(np.nan)
                 continue
             param = params[param_name]
             plot_y.append(y)
@@ -2021,9 +2028,11 @@ class Fit2DTool(Fit1DTool):
         return names
 
     def _param_plot_dataarrays(
-        self, param_name: str
+        self, param_name: str, *, include_missing: bool = False
     ) -> tuple[xr.DataArray, xr.DataArray]:
-        plot_y, param_values, param_errors = self._param_plot_data(param_name)
+        plot_y, param_values, param_errors = self._param_plot_data(
+            param_name, include_missing=include_missing
+        )
         coords = {self._y_dim_name: plot_y}
         dims = (self._y_dim_name,)
         return (
@@ -2042,9 +2051,11 @@ class Fit2DTool(Fit1DTool):
         )
 
     def _param_plot_dataarrays_for_weighted_fit(
-        self, param_name: str
+        self, param_name: str, *, include_missing: bool = False
     ) -> tuple[xr.DataArray, xr.DataArray]:
-        values, stderr = self._param_plot_dataarrays(param_name)
+        values, stderr = self._param_plot_dataarrays(
+            param_name, include_missing=include_missing
+        )
         valid = np.isfinite(values) & np.isfinite(stderr) & (stderr > 0)
         return values.where(valid), stderr.where(valid)
 
@@ -2066,7 +2077,10 @@ class Fit2DTool(Fit1DTool):
                 provenance_spec=self.detached_output_imagetool_provenance(data),
             )
         else:
-            tool = self._launch_output_imagetool(data, output_id=output_id)
+            output_data = self.output_imagetool_data(output_id)
+            if output_data is None:
+                return
+            tool = self._launch_output_imagetool(output_data, output_id=output_id)
         if tool is not None:
             self._itool = tool
 
@@ -2077,10 +2091,13 @@ class Fit2DTool(Fit1DTool):
         data: xr.DataArray,
     ) -> str | None:
         output_id = self._parameter_output_id(output, param_name)
+        output_data = self.output_imagetool_data(output_id)
+        if output_data is None:
+            return None
         tool = self._open_output_imagetool(
-            data,
+            output_data,
             output_id=output_id,
-            provenance_spec=self.output_imagetool_provenance(output_id, data),
+            provenance_spec=self.output_imagetool_provenance(output_id, output_data),
             prompt_on_reuse=False,
         )
         if tool is None:
@@ -2115,66 +2132,6 @@ class Fit2DTool(Fit1DTool):
             "in ImageTool Manager.",
         )
         return None
-
-    def _parameter_figure_operation(
-        self,
-        manager: ImageToolManager,
-        *,
-        param_name: str,
-        values_target: str,
-        stderr_target: str,
-    ) -> FigureOperationState:
-        from erlab.interactive._figurecomposer import (
-            FigureMethodFamily,
-            FigureMethodPlotValueState,
-            FigureOperationState,
-        )
-
-        values_source = manager._script_input_name_for_node(
-            manager._node_for_target(values_target)
-        )
-        stderr_source = manager._script_input_name_for_node(
-            manager._node_for_target(stderr_target)
-        )
-        return FigureOperationState.method(
-            family=FigureMethodFamily.AXES,
-            name="errorbar",
-            label=param_name,
-        ).model_copy(
-            update={
-                "method_plot_data_mode": "from_data",
-                "method_plot_x": FigureMethodPlotValueState(
-                    source=values_source,
-                    kind="coord",
-                    name=str(self._y_dim_name),
-                ),
-                "method_plot_y": FigureMethodPlotValueState(
-                    source=values_source, kind="data"
-                ),
-                "method_plot_yerr": FigureMethodPlotValueState(
-                    source=stderr_source, kind="data"
-                ),
-                "method_kwargs": {
-                    "label": param_name,
-                    "linestyle": "none",
-                    "marker": "o",
-                },
-            }
-        )
-
-    def _parameter_figure_prompt_operation(
-        self, param_name: str
-    ) -> FigureOperationState:
-        from erlab.interactive._figurecomposer import (
-            FigureMethodFamily,
-            FigureOperationState,
-        )
-
-        return FigureOperationState.method(
-            family=FigureMethodFamily.AXES,
-            name="errorbar",
-            label=param_name,
-        )
 
     def _open_parameter_values_in_ftool(self) -> None:
         manager, parent_uid = self._managed_output_imagetool_parent()
@@ -2231,44 +2188,10 @@ class Fit2DTool(Fit1DTool):
             )
             return
 
-        param_name, values, stderr = current
-        target_figure = None
-        if manager._figure_uids():
-            target_figure = manager._choose_figure_append_target(
-                self._parameter_figure_prompt_operation(param_name)
-            )
-            if target_figure is None:
-                return
-
-        targets = self._parameter_output_targets(manager, param_name, values, stderr)
-        if targets is None:
-            return
-        values_target, stderr_target = targets
-
-        operation = self._parameter_figure_operation(
-            manager,
-            param_name=param_name,
-            values_target=values_target,
-            stderr_target=stderr_target,
+        param_name, _values, _stderr = current
+        manager._figure_workflows.add_fit_parameters_to_figure(
+            self, parameter=param_name
         )
-        if target_figure is None:
-            manager.create_figure_from_targets(
-                targets,
-                operation=operation,
-                title=f"{param_name} parameter plot",
-            )
-            return
-        figure_uid, axes_selection = target_figure
-        if not manager.append_figure_from_targets(
-            targets,
-            figure_uid=figure_uid,
-            axes_selection=axes_selection,
-            operation=operation,
-        ):
-            self._show_warning(
-                "Could not add to Figure",
-                "Could not add the selected parameter plot to Figure Composer.",
-            )
 
     def _update_param_plot_overlays(self) -> None:
         """Update overlay items and legend for active parameters."""
@@ -3936,6 +3859,84 @@ class Fit2DTool(Fit1DTool):
             else coordinate,
         }
 
+    def figure_parameter_source_name(self) -> str:
+        from erlab.interactive._figurecomposer._model._sources import (
+            _source_alias_candidate,
+        )
+
+        name = _source_alias_candidate(
+            self._data_full.rename(self._primary_input or self._data_name_full)
+        )
+        return f"{name or 'spectra'}_parameters"
+
+    def has_figure_parameter_source(self) -> bool:
+        return (
+            not self._fit_running()
+            and not self._fit_multi_sequence_active()
+            and not self._fit_2d_sequence_active()
+            and any(
+                self._fit_result_params(result) is not None
+                for result in self._result_ds_full[self._y_range_slice()]
+            )
+        )
+
+    def figure_parameter_source_snapshot(self) -> FigureFitParameterSourceSnapshot:
+        from erlab.interactive._figurecomposer._fit_sources import (
+            FigureFitParameterSourceSnapshot,
+        )
+
+        self._flush_restore_work()
+        if not self.has_figure_parameter_source():
+            raise ValueError("Completed fits are required to plot fit parameters")
+        indices = list(range(len(self._result_ds_full)))[self._y_range_slice()]
+        parameters = self._fit_result_params_list(
+            [self._result_ds_full[index] for index in indices]
+        )
+        names = list(
+            dict.fromkeys(name for params in parameters if params for name in params)
+        )
+        values = np.full((len(indices), len(names)), np.nan)
+        errors = np.full_like(values, np.nan)
+        for row, params in enumerate(parameters):
+            if params is None:
+                continue
+            for column, name in enumerate(names):
+                if name in params:
+                    values[row, column] = self._parameter_value(params[name])
+                    stderr = params[name].stderr
+                    if stderr is not None and np.isfinite(stderr) and stderr > 0:
+                        errors[row, column] = stderr
+        data = xr.Dataset(
+            {
+                "modelfit_coefficients": ((self._y_dim_name, "param"), values),
+                "modelfit_stderr": ((self._y_dim_name, "param"), errors),
+            },
+            coords={self._y_dim_name: self._y_values()[indices], "param": names},
+        )
+        provenance = None
+        if self._fit_is_current and all(
+            (result := self._result_ds_full[index]) is not None
+            and (
+                params := self._params
+                if index == self._current_idx
+                else self._params_full[index]
+            )
+            is not None
+            and self._figure_fit_params_match(
+                result,
+                params,
+                check_configuration=True,
+                use_restore_configuration=index in self._figure_fit_restored_indices,
+            )
+            for index in indices
+        ):
+            spec = self.current_provenance_spec(flush_deferred_restore=False)
+            if spec is not None:
+                provenance = json.loads(erlab.interactive.utils._model_dump_json(spec))
+        return FigureFitParameterSourceSnapshot.from_dataset(
+            data, provenance_spec=provenance
+        )
+
     def figure_fit_source_name(self) -> str:
         from erlab.interactive._figurecomposer._model._sources import (
             _source_alias_candidate,
@@ -4074,7 +4075,14 @@ class Fit2DTool(Fit1DTool):
     ) -> tuple[str, bool, bool] | None:
         stderr = output == self.Output.PARAMETER_STDERR
         for_weighted_fit = output == self.Output.PARAMETER_VALUES_FOR_WEIGHTED_FIT
-        if not param_name or param_name not in self._param_plot_names():
+        if not param_name or not (
+            param_name in self._params
+            or param_name in self._param_plot_names()
+            or any(
+                params is not None and param_name in params
+                for params in self._params_full[self._y_range_slice()]
+            )
+        ):
             return None
         return param_name, stderr, for_weighted_fit
 
@@ -4092,9 +4100,12 @@ class Fit2DTool(Fit1DTool):
             return None
         param_name, stderr, for_weighted_fit = request
         if for_weighted_fit:
-            values, _ = self._param_plot_dataarrays_for_weighted_fit(param_name)
+            values, _ = self._param_plot_dataarrays_for_weighted_fit(
+                param_name, include_missing=True
+            )
             return values
-        return self._param_plot_dataarray(param_name, stderr=stderr)
+        values, errors = self._param_plot_dataarrays(param_name, include_missing=True)
+        return errors if stderr else values
 
     def output_imagetool_provenance(
         self, output_id: str | enum.Enum, data: xr.DataArray
