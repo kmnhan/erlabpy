@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import datetime
 import html
+import importlib.metadata
 import itertools
 import logging
 import os
@@ -1683,21 +1684,38 @@ class _WidgetsController:
 
     def about(self) -> None:
         """Show the about dialog."""
+        import dask
         import h5netcdf
+        import h5py
+        import lmfit
+        import numba
+        import scipy
         import xarray_lmfit
 
         msg_box = self._manager._make_icon_msgbox()
 
         version_info = {
             "numpy": np.__version__,
+            "scipy": scipy.__version__,
+            "numba": numba.__version__,
             "xarray": xr.__version__,
+            "dask": dask.__version__,
+            "h5py": h5py.__version__,
             "h5netcdf": h5netcdf.__version__,
+            "lmfit": lmfit.__version__,
             "xarray-lmfit": xarray_lmfit.__version__,
             "pyqtgraph": pyqtgraph.__version__,
-            "Qt": f"{qtpy.API_NAME} {qtpy.QT_VERSION}",
-            "Python": platform.python_version(),
-            "OS": platform.platform(),
         }
+        for package in ("onnx", "onnxruntime"):
+            with contextlib.suppress(importlib.metadata.PackageNotFoundError):
+                version_info[package] = importlib.metadata.version(package)
+        version_info.update(
+            {
+                "Qt": f"{qtpy.API_NAME} {qtpy.QT_VERSION}",
+                "Python": platform.python_version(),
+                "OS": platform.platform(),
+            }
+        )
         if erlab.utils.misc._IS_PACKAGED:  # pragma: no cover
             version_info["Location"] = os.path.dirname(sys.executable).removesuffix(
                 "/Contents/MacOS"
