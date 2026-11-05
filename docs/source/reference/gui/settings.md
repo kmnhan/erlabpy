@@ -24,8 +24,8 @@ Use the sidebar to switch between setting groups:
 - {guilabel}`I/O` controls the default loader and the default folder used by
   manager file dialogs and new Data Explorer windows.
 - {guilabel}`ktool` controls defaults for newly opened momentum-conversion tools.
-- {guilabel}`Figure Composer` controls default Matplotlib stylesheets, figure DPI, and
-  export settings.
+- {guilabel}`Figure Composer` controls default Matplotlib stylesheets, custom label
+  completions, figure DPI, and export settings.
 - {guilabel}`Security` controls which workspace locations can run stored executable
   content without review.
 
@@ -36,6 +36,11 @@ confirmation.
 When Settings is opened from ImageTool Manager, a {guilabel}`Workspace` scope is also
 available. Workspace settings are local overrides saved inside the manager's `.itws`
 workspace file. Turn on the checkbox to store a value.
+
+To add label suggestions, select {guilabel}`Figure Composer` and enter one phrase per
+line in {guilabel}`Custom label completions`. These phrases follow the built-in
+suggestions in the toolbar and method editors. Changes apply when you next type a label
+or open the suggestion list.
 
 ## I/O
 

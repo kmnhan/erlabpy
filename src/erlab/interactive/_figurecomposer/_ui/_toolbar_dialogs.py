@@ -16,7 +16,7 @@ import erlab
 from erlab.interactive._completion import CompletingLineEdit, CompletingPlainTextEdit
 from erlab.interactive._figurecomposer._completion_values import (
     ASPECT_COMPLETIONS,
-    LABEL_COMPLETIONS,
+    _label_completions,
 )
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._line_colormap import (
@@ -434,11 +434,20 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     images_tab_index = tab_widget.addTab(images_tab, "Images")
 
     title_edit = _axis_plain_text_edit(axes_page, "figureComposerToolbarAxesTitleEdit")
+
+    def label_completions() -> tuple[str, ...]:
+        with tool._figure_options_context():
+            return _label_completions()
+
     xlabel_edit = _axis_plain_text_edit(
-        axes_page, "figureComposerToolbarAxesXLabelEdit", completions=LABEL_COMPLETIONS
+        axes_page,
+        "figureComposerToolbarAxesXLabelEdit",
+        completion_provider=label_completions,
     )
     ylabel_edit = _axis_plain_text_edit(
-        axes_page, "figureComposerToolbarAxesYLabelEdit", completions=LABEL_COMPLETIONS
+        axes_page,
+        "figureComposerToolbarAxesYLabelEdit",
+        completion_provider=label_completions,
     )
     xlim_edit = QtWidgets.QLineEdit(axes_page)
     xlim_edit.setObjectName("figureComposerToolbarAxesXLimEdit")
@@ -2352,11 +2361,11 @@ def _axis_plain_text_edit(
     parent: QtWidgets.QWidget,
     object_name: str,
     *,
-    completions: Sequence[str] = (),
+    completion_provider: Callable[[], Sequence[str]] | None = None,
 ) -> QtWidgets.QPlainTextEdit:
     edit = (
-        CompletingPlainTextEdit(parent=parent, completions=completions)
-        if completions
+        CompletingPlainTextEdit(parent=parent, completion_provider=completion_provider)
+        if completion_provider is not None
         else QtWidgets.QPlainTextEdit(parent)
     )
     edit.setObjectName(object_name)

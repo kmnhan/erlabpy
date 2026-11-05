@@ -20,6 +20,8 @@ from erlab.interactive._options.parameters import (
     FigureDpiOverrideWidget,
     SavefigDpiParameter,
     SavefigDpiWidget,
+    StringListParameter,
+    StringListWidget,
     StylesheetListParameter,
     StylesheetListWidget,
     TrustedFoldersParameter,
@@ -164,6 +166,49 @@ def test_figure_dpi_override_parameter_item_widget(qtbot) -> None:
 
     widget.override_check.setChecked(False)
     assert param.value() is None
+
+
+def test_string_list_editor_preserves_punctuation_and_commits_on_focus_loss(
+    qtbot,
+) -> None:
+    widget = StringListWidget(["Initial label"])
+    qtbot.addWidget(widget)
+    changes = []
+    widget.sigValuesChanged.connect(changes.append)
+
+    widget.setPlainText("  $I(k_x, E)$  \n\nCounts, normalized\n$I(k_x, E)$\n")
+
+    assert changes == []
+    assert widget.get_values() == [r"$I(k_x, E)$", "Counts, normalized"]
+    QtWidgets.QApplication.sendEvent(
+        widget, QtGui.QFocusEvent(QtCore.QEvent.Type.FocusOut)
+    )
+    assert changes == [[r"$I(k_x, E)$", "Counts, normalized"]]
+
+    QtWidgets.QApplication.sendEvent(
+        widget, QtGui.QFocusEvent(QtCore.QEvent.Type.FocusOut)
+    )
+    assert len(changes) == 1
+
+
+def test_string_list_parameter_item_widget(qtbot) -> None:
+    param = StringListParameter(name="labels", value=[r"$I(k_x, E)$"])
+    item = param.makeTreeItem(0)
+    widget = item.widget
+    qtbot.addWidget(item.layoutWidget)
+
+    assert isinstance(widget, StringListWidget)
+    assert not item.hideWidget
+    assert widget.value() == [r"$I(k_x, E)$"]
+
+    widget.setPlainText("Counts, normalized\nIntensity")
+    QtWidgets.QApplication.sendEvent(
+        widget, QtGui.QFocusEvent(QtCore.QEvent.Type.FocusOut)
+    )
+    assert param.value() == ["Counts, normalized", "Intensity"]
+
+    param.setValue([])
+    assert widget.toPlainText() == ""
 
 
 def test_savefig_dpi_parameter_item_widget(qtbot) -> None:
