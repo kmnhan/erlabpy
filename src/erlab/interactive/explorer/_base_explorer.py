@@ -770,6 +770,7 @@ class _LoaderInfoDelegate(QtWidgets.QStyledItemDelegate):
 class _LoaderWidget(QtWidgets.QComboBox):
     def __init__(self, file_browser: _DataExplorer) -> None:
         super().__init__(file_browser)
+        self._file_browser = file_browser
 
         model = _LoaderInfoModel(file_browser)
         view = QtWidgets.QTableView()
@@ -791,6 +792,13 @@ class _LoaderWidget(QtWidgets.QComboBox):
         view.setMinimumWidth(
             sum(view.columnWidth(i) for i in range(model.columnCount()))
         )
+
+    def showPopup(self) -> None:
+        if self._file_browser._disabled_loaders != set(
+            erlab.interactive.options.model.io.disabled_loaders
+        ):
+            self._file_browser.refresh_loader_choices()
+        super().showPopup()
 
     @QtCore.Slot()
     def _update_group_spans(self) -> None:
@@ -1065,6 +1073,9 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._excluded_loaders = (
             excluded_loaders if excluded_loaders is not None else set()
         )
+        self._disabled_loaders = set(
+            erlab.interactive.options.model.io.disabled_loaders
+        )
         self.setAcceptDrops(True)
         self.setWindowTitle("Data Explorer")
         root_path = root_path or os.getcwd()
@@ -1122,7 +1133,11 @@ class _DataExplorer(QtWidgets.QMainWindow):
         """Return loader names grouped for display in the loader popup."""
         builtin_names = set(BUILTIN_EXPLORER_LOADERS)
         plugin_names = (
-            (set(erlab.io.loaders.keys()) - self._excluded_loaders)
+            (
+                set(erlab.io.loaders.keys())
+                - self._excluded_loaders
+                - self._disabled_loaders
+            )
             | set(self._external_loaders)
         ) - builtin_names
 
@@ -1162,6 +1177,9 @@ class _DataExplorer(QtWidgets.QMainWindow):
         current = self._selected_loader_name or self.loader_name
         model = typing.cast("_LoaderInfoModel", self._loader_combo.model())
         with QtCore.QSignalBlocker(self._loader_combo):
+            self._disabled_loaders = set(
+                erlab.interactive.options.model.io.disabled_loaders
+            )
             model.refresh()
             loader_names = self._loader_names()
             if current in loader_names:

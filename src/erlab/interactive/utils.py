@@ -1461,6 +1461,8 @@ def _filter_to_patterns(name_filter: str) -> list[str]:
 
 def file_loaders(
     file_name: str | os.PathLike | Iterable[str | os.PathLike] | None = None,
+    *,
+    include_disabled: bool = False,
 ) -> dict[str, tuple[Callable, dict]]:
     """Generate a dictionary of namefilters and loader functions for file dialogs.
 
@@ -1470,6 +1472,8 @@ def file_loaders(
         Name of the file to load. If provided, only the loaders that match the file name
         are returned. If an iterable of file names is provided, the loaders that match
         all file names are returned.
+    include_disabled
+        Include disabled loader plugins when validating file dialog filter conflicts.
 
     Returns
     -------
@@ -1480,6 +1484,10 @@ def file_loaders(
 
     Notes
     -----
+    .. versionchanged:: 3.30.0
+
+       Loader plugins disabled in the interactive settings are omitted.
+
     When a loader and its subclasses provide the same name filter through inheritance,
     the base loader owns the filter. Subclasses should provide a filter with a different
     name to avoid conflicts. Duplicate filters from separate loader hierarchies raise a
@@ -1514,7 +1522,29 @@ def file_loaders(
             candidates[name_filter].append((loader_name, loader, method))
 
     additional_loaders: dict[str, tuple[Callable, dict]] = {}
+    disabled_loaders = (
+        set()
+        if include_disabled
+        else set(erlab.interactive.options.model.io.disabled_loaders)
+    )
     for name_filter, filter_candidates in candidates.items():
+        # Keep inherited filters owned by their base loader, even when it is hidden.
+        if any(
+            loader_name in disabled_loaders
+            and all(
+                isinstance(other_loader, type(loader))
+                for _, other_loader, _ in filter_candidates
+            )
+            for loader_name, loader, _ in filter_candidates
+        ):
+            continue
+        filter_candidates = [
+            candidate
+            for candidate in filter_candidates
+            if candidate[0] not in disabled_loaders
+        ]
+        if not filter_candidates:
+            continue
         most_general = [
             candidate
             for candidate in filter_candidates

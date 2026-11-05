@@ -325,6 +325,14 @@ class WorkspaceOptions(BaseModel):
 class IOOptions(BaseModel):
     """Top-level grouping of I/O-related options."""
 
+    disabled_loaders: list[str] = Field(
+        default_factory=list,
+        title="Enabled plugins",
+        description=(
+            "Choose the loader plugins shown in Data Explorer and file dialogs."
+        ),
+        json_schema_extra={"ui_type": "disabled_loaders"},
+    )
     default_loader: str = Field(
         default="None",
         title="Default loader",
@@ -366,6 +374,11 @@ class IOOptions(BaseModel):
         default_factory=WorkspaceOptions,
         title="Workspace",
     )
+
+    @field_validator("disabled_loaders", mode="before")
+    @classmethod
+    def normalize_disabled_loaders(cls, value: typing.Any) -> list[str]:
+        return _str_list(value)
 
     @field_validator("default_loader", mode="before")
     @classmethod

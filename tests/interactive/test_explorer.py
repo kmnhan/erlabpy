@@ -647,6 +647,49 @@ def test_explorer_loader_refresh_keeps_selection_atomic(
     assert state_changes
 
 
+def test_explorer_omits_disabled_plugins(
+    qtbot,
+    example_loader,
+    example_data_dir: pathlib.Path,
+) -> None:
+    erlab.interactive.options["io/default_loader"] = "example"
+    erlab.interactive.options["io/disabled_loaders"] = ["example", "missing-plugin"]
+    explorer = _DataExplorer(
+        root_path=example_data_dir,
+        external_loaders={"lab": erlab.io.loaders["example"]},
+    )
+    qtbot.addWidget(explorer)
+
+    assert "example" not in explorer._loader_names()
+    assert "lab" in explorer._loader_names()
+    assert set(BUILTIN_EXPLORER_LOADERS) <= set(explorer._loader_names())
+    assert explorer.loader_name in BUILTIN_EXPLORER_LOADERS
+    assert not explorer._set_loader_name("example")
+    assert erlab.interactive.options.model.io.default_loader == "example"
+
+    erlab.interactive.options["io/disabled_loaders"] = []
+    explorer.refresh_loader_choices()
+
+    assert explorer._set_loader_name("example")
+
+
+def test_explorer_loader_popup_refreshes_disabled_plugins(
+    qtbot,
+    example_loader,
+    example_data_dir: pathlib.Path,
+) -> None:
+    explorer = _DataExplorer(root_path=example_data_dir, loader_name="example")
+    qtbot.addWidget(explorer)
+    assert explorer.loader_name == "example"
+
+    erlab.interactive.options["io/disabled_loaders"] = ["example"]
+    explorer._loader_combo.showPopup()
+    explorer._loader_combo.hidePopup()
+
+    assert "example" not in explorer._loader_names()
+    assert explorer.loader_name in BUILTIN_EXPLORER_LOADERS
+
+
 def test_repr_fetcher_keeps_coordinate_values_without_preview(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,

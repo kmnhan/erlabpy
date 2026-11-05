@@ -812,7 +812,7 @@ def _reject_builtin_loader_filter_conflicts(
     candidate_filters = set(_script_loader_name_filters(record))
     if not candidate_filters:
         return
-    builtin_filters = set(erlab.interactive.utils.file_loaders())
+    builtin_filters = set(erlab.interactive.utils.file_loaders(include_disabled=True))
     conflicts = sorted(candidate_filters.intersection(builtin_filters))
     if conflicts:
         joined = ", ".join(repr(value) for value in conflicts)

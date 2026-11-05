@@ -12,6 +12,7 @@ import pytest
 import xarray as xr
 from qtpy import QtCore, QtWidgets
 
+import erlab
 import erlab.interactive._options.runtime as options_runtime
 import erlab.interactive._options.ui as options_ui
 from erlab.interactive._file_loaders import BUILTIN_FILE_LOADER_SPECS
@@ -26,6 +27,7 @@ from erlab.interactive._options.core import (
 from erlab.interactive._options.parameters import (
     ColorListWidget,
     DirectoryPathWidget,
+    DisabledLoadersWidget,
     FigureDpiOverrideWidget,
     SavefigDpiWidget,
     SavefigPaddingWidget,
@@ -451,6 +453,93 @@ def test_dialog_recent_workspace_limit_control(dialog: OptionDialog):
     assert description
     assert control.toolTip() == ""
     assert control.accessibleDescription() == description
+
+
+def test_dialog_enabled_plugins_save_reset_and_revert(qtbot):
+    path = "io/disabled_loaders"
+    options[path] = ["missing-plugin", "da30"]
+    options["io/default_loader"] = "da30"
+    dialog = OptionDialog()
+    qtbot.addWidget(dialog)
+    control = typing.cast(
+        "DisabledLoadersWidget",
+        _control(dialog, "user", path, DisabledLoadersWidget),
+    )
+    items = {
+        item.data(QtCore.Qt.ItemDataRole.UserRole): item
+        for row in range(control.list_widget.count())
+        if (item := control.list_widget.item(row)) is not None
+    }
+    assert set(items) == set(erlab.io.loaders)
+    assert all(
+        item.checkState()
+        == (
+            QtCore.Qt.CheckState.Unchecked
+            if name == "da30"
+            else QtCore.Qt.CheckState.Checked
+        )
+        for name, item in items.items()
+    )
+    default_combo = typing.cast(
+        "QtWidgets.QComboBox",
+        _control(dialog, "user", "io/default_loader", QtWidgets.QComboBox),
+    )
+    default_index = default_combo.findData("da30")
+    assert default_combo.currentData() == "da30"
+    assert not default_combo.model().flags(
+        default_combo.model().index(default_index, 0)
+    ) & (QtCore.Qt.ItemFlag.ItemIsEnabled)
+
+    with qtbot.waitSignal(dialog.sigDisabledLoadersChanged):
+        items["da30"].setCheckState(QtCore.Qt.CheckState.Checked)
+    assert OptionManager().model.io.disabled_loaders == ["missing-plugin"]
+    assert default_combo.model().flags(
+        default_combo.model().index(default_index, 0)
+    ) & (QtCore.Qt.ItemFlag.ItemIsEnabled)
+
+    with qtbot.waitSignal(dialog.sigDisabledLoadersChanged):
+        items["da30"].setCheckState(QtCore.Qt.CheckState.Unchecked)
+    assert OptionManager().model.io.disabled_loaders == ["missing-plugin", "da30"]
+    with qtbot.waitSignal(dialog.sigDisabledLoadersChanged):
+        _button(dialog, "user", path).click()
+    assert OptionManager().model.io.disabled_loaders == []
+    assert all(
+        item.checkState() == QtCore.Qt.CheckState.Checked for item in items.values()
+    )
+    with qtbot.waitSignal(dialog.sigDisabledLoadersChanged):
+        dialog.revert_changes()
+    assert OptionManager().model.io.disabled_loaders == ["missing-plugin", "da30"]
+    assert items["da30"].checkState() == QtCore.Qt.CheckState.Unchecked
+
+
+def test_dialog_enabled_plugins_are_user_only(qtbot):
+    manager = _WorkspaceManagerStub()
+    qtbot.addWidget(manager)
+    dialog = OptionDialog(manager)
+    qtbot.addWidget(dialog)
+    path = "io/disabled_loaders"
+
+    assert ("user", path) in dialog._rows
+    assert ("workspace", path) not in dialog._rows
+    assert path not in workspace_overridable_option_paths()
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, []),
+        ([], []),
+        (" missing, da30, missing, ", ["missing", "da30"]),
+        (["missing", "da30", "missing"], ["missing", "da30"]),
+    ],
+)
+def test_disabled_loader_names_allow_unavailable_plugins(value, expected):
+    model = IOOptions(disabled_loaders=value)
+    assert model.disabled_loaders == expected
+    assert (
+        IOOptions.model_validate_json(model.model_dump_json()).disabled_loaders
+        == expected
+    )
 
 
 def test_dialog_rebuild_pages_replaces_existing_pages(dialog: OptionDialog):
