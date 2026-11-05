@@ -17,13 +17,14 @@ import erlab
 from erlab.interactive.imagetool._provenance._code import (
     _DATASET_MARKER,
     _FIT_DATASET_MARKER,
-    _TUPLE_MARKER,
+    _expression_receiver_code,
     _provenance_value_code,
 )
 from erlab.interactive.imagetool._provenance._model import (
     ConsoleCall,
     ConsoleOperationPattern,
     DerivationEntry,
+    NullableProvenanceHashableTuple,
     ProvenanceFloatMapping,
     ProvenanceHashable,
     ProvenanceHashablePair,
@@ -512,12 +513,47 @@ class QSelAggregationOperation(ToolProvenanceOperation):
         return f"{input_name}.qsel.{self.func}({arg})"
 
 
+def _interpolation_expression_code(
+    input_name: str,
+    coords: Mapping[Hashable, str],
+    method: str,
+) -> str:
+    input_name = _expression_receiver_code(input_name)
+    reserved = {"coords", "method", "assume_sorted", "kwargs"}
+    if _is_identifier_string_mapping(coords) and not reserved.intersection(coords):
+        coords_code = ", ".join(f"{dim}={value}" for dim, value in coords.items())
+    else:
+        coords_code = (
+            "{"
+            + ", ".join(
+                f"{erlab.interactive.utils._parse_single_arg(dim)}: {value}"
+                for dim, value in coords.items()
+            )
+            + "}"
+        )
+    method_code = erlab.interactive.utils._parse_single_arg(method)
+    return f"{input_name}.interp({coords_code}, method={method_code})"
+
+
 class InterpolationOperation(ToolProvenanceOperation):
     op: typing.Literal["interpolate"] = "interpolate"
     batch_available: typing.ClassVar[bool] = True
-    dim: ProvenanceHashable
-    values: typing.Any
+    coords: ProvenanceMapping
     method: typing.Literal["linear", "nearest"] = "linear"
+
+    @pydantic.model_validator(mode="before")
+    @classmethod
+    def _migrate_single_coordinate(cls, value: typing.Any) -> typing.Any:
+        if not isinstance(value, Mapping) or not {"dim", "values"}.intersection(value):
+            return value
+        if "coords" in value:
+            raise ValueError("Specify coords or dim and values, not both.")
+        if "dim" not in value or "values" not in value:
+            raise ValueError("Both dim and values are required.")
+        migrated = dict(value)
+        dim = cls._coerce_hashable_field(migrated.pop("dim"))
+        migrated["coords"] = {dim: migrated.pop("values")}
+        return migrated
 
     @classmethod
     def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:
@@ -540,66 +576,208 @@ class InterpolationOperation(ToolProvenanceOperation):
         coords = _console_mapping_values(call.args, kwargs, mapping_kwargs=("coords",))
         if coords is None:
             return None
-        if len(coords) != 1:
-            return None
-        ((dim, values),) = coords.items()
-        if not isinstance(dim, Hashable):
-            return None
         with contextlib.suppress(TypeError, ValueError, pydantic.ValidationError):
-            return cls(dim=dim, values=values, method=method)
+            return cls(coords=coords, method=method)
         return None
 
-    @pydantic.field_validator("values", mode="before")
+    @pydantic.field_validator("coords")
     @classmethod
-    def _validate_values(cls, value: typing.Any) -> typing.Any:
-        encoded = cls._validate_encoded_field(
-            value,
-            error="interpolation values must be array-like",
-            predicate=lambda encoded_value: (
-                isinstance(encoded_value, list)
-                or (
-                    isinstance(encoded_value, Mapping)
-                    and _TUPLE_MARKER in encoded_value
-                )
-            ),
-        )
-        values = np.asarray(cls._decode_stored_field(encoded))
-        if values.ndim != 1:
-            raise ValueError("interpolation values must be one-dimensional.")
-        if not np.issubdtype(values.dtype, np.number) or np.issubdtype(
-            values.dtype, np.complexfloating
-        ):
-            raise TypeError("interpolation values must be real numeric values.")
-        if not np.all(np.isfinite(values.astype(np.float64, copy=False))):
-            raise ValueError("interpolation values must be finite.")
-        return encoded
+    def _validate_coords(
+        cls, value: dict[Hashable, typing.Any]
+    ) -> dict[Hashable, typing.Any]:
+        if not value:
+            raise ValueError("Interpolation requires at least one coordinate.")
+        result = {}
+        for dim, coord in value.items():
+            indexer = cls._decode_stored_field(coord)
+            values = np.asarray(indexer)
+            if values.ndim != 1:
+                raise ValueError("Interpolation values must be one-dimensional.")
+            if not np.issubdtype(values.dtype, np.number) or np.issubdtype(
+                values.dtype, np.complexfloating
+            ):
+                raise TypeError("Interpolation values must be real numeric values.")
+            if values.size == 0 or not np.all(np.isfinite(values)):
+                raise ValueError("Interpolation values must be nonempty and finite.")
+            result[dim] = (
+                encode_provenance_value(indexer.copy(deep=True))
+                if isinstance(indexer, xr.DataArray)
+                else values.tolist()
+            )
+        return result
+
+    @property
+    def decoded_coords(self) -> dict[Hashable, np.ndarray | xr.DataArray]:
+        coords = {}
+        for dim, value in self.coords.items():
+            indexer = (
+                self._decode_stored_field(value)
+                if isinstance(value, Mapping)
+                else value
+            )
+            coords[dim] = (
+                indexer.copy(deep=True)
+                if isinstance(indexer, xr.DataArray)
+                else np.asarray(indexer)
+            )
+        return coords
+
+    @property
+    def dim(self) -> Hashable:
+        if len(self.coords) != 1:
+            raise ValueError("This interpolation has more than one coordinate.")
+        return next(iter(self.coords))
+
+    @property
+    def values(self) -> typing.Any:
+        return self.coords[self.dim]
 
     @property
     def decoded_values(self) -> np.ndarray:
         return np.asarray(self._decode_stored_field(self.values))
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
-        return data.interp({self.dim: self.decoded_values}, method=self.method)
+        return data.interp(self.decoded_coords, method=self.method)
 
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
-        dim_code = erlab.interactive.utils._parse_single_arg(self.dim)
-        values_code = erlab.interactive.utils.format_1d_numeric_array_code(
-            self.decoded_values
-        )
-        method_code = erlab.interactive.utils._parse_single_arg(self.method)
-        return (
-            f"{input_name}.interp({{{dim_code}: {values_code}}}, method={method_code})"
+        return _interpolation_expression_code(
+            input_name,
+            {
+                dim: (
+                    "xr.DataArray.from_dict("
+                    + _provenance_value_code(values.to_dict(data="list"))
+                    + ")"
+                    if isinstance(values, xr.DataArray)
+                    else erlab.interactive.utils.format_1d_numeric_array_code(values)
+                )
+                for dim, values in self.decoded_coords.items()
+            },
+            self.method,
         )
 
     def derivation_label(self) -> str:
         label_kwargs = {
-            "dim": self.dim,
-            "values": self.values,
+            "coords": self.coords,
             "method": self.method,
         }
         return f"Interpolate({_format_derivation_value(label_kwargs)})"
+
+
+class InterpolationFromInputOperation(ToolProvenanceOperation):
+    op: typing.Literal["interpolate_from_input"] = "interpolate_from_input"
+    live_applicable: typing.ClassVar[bool] = False
+    dimensions: NullableProvenanceHashableTuple = None
+    method: typing.Literal["linear", "nearest"] = "linear"
+
+    @pydantic.field_validator("dimensions")
+    @classmethod
+    def _validate_dimensions(
+        cls, value: tuple[Hashable, ...] | None
+    ) -> tuple[Hashable, ...] | None:
+        if value is not None and (not value or len(set(value)) != len(value)):
+            raise ValueError("Select one or more distinct dimensions.")
+        return value
+
+    def input_slots(self) -> tuple[str, ...]:
+        return ("target",)
+
+    def target_dimensions(
+        self, data: xr.DataArray, target: xr.DataArray
+    ) -> tuple[Hashable, ...]:
+        if self.dimensions is not None:
+            return self.dimensions
+        return tuple(
+            dim
+            for dim in data.dims
+            if len(target.xindexes.get_all_coords(dim, errors="ignore")) == 1
+        )
+
+    def validate_inputs(self, data: xr.DataArray, target: xr.DataArray) -> None:
+        dimensions = self.target_dimensions(data, target)
+        if not dimensions:
+            raise ValueError("The target has no matching dimension coordinates.")
+        for dim in dimensions:
+            if dim not in data.dims:
+                raise ValueError(f"The source dimension {dim!r} is not available.")
+            if dim not in target.dims or dim not in target.coords:
+                raise ValueError(
+                    f"The target dimension coordinate {dim!r} is not available."
+                )
+            for label, coord in (
+                ("source", data[dim]),
+                ("target", target.coords[dim]),
+            ):
+                values = np.asarray(coord.values)
+                if coord.dims != (dim,) or values.ndim != 1:
+                    raise ValueError(
+                        f"The {label} coordinate {dim!r} must be one-dimensional."
+                    )
+                if not np.issubdtype(values.dtype, np.number) or np.issubdtype(
+                    values.dtype, np.complexfloating
+                ):
+                    raise TypeError(
+                        f"The {label} coordinate {dim!r} must contain real numbers."
+                    )
+                if values.size == 0 or not np.all(np.isfinite(values)):
+                    raise ValueError(
+                        f"The {label} coordinate {dim!r} must be nonempty and finite."
+                    )
+                if label == "source" and np.unique(values).size != values.size:
+                    raise ValueError(
+                        f"The source coordinate {dim!r} values must be unique."
+                    )
+
+    def apply_with_inputs(
+        self,
+        data: xr.DataArray,
+        inputs: Mapping[str, xr.DataArray],
+        *,
+        authorization: object | None = None,
+    ) -> xr.DataArray:
+        del authorization
+        target = inputs["target"]
+        self.validate_inputs(data, target)
+        if self.dimensions is None:
+            return data.interp_like(target, method=self.method)
+        return data.interp(
+            {dim: target.coords[dim] for dim in self.dimensions}, method=self.method
+        )
+
+    def expression_code_with_inputs(
+        self,
+        input_name: str,
+        inputs: Mapping[str, str],
+        *,
+        source_name: str | None = None,
+    ) -> str:
+        del source_name
+        target_name = _expression_receiver_code(inputs["target"])
+        if self.dimensions is None:
+            method_code = erlab.interactive.utils._parse_single_arg(self.method)
+            return (
+                f"{_expression_receiver_code(input_name)}.interp_like("
+                f"{target_name}, method={method_code})"
+            )
+        coords: dict[Hashable, str] = {}
+        for dim in self.dimensions:
+            if (
+                isinstance(dim, str)
+                and dim.isidentifier()
+                and not keyword.iskeyword(dim)
+                and not dim.startswith("_")
+                and not hasattr(xr.DataArray, dim)
+            ):
+                coords[dim] = f"{target_name}.{dim}"
+            else:
+                dim_code = erlab.interactive.utils._parse_single_arg(dim)
+                coords[dim] = f"{target_name}.coords[{dim_code}]"
+        return _interpolation_expression_code(input_name, coords, self.method)
+
+    def derivation_label(self) -> str:
+        label_kwargs = {"dimensions": self.dimensions, "method": self.method}
+        return f"Interpolate Like({_format_derivation_value(label_kwargs)})"
 
 
 class UniformInterpolationOperation(ToolProvenanceOperation):

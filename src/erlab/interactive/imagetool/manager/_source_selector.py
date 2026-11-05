@@ -372,6 +372,7 @@ class ManagerSourceSelector(QtWidgets.QWidget):
 
     selectionChanged = QtCore.Signal()
     candidatesChanged = QtCore.Signal()
+    refreshed = QtCore.Signal()
 
     def __init__(
         self,
@@ -464,6 +465,7 @@ class ManagerSourceSelector(QtWidgets.QWidget):
         self.set_current_uid(self._current_uid)
         if previous != self.candidate_uids:
             self.candidatesChanged.emit()
+        self.refreshed.emit()
 
     @QtCore.Slot()
     def show_popup(self) -> None:

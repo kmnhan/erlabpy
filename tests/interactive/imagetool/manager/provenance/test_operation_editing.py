@@ -44,6 +44,8 @@ from erlab.interactive.imagetool._provenance._operations import (
     ExtensionRoutineOperation,
     GaussianFilterOperation,
     ImageDerivativeOperation,
+    InterpolationFromInputOperation,
+    InterpolationOperation,
     IselOperation,
     KspaceConfigurationOperation,
     KspaceConvertOperation,
@@ -64,7 +66,7 @@ from erlab.interactive.imagetool._provenance._operations import (
 )
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 from erlab.interactive.imagetool.dialogs import SelectionDialog
-from erlab.interactive.imagetool.manager import fetch
+from erlab.interactive.imagetool.manager import fetch, replace_data
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _controller as provenance_edit_controller,
 )
@@ -79,6 +81,7 @@ from tests.interactive.imagetool.manager.helpers import (
 )
 
 from ._common import (
+    _authorize_local_edit,
     _fake_edit_controller,
     _fake_edit_node,
     _manager_provenance_file_spec,
@@ -709,6 +712,832 @@ def test_manager_edit_bound_shift_rebinds_without_script_code(
                 x=slice(0, 2)
             ),
         )
+
+
+@pytest.mark.parametrize("source_kind", ["live", "script", "file", "bound"])
+@pytest.mark.parametrize("end_bound", [False, True])
+def test_manager_edit_interpolation_modes_and_target_binding(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context,
+    tmp_path: pathlib.Path,
+    source_kind: str,
+    end_bound: bool,
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3.0), "eV": np.linspace(-0.2, 0.2, 5)},
+        name="data",
+    )
+    targets = [
+        xr.DataArray(
+            np.zeros((3, count)),
+            dims=("x", "eV"),
+            coords={"x": np.arange(3.0), "eV": np.linspace(-0.15, 0.15, count)},
+        )
+        for count in (4, 7)
+    ]
+    initial = (
+        InterpolationFromInputOperation()
+        if source_kind == "bound"
+        else InterpolationOperation(coords={"eV": np.linspace(-0.1, 0.1, 4)})
+    )
+    crop = IselOperation(kwargs={"x": slice(0, 2)})
+    with manager_context() as manager:
+        indices = [
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(value), show=False
+            )
+            for value in (data, *targets)
+        ]
+        source = manager._node_for_target(indices[0])
+        target = manager._node_for_target(indices[2])
+        if source_kind == "bound":
+            spec = manager._multi_input_operation_provenance(
+                indices[:2],
+                operation=initial,
+                active_name="interpolated",
+                start_label="Interpolate ImageTool data",
+                detached_input_uid=source.uid,
+                input_names=("data", "target"),
+                primary_input="data",
+                input_bindings={"target": "target"},
+            )
+            transformed = initial.apply_with_inputs(data, {"target": targets[0]})
+        else:
+            if source_kind == "file":
+                path = tmp_path / "source.h5"
+                data.to_netcdf(path, engine="h5netcdf")
+                spec = _manager_replay_file_spec(path, initial)
+            elif source_kind == "script":
+                spec = script(
+                    initial,
+                    start_label="Use source data",
+                    seed_code="interpolated = data",
+                    active_name="interpolated",
+                )
+            else:
+                spec = full_data(initial)
+            transformed = initial.apply(data)
+        source.replace_with_detached_data(
+            crop.apply(transformed),
+            spec.append_operations(crop),
+            replay_source_data=data,
+        )
+        spec = source.provenance_spec
+        assert spec is not None
+        row = next(
+            row
+            for row in spec.display_rows()
+            if row.edit_ref is not None
+            and isinstance(
+                spec._operation_for_ref(row.edit_ref),
+                InterpolationOperation | InterpolationFromInputOperation,
+            )
+        )
+        controller = manager._provenance_edit_controller
+        assert controller._can_edit_row(source, row) == (True, "")
+        before = source.current_source_data().copy(deep=True)
+        monkeypatch.setattr(
+            imagetool_dialogs.InterpolationDialog,
+            "exec",
+            lambda _dialog: int(QtWidgets.QDialog.DialogCode.Rejected),
+        )
+        controller._edit_operation_row(source, row)
+        assert source.provenance_spec is spec
+        xr.testing.assert_identical(source.current_source_data(), before)
+
+        manual_values = np.linspace(-0.18, 0.18, 3)
+
+        def accept_edit(dialog: imagetool_dialogs.InterpolationDialog) -> int:
+            assert dialog.slicer_area.displayed_data.sizes == data.sizes
+            if end_bound:
+                dialog.restore_manager_target(
+                    InterpolationFromInputOperation(
+                        dimensions=("eV",), method="nearest"
+                    ),
+                    target.uid,
+                )
+            else:
+                dialog.restore_transform_operation(
+                    InterpolationOperation(
+                        coords={"eV": manual_values}, method="nearest"
+                    )
+                )
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        monkeypatch.setattr(imagetool_dialogs.InterpolationDialog, "exec", accept_edit)
+        controller._edit_operation_row(source, row)
+        rebound = source.provenance_spec
+        assert rebound is not None
+        assert not any(
+            isinstance(operation, ScriptCodeOperation)
+            for operation in rebound.operations
+        )
+        if end_bound:
+            expected = data.interp(eV=targets[1].eV, method="nearest")
+            assert any(item.node_uid == target.uid for item in rebound.replay_inputs)
+            assert isinstance(rebound.operations[0], InterpolationFromInputOperation)
+        else:
+            expected = data.interp(eV=manual_values, method="nearest")
+            assert not any(
+                isinstance(operation, InterpolationFromInputOperation)
+                for operation in rebound.operations
+            )
+            assert not any(item.name == "target" for item in rebound.replay_inputs)
+        xr.testing.assert_identical(source.current_source_data(), crop.apply(expected))
+        generated = _exec_generated_code(
+            rebound.display_code(), {"data": data, "target": targets[1]}
+        )
+        xr.testing.assert_identical(
+            generated[rebound.active_name or "derived"], source.current_source_data()
+        )
+        if end_bound:
+            bound_row = next(
+                row
+                for row in rebound.display_rows()
+                if row.edit_ref is not None
+                and isinstance(
+                    rebound._operation_for_ref(row.edit_ref),
+                    InterpolationFromInputOperation,
+                )
+            )
+
+            def accept_manual(dialog: imagetool_dialogs.InterpolationDialog) -> int:
+                dialog.restore_transform_operation(
+                    InterpolationOperation(
+                        coords={"eV": manual_values}, method="nearest"
+                    )
+                )
+                return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+            monkeypatch.setattr(
+                imagetool_dialogs.InterpolationDialog, "exec", accept_manual
+            )
+            controller._edit_operation_row(source, bound_row)
+            manual_spec = source.provenance_spec
+            assert manual_spec is not None
+            assert all(item.name != "target" for item in manual_spec.replay_inputs)
+            assert not any(
+                target.uid == item.node_uid for item in manual_spec.replay_inputs
+            )
+            xr.testing.assert_identical(
+                source.current_source_data(),
+                crop.apply(data.interp(eV=manual_values, method="nearest")),
+            )
+
+
+def test_manager_edit_interpolation_retains_recorded_target(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context,
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3.0), "eV": np.linspace(-0.2, 0.2, 5)},
+    )
+    target_data = data.isel(eV=[0, 2, 4])
+    operation = InterpolationFromInputOperation()
+    with manager_context() as manager:
+        indices = [
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(value), show=False
+            )
+            for value in (data, target_data)
+        ]
+        source = manager._node_for_target(indices[0])
+        spec = manager._multi_input_operation_provenance(
+            indices,
+            operation=operation,
+            active_name="interpolated",
+            start_label="Interpolate ImageTool data",
+            detached_input_uid=source.uid,
+            input_names=("data", "target"),
+            primary_input="data",
+            input_bindings={"target": "target"},
+        )
+        spec = spec.with_replay_inputs(
+            tuple(
+                item.model_copy(
+                    update={
+                        "node_uid": None,
+                        "node_snapshot_token": None,
+                        "follow_source": False,
+                    }
+                )
+                if item.name == "target"
+                else item
+                for item in spec.replay_inputs
+            )
+        )
+        source.replace_with_detached_data(
+            data.interp_like(target_data), spec, replay_source_data=data
+        )
+        spec = source.provenance_spec
+        assert spec is not None
+        recorded_target = spec.replay_inputs[-1]
+        row = next(
+            row
+            for row in spec.display_rows()
+            if row.edit_ref is not None
+            and isinstance(
+                spec._operation_for_ref(row.edit_ref), InterpolationFromInputOperation
+            )
+        )
+
+        def accept_edit(dialog: imagetool_dialogs.InterpolationDialog) -> int:
+            assert dialog.target_tool_selector.current_uid is None
+            assert dialog._recorded_target is not None
+            xr.testing.assert_identical(dialog._recorded_target, target_data)
+            dialog.method_combo.setCurrentText("nearest")
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        monkeypatch.setattr(imagetool_dialogs.InterpolationDialog, "exec", accept_edit)
+        manager._provenance_edit_controller._edit_operation_row(source, row)
+        changed = source.provenance_spec
+        assert changed is not None
+        assert changed.replay_inputs[-1] == recorded_target
+        assert changed.steps[0].operation == InterpolationFromInputOperation(
+            method="nearest"
+        )
+        xr.testing.assert_identical(
+            source.current_source_data(),
+            data.interp_like(target_data, method="nearest"),
+        )
+
+
+@pytest.mark.parametrize("failure", ["cycle", "stale", "selection_lost"])
+def test_manager_interpolation_edit_preflight_keeps_existing_result(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context,
+    failure: str,
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3.0), "eV": np.linspace(-0.2, 0.2, 5)},
+    )
+    operation = InterpolationOperation(coords={"eV": np.linspace(-0.1, 0.1, 3)})
+    with manager_context() as manager:
+        indices = [
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(value), show=False
+            )
+            for value in (data, data.isel(eV=[0, 2, 4]))
+        ]
+        source = manager._node_for_target(indices[0])
+        target = manager._node_for_target(indices[1])
+        source.replace_with_detached_data(
+            operation.apply(data), full_data(operation), replay_source_data=data
+        )
+        before = source.provenance_spec
+        assert before is not None
+        before_data = source.current_source_data().copy(deep=True)
+        row = next(row for row in before.display_rows() if row.edit_ref is not None)
+        after_accept = False
+        original_candidate_data = imagetool_dialogs.InterpolationDialog._candidate_data
+
+        def candidate_data(dialog, *args):
+            if after_accept and failure == "stale":
+                raise ValueError("The selected interpolation target is not current.")
+            return original_candidate_data(dialog, *args)
+
+        monkeypatch.setattr(
+            imagetool_dialogs.InterpolationDialog, "_candidate_data", candidate_data
+        )
+        original_operation = (
+            imagetool_dialogs.InterpolationDialog.source_transform_operation
+        )
+
+        def operation_then_close_target(dialog):
+            result = original_operation(dialog)
+            if after_accept and failure == "selection_lost":
+                dialog.target_tool_selector.set_current_uid(None)
+            return result
+
+        monkeypatch.setattr(
+            imagetool_dialogs.InterpolationDialog,
+            "source_transform_operation",
+            operation_then_close_target,
+        )
+
+        def accept_edit(dialog: imagetool_dialogs.InterpolationDialog) -> int:
+            nonlocal after_accept
+            dialog.restore_manager_target(InterpolationFromInputOperation(), target.uid)
+            after_accept = True
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        monkeypatch.setattr(imagetool_dialogs.InterpolationDialog, "exec", accept_edit)
+        if failure == "cycle":
+            monkeypatch.setattr(
+                manager._dependency_tracker,
+                "transitively_depends_on",
+                lambda *_args: True,
+            )
+        message = {
+            "cycle": "dependency cycle",
+            "stale": "not current",
+            "selection_lost": "Select a compatible target",
+        }[failure]
+        with pytest.raises((RuntimeError, TypeError, ValueError), match=message):
+            manager._provenance_edit_controller._edit_operation_row(source, row)
+        assert source.provenance_spec is before
+        xr.testing.assert_identical(source.current_source_data(), before_data)
+
+
+@pytest.mark.parametrize("script_consumer", [False, True])
+def test_manager_interpolation_edit_keeps_other_steps_target_binding(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context,
+    script_consumer: bool,
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3.0), "eV": np.linspace(-0.2, 0.2, 5)},
+    )
+    first_target = data.isel(eV=[0, 2, 4])
+    second_target = data.isel(eV=[1, 3])
+    operation = InterpolationFromInputOperation()
+    with manager_context() as manager:
+        manager._workspace_controller.local_code_edit = _authorize_local_edit
+        indices = [
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(value), show=False
+            )
+            for value in (data, first_target, second_target)
+        ]
+        source = manager._node_for_target(indices[0])
+        second_node = manager._node_for_target(indices[2])
+        spec = manager._multi_input_operation_provenance(
+            indices[:2],
+            operation=operation,
+            active_name="interpolated",
+            start_label="Interpolate ImageTool data",
+            detached_input_uid=source.uid,
+            input_names=("data", "target"),
+            primary_input="data",
+            input_bindings={"target": "target"},
+        )
+        if script_consumer:
+            spec = spec.append_operations(
+                ScriptCodeOperation(
+                    label="Use target intensity",
+                    code="interpolated = data + target.mean()",
+                )
+            )
+            initial = data.interp_like(first_target) + first_target.mean()
+        else:
+            spec = spec.model_copy(update={"steps": (*spec.steps, spec.steps[0])})
+            initial = data.interp_like(first_target).interp_like(first_target)
+        original_target_input = spec.replay_inputs[-1]
+        source.replace_with_detached_data(
+            initial,
+            spec,
+            replay_source_data=data,
+        )
+        spec = source.provenance_spec
+        assert spec is not None
+        row = next(
+            row
+            for row in spec.display_rows()
+            if row.edit_ref == _ProvenanceStepRef("operation", operation_index=0)
+        )
+
+        def accept_edit(dialog: imagetool_dialogs.InterpolationDialog) -> int:
+            dialog.restore_manager_target(operation, second_node.uid)
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        monkeypatch.setattr(imagetool_dialogs.InterpolationDialog, "exec", accept_edit)
+        manager._provenance_edit_controller._edit_operation_row(source, row)
+        changed = source.provenance_spec
+        assert changed is not None
+        assert changed.steps[0].input_bindings == {"target": "target_1"}
+        assert changed.steps[1].input_bindings == (
+            {} if script_consumer else {"target": "target"}
+        )
+        assert (
+            next(item for item in changed.replay_inputs if item.name == "target")
+            == original_target_input
+        )
+        assert changed.replay_inputs[-1].node_uid == second_node.uid
+        expected = (
+            data.interp_like(second_target) + first_target.mean()
+            if script_consumer
+            else data.interp_like(second_target).interp_like(first_target)
+        )
+        xr.testing.assert_identical(source.current_source_data(), expected)
+        copied = _exec_generated_code(
+            changed.display_code(),
+            {"data": data, "target": first_target, "target_1": second_target},
+        )
+        xr.testing.assert_identical(copied[changed.active_name], expected)
+
+
+@pytest.mark.parametrize("bound", [False, True])
+def test_manager_interpolation_multirow_editability(
+    monkeypatch: pytest.MonkeyPatch, bound: bool
+) -> None:
+    operation = (
+        InterpolationFromInputOperation()
+        if bound
+        else InterpolationOperation(coords={"x": [0.25, 0.75]})
+    )
+    spec = (
+        recipe(
+            ReplayStep(operation=operation, input_bindings={"target": "target"}),
+            start_label="Interpolate data",
+            active_name="interpolated",
+            script_inputs=(ScriptInput(name="data"), ScriptInput(name="target")),
+            primary_input="data",
+        )
+        if bound
+        else full_data(operation)
+    )
+    first = _fake_edit_node(spec, uid="first")
+    second = _fake_edit_node(spec, uid="second")
+    controller = _fake_edit_controller(nodes={"first": first, "second": second})
+    monkeypatch.setattr(
+        controller, "_can_edit_row", lambda *_args, **_kwargs: (True, "")
+    )
+    row = next(row for row in spec.display_rows() if row.edit_ref is not None)
+    expected = (
+        (False, "Edit one bound interpolation step at a time.") if bound else (True, "")
+    )
+    assert controller.can_edit_rows((("first", row), ("second", row))) == expected
+
+
+def test_manager_interpolation_edit_rejects_unavailable_or_invalid_step() -> None:
+    operation = InterpolationFromInputOperation()
+    ref = _ProvenanceStepRef("operation", operation_index=0)
+    row = _ProvenanceDisplayRow(DerivationEntry("Interpolate", None), edit_ref=ref)
+    spec = recipe(
+        ReplayStep(operation=operation, input_bindings={"target": "target"}),
+        start_label="Interpolate data",
+        active_name="interpolated",
+        script_inputs=(ScriptInput(name="data"), ScriptInput(name="target")),
+        primary_input="data",
+    )
+    node = _fake_edit_node(spec)
+    controller = _fake_edit_controller(node)
+    node.imagetool = None
+    with pytest.raises(RuntimeError, match="target is not available"):
+        controller._edit_interpolation_operation_row(node, row, spec, ref, operation)
+    node.imagetool = object()
+    with pytest.raises(RuntimeError, match="target is not available"):
+        controller._edit_interpolation_operation_row(
+            node,
+            row,
+            spec,
+            _ProvenanceStepRef("operation"),
+            operation,
+        )
+
+    live_spec = full_data(operation)
+    live_node = _fake_edit_node(live_spec)
+    live_controller = _fake_edit_controller(live_node)
+    live_row = next(row for row in live_spec.display_rows() if row.edit_ref is not None)
+    assert live_controller._can_edit_row(live_node, live_row) == (
+        False,
+        "This bound interpolation step is not editable.",
+    )
+
+    # A row can outlive the recipe data which supplied its target binding.
+    missing = types.SimpleNamespace(
+        kind="script",
+        steps=(types.SimpleNamespace(input_bindings={}),),
+        replay_inputs=(),
+        _operation_for_ref=lambda _ref: operation,
+    )
+    invalid_node = _fake_edit_node(typing.cast("typing.Any", missing))
+    invalid_controller = _fake_edit_controller(invalid_node)
+    assert invalid_controller._can_edit_row(invalid_node, row) == (
+        False,
+        "This interpolation step has no target input.",
+    )
+    with pytest.raises(RuntimeError, match="has no target input"):
+        invalid_controller._edit_interpolation_operation_row(
+            invalid_node, row, typing.cast("typing.Any", missing), ref, operation
+        )
+
+
+def test_manager_interpolation_editor_constructor_failure_closes_temporary_tool(
+    qtbot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(3, 2), dims=("x", "y"), coords={"x": np.arange(3.0)}
+    )
+    operation = InterpolationOperation(coords={"x": [0.25, 1.75]})
+    spec = full_data(operation)
+    node = _fake_edit_node(spec)
+    controller = _fake_edit_controller(node)
+    monkeypatch.setattr(
+        controller,
+        "_replay_candidate_result",
+        lambda *_args: manager_widgets._ProvenanceReplayResult(data, spec),
+    )
+    closed = []
+    deleted = []
+    image_tool_cls = erlab.interactive.imagetool.ImageTool
+    close = image_tool_cls.close
+    delete_later = image_tool_cls.deleteLater
+
+    def record_close(tool):
+        closed.append(tool)
+        return close(tool)
+
+    def record_delete(tool):
+        deleted.append(tool)
+        return delete_later(tool)
+
+    def failed_dialog(*_args, **_kwargs):
+        raise RuntimeError("The target controls could not be created")
+
+    monkeypatch.setattr(image_tool_cls, "close", record_close)
+    monkeypatch.setattr(image_tool_cls, "deleteLater", record_delete)
+    monkeypatch.setattr(imagetool_dialogs, "InterpolationDialog", failed_dialog)
+    row = next(row for row in spec.display_rows() if row.edit_ref is not None)
+    with pytest.raises(RuntimeError, match="controls could not be created"):
+        controller._edit_interpolation_operation_row(
+            node,
+            row,
+            spec,
+            typing.cast("_ProvenanceStepRef", row.edit_ref),
+            operation,
+        )
+    assert len(closed) == 1
+    assert deleted == closed
+    qtbot.wait_until(lambda: not erlab.interactive.utils.qt_is_valid(closed[0]))
+
+
+def test_manager_interpolation_edit_avoids_existing_input_names(
+    qtbot, monkeypatch: pytest.MonkeyPatch, manager_context
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3.0), "eV": np.linspace(-0.2, 0.2, 5)},
+    )
+    correction = data + 1.0
+    grid = data.isel(eV=[0, 2, 4])
+    operation = InterpolationOperation(coords={"eV": np.linspace(-0.1, 0.1, 4)})
+    with manager_context() as manager:
+        manager._workspace_controller.local_code_edit = _authorize_local_edit
+        indices = [
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(value), show=False
+            )
+            for value in (data, correction, grid)
+        ]
+        inputs = tuple(
+            manager._lineage_controller._script_input_for_node(
+                manager._node_for_target(index), name=name
+            )
+            for index, name in zip(indices[:2], ("data", "target"), strict=True)
+        )
+        original = script(
+            operation,
+            start_label="Use corrected data",
+            seed_code="derived = data + target.mean()",
+            active_name="derived",
+            script_inputs=inputs,
+        )
+        prepared = data + correction.mean()
+        result_index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(operation.apply(prepared)),
+            show=False,
+            provenance_spec=original,
+        )
+        result_node = manager._node_for_target(result_index)
+        target = manager._node_for_target(indices[2])
+        row = next(row for row in original.display_rows() if row.edit_ref is not None)
+
+        def accept_edit(dialog: imagetool_dialogs.InterpolationDialog) -> int:
+            dialog.restore_manager_target(InterpolationFromInputOperation(), target.uid)
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        monkeypatch.setattr(imagetool_dialogs.InterpolationDialog, "exec", accept_edit)
+        manager._provenance_edit_controller._edit_interpolation_operation_row(
+            result_node,
+            row,
+            original,
+            typing.cast("_ProvenanceStepRef", row.edit_ref),
+            operation,
+        )
+        changed = result_node.provenance_spec
+        assert changed is not None
+        assert changed.replay_primary_input == "data_1"
+        assert changed.steps[0].input_bindings == {"target": "target_1"}
+        assert changed.root_input is not None
+        producer = changed.root_input.parsed_provenance_spec()
+        assert producer is not None
+        assert producer.replay_inputs == inputs
+        copied = _exec_generated_code(
+            changed.display_code(),
+            {"data": data, "target": correction, "target_1": grid},
+        )
+        expected = prepared.interp_like(grid)
+        xr.testing.assert_identical(copied[changed.active_name], expected)
+        xr.testing.assert_identical(result_node.current_source_data(), expected)
+
+
+@pytest.mark.parametrize("source_available", [False, True])
+def test_manager_interpolation_promotion_pins_detached_replay_source(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context,
+    source_available: bool,
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3.0), "eV": np.linspace(-0.2, 0.2, 5)},
+    )
+    operation = InterpolationOperation(coords={"eV": np.linspace(-0.1, 0.1, 4)})
+    original = full_data(operation)
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data),
+            show=False,
+        )
+        node = manager._node_for_target(index)
+        node.replace_with_detached_data(
+            operation.apply(data), original, replay_source_data=data
+        )
+        # Legacy detached recipes keep their seed outside named replay inputs.
+        node._replay_source_data = data
+        controller = manager._provenance_edit_controller
+        row = next(row for row in original.display_rows() if row.edit_ref is not None)
+        if not source_available:
+            replay = controller._replay_candidate_result
+
+            def replay_and_close_source(*args, **kwargs):
+                result = replay(*args, **kwargs)
+                monkeypatch.setattr(node, "resolved_replay_source_data", lambda: None)
+                return result
+
+            monkeypatch.setattr(
+                controller, "_replay_candidate_result", replay_and_close_source
+            )
+            with pytest.raises(RuntimeError, match="input source is unavailable"):
+                controller._interpolation_named_input_spec(node, row, original)
+            return
+        promoted = controller._interpolation_named_input_spec(node, row, original)
+        assert promoted.root_input is not None
+        producer = promoted.root_input.parsed_provenance_spec()
+        assert producer is not None
+        assert len(producer.replay_inputs) == 1
+        captured = producer.replay_inputs[0]
+        assert not captured.follow_source
+        assert captured.node_uid is None
+        assert captured.revision_id is not None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(captured.revision_id), data
+        )
+        copied = _exec_generated_code(promoted.display_code(), {"data": data})
+        xr.testing.assert_identical(copied[promoted.active_name], operation.apply(data))
+        rebuilt = manager._lineage_controller._rebuild_script_provenance(
+            promoted, target_node_uid=node.uid
+        ).data
+        xr.testing.assert_identical(rebuilt, operation.apply(data))
+
+
+def test_manager_interpolation_promotion_keeps_parent_source_binding(
+    qtbot, monkeypatch: pytest.MonkeyPatch, manager_context
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3.0), "eV": np.linspace(-0.2, 0.2, 5)},
+    )
+    operation = InterpolationOperation(coords={"eV": np.linspace(-0.1, 0.1, 4)})
+    crop = IselOperation(kwargs={"x": slice(0, 2)})
+    source_spec = full_data(operation, crop)
+    display_filter = NormalizeOperation(dims=("eV",), mode="minmax")
+    grid = data.isel(eV=[0, 2, 4])
+    with manager_context() as manager:
+        parent_index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data), show=False
+        )
+        target_index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(grid), show=False
+        )
+        child_uid = manager.add_imagetool_child(
+            erlab.interactive.imagetool.ImageTool(source_spec.apply(data)),
+            parent_index,
+            show=False,
+            source_spec=source_spec,
+            source_state="fresh",
+        )
+        parent = manager._node_for_target(parent_index)
+        target = manager._node_for_target(target_index)
+        child = manager._node_for_target(child_uid)
+        child.slicer_area.apply_filter_operation(display_filter)
+        row = next(
+            row
+            for row in source_spec.display_rows(scope="source")
+            if row.edit_ref is not None
+        )
+        promoted = manager._provenance_edit_controller._interpolation_named_input_spec(
+            child, row, source_spec
+        )
+        assert promoted.root_input is not None
+        producer = promoted.root_input.parsed_provenance_spec()
+        assert producer is not None
+        assert producer.replay_inputs[0].node_uid == parent.uid
+        assert producer.replay_inputs[0].data_role == "source"
+        assert producer.replay_inputs[0].follow_source
+        copied = _exec_generated_code(promoted.display_code(), {"data": data})
+        xr.testing.assert_identical(
+            copied[promoted.active_name], source_spec.apply(data)
+        )
+        rebuilt = manager._lineage_controller._rebuild_script_provenance(
+            promoted, target_node_uid=child.uid
+        ).data
+        xr.testing.assert_identical(rebuilt, source_spec.apply(data))
+
+        manual_values = np.linspace(-0.15, 0.15, 6)
+
+        def accept_manual(dialog: imagetool_dialogs.InterpolationDialog) -> int:
+            dialog.restore_transform_operation(
+                InterpolationOperation(coords={"eV": manual_values})
+            )
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        monkeypatch.setattr(
+            imagetool_dialogs.InterpolationDialog, "exec", accept_manual
+        )
+        displayed_source = child.displayed_source_spec
+        assert displayed_source is not None
+        edit_row = next(
+            row
+            for row in displayed_source.display_rows(scope="source")
+            if row.edit_ref is not None
+        )
+        manager._provenance_edit_controller._edit_operation_row(child, edit_row)
+        assert child.source_spec is not None
+        assert child.parent_uid == parent.uid
+        assert child.slicer_area._accepted_filter_provenance_operation == display_filter
+        manual_expected = crop.apply(data.interp(eV=manual_values))
+        xr.testing.assert_identical(child.data_for_role("source"), manual_expected)
+        xr.testing.assert_identical(
+            child.slicer_area.displayed_data, display_filter.apply(manual_expected)
+        )
+
+        def accept_edit(dialog: imagetool_dialogs.InterpolationDialog) -> int:
+            dialog.restore_manager_target(InterpolationFromInputOperation(), target.uid)
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        monkeypatch.setattr(imagetool_dialogs.InterpolationDialog, "exec", accept_edit)
+        displayed_source = child.displayed_source_spec
+        assert displayed_source is not None
+        edit_row = next(
+            row
+            for row in displayed_source.display_rows(scope="source")
+            if row.edit_ref is not None
+        )
+        manager._provenance_edit_controller._edit_operation_row(child, edit_row)
+        assert child.source_spec is None
+        assert child.parent_uid == parent.uid
+        assert child.slicer_area._accepted_filter_provenance_operation == display_filter
+        expected = crop.apply(data.interp_like(grid))
+        xr.testing.assert_identical(child.data_for_role("source"), expected)
+        xr.testing.assert_identical(
+            child.slicer_area.displayed_data, display_filter.apply(expected)
+        )
+        dependencies = {
+            item.node_uid
+            for item in manager._lineage_controller._dependency_refs_for_uid(child.uid)
+        }
+        assert dependencies == {parent.uid, target.uid}
+
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(parent_index, data + 10.0)
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(child.uid) == "changed"
+        )
+        assert child.reload_source_data()
+        updated = crop.apply((data + 10.0).interp_like(grid))
+        xr.testing.assert_identical(child.data_for_role("source"), updated)
+        xr.testing.assert_identical(
+            child.slicer_area.displayed_data, display_filter.apply(updated)
+        )
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(target_index, data)
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(child.uid) == "changed"
+        )
+        assert child.reload_source_data()
+        updated = crop.apply((data + 10.0).interp_like(data))
+        xr.testing.assert_identical(child.data_for_role("source"), updated)
+        xr.testing.assert_identical(
+            child.slicer_area.displayed_data, display_filter.apply(updated)
+        )
+        assert manager.dependency_status_for_uid(child.uid) == "current"
 
 
 def test_manager_bound_shift_editability_rejects_invalid_and_multiple_rows(

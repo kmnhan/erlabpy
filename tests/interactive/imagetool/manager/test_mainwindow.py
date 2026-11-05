@@ -67,6 +67,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     DropScalarCoordsOperation,
     ImageDerivativeOperation,
     ImageToolSelectionSourceBinding,
+    InterpolationFromInputOperation,
     IselOperation,
     NormalizeOperation,
     RenameOperation,
@@ -9190,6 +9191,695 @@ def test_manager_goldtool_output_itool_nests_under_tool(
         assert "edge = era.gold.poly(" in edge_code
         assert "return_edge=True" in edge_code
         assert "correct_with_edge" not in edge_code
+
+
+@pytest.mark.parametrize("dimensions", [None, ("eV",)])
+@pytest.mark.parametrize("method", ["linear", "nearest"])
+def test_manager_interpolation_dialog_uses_target_coordinates(
+    qtbot, manager_context, dimensions, method
+) -> None:
+    data = xr.DataArray(
+        np.arange(1.0, 13.0).reshape(3, 4),
+        dims=("x", "eV"),
+        coords={"x": [0.0, 1.0, 2.0], "eV": [-0.3, -0.1, 0.1, 0.3]},
+        name="scan",
+    )
+    target = xr.DataArray(
+        np.zeros((2, 3)),
+        dims=("x", "eV"),
+        coords={"x": [0.25, 1.25], "eV": [-0.2, 0.0, 0.2]},
+        name="reference",
+    )
+    with manager_context() as manager:
+        source_tool = itool(data, manager=False, execute=False)
+        source_index = manager.add_imagetool(source_tool, show=False)
+        target_index = manager.add_imagetool(
+            itool(target, manager=False, execute=False), show=False
+        )
+        source_node = manager._node_for_target(source_index)
+        target_node = manager._node_for_target(target_index)
+        source_tool.slicer_area.apply_filter_operation(
+            NormalizeOperation(dims=("eV",), mode="min")
+        )
+        displayed = source_tool.slicer_area.displayed_data
+        dialog = imagetool_dialogs.InterpolationDialog(source_tool.slicer_area)
+        qtbot.addWidget(dialog)
+        dialog.target_tabs.setCurrentIndex(1)
+        assert not dialog.copy_button.isEnabled()
+        dialog.target_tool_selector.set_current_uid(target_node.uid)
+        if dimensions is not None:
+            for row in range(dialog.target_coords_table.rowCount()):
+                item = dialog.target_coords_table.item(row, 0)
+                if item.data(QtCore.Qt.ItemDataRole.UserRole) not in dimensions:
+                    item.setCheckState(QtCore.Qt.CheckState.Unchecked)
+        dialog.method_combo.setCurrentText(method)
+        assert dialog.launch_mode == "nest"
+        operation = dialog.source_transform_operation()
+        assert isinstance(operation, InterpolationFromInputOperation)
+        assert operation.dimensions == dimensions
+        expected = (
+            displayed.interp_like(target, method=method)
+            if dimensions is None
+            else displayed.interp(
+                {dim: target.coords[dim] for dim in dimensions}, method=method
+            )
+        )
+        copied = _exec_generated_code(
+            f"interpolated = {dialog.make_code()}",
+            {"data": displayed, "target": target},
+        )
+        xr.testing.assert_identical(copied["interpolated"], expected)
+
+        dialog.accept()
+
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+        child_uid = source_node._childtool_indices[-1]
+        child = manager._child_node(child_uid)
+        xr.testing.assert_identical(child.data_for_role("source"), expected)
+        spec = child.provenance_spec
+        assert spec is not None
+        assert spec.kind == "script"
+        assert spec.active_name == "interpolated"
+        assert spec.primary_input == "data"
+        assert isinstance(spec.steps[0].operation, InterpolationFromInputOperation)
+        assert spec.steps[0].operation.dimensions == dimensions
+        assert spec.steps[0].input_bindings == {"target": "target"}
+        assert [item.node_uid for item in spec.script_inputs] == [
+            source_node.uid,
+            target_node.uid,
+        ]
+        assert [item.data_role for item in spec.script_inputs] == [
+            "displayed",
+            "displayed",
+        ]
+        assert not any(
+            isinstance(item, ScriptCodeOperation) for item in spec.operations
+        )
+        assert manager.dependency_status_for_uid(child_uid) == "current"
+
+
+def test_manager_interpolation_dialog_preserves_size_during_target_selection(
+    qtbot, manager_context
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "eV"),
+        coords={"x": [0.0, 1.0, 2.0], "eV": [-0.3, -0.1, 0.1, 0.3]},
+    )
+    target = data.isel(x=[0, 2], eV=[0, 2])
+    with manager_context() as manager:
+        source_tool = itool(data, manager=False, execute=False)
+        manager.add_imagetool(source_tool, show=False)
+        target_index = manager.add_imagetool(
+            itool(target, manager=False, execute=False), show=False
+        )
+        target_uid = manager._node_for_target(target_index).uid
+        dialog = imagetool_dialogs.InterpolationDialog(source_tool.slicer_area)
+        qtbot.addWidget(dialog)
+        with qtbot.waitExposed(dialog):
+            dialog.show()
+        dialog.target_tabs.setCurrentIndex(1)
+        QtWidgets.QApplication.processEvents()
+        dialog.resize(dialog.width() + 160, dialog.height() + 200)
+        QtWidgets.QApplication.processEvents()
+        user_size = QtCore.QSize(dialog.size())
+        selector = dialog.target_tool_selector
+
+        selector._button.click()
+        qtbot.wait_until(selector._popup.isVisible)
+        assert selector.current_uid is None
+        assert dialog.size() == user_size
+        qtbot.keyClick(selector._content.search_edit, QtCore.Qt.Key.Key_Escape)
+        assert not selector._popup.isVisible()
+        assert selector.current_uid is None
+        assert dialog.size() == user_size
+
+        selector._button.click()
+        qtbot.wait_until(selector._popup.isVisible)
+        selector._content.select_uid(target_uid)
+        qtbot.keyClick(selector._content.tree, QtCore.Qt.Key.Key_Return)
+        QtWidgets.QApplication.processEvents()
+        assert selector.current_uid == target_uid
+        assert not selector._popup.isVisible()
+        assert dialog.size() == user_size
+
+        updated = target.assign_coords(eV=[-0.25, 0.25])
+        manager._data_replace([updated], [target_index])
+        selector.refresh()
+        QtWidgets.QApplication.processEvents()
+        assert selector.current_uid == target_uid
+        assert dialog.size() == user_size
+        dialog.target_tabs.setCurrentIndex(0)
+        QtWidgets.QApplication.processEvents()
+        assert dialog.size() == user_size
+        dialog.target_tabs.setCurrentIndex(1)
+        QtWidgets.QApplication.processEvents()
+        assert dialog.size() == user_size
+
+        assert dialog.target_tabs.parentWidget() is dialog
+        page = dialog.target_tabs.widget(1)
+        layout = page.layout()
+        spacer = layout.itemAt(layout.count() - 1).spacerItem()
+        assert spacer is not None
+        assert spacer.expandingDirections() & QtCore.Qt.Orientation.Vertical
+        assert spacer.geometry().height() > 0
+        assert layout.itemAt(0).geometry().top() == layout.contentsRect().top()
+        assert (
+            selector.geometry().bottom() < dialog.target_coords_table.geometry().top()
+        )
+        assert dialog.target_coords_table.geometry().bottom() < spacer.geometry().top()
+
+
+def test_manager_interpolation_dialog_refreshes_selected_target(
+    qtbot, monkeypatch, manager_context
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "eV"),
+        coords={"x": [0.0, 1.0, 2.0], "eV": [-0.3, -0.1, 0.1, 0.3]},
+    )
+    target = data.isel(x=[0, 2], eV=[0, 2])
+    with manager_context() as manager:
+        source_tool = itool(data, manager=False, execute=False)
+        manager.add_imagetool(source_tool, show=False)
+        target_index = manager.add_imagetool(
+            itool(target, manager=False, execute=False), show=False
+        )
+        target_node = manager._node_for_target(target_index)
+        dialog = imagetool_dialogs.InterpolationDialog(source_tool.slicer_area)
+        qtbot.addWidget(dialog)
+        dialog.target_tabs.setCurrentIndex(1)
+        dialog.target_tool_selector.set_current_uid(target_node.uid)
+        dialog.target_coords_table.item(0, 0).setCheckState(
+            QtCore.Qt.CheckState.Unchecked
+        )
+        assert dialog.source_transform_operation().dimensions == ("eV",)
+        dialog.target_coords_table.item(0, 0).setCheckState(
+            QtCore.Qt.CheckState.Checked
+        )
+        assert dialog._selected_target_dimensions is None
+        assert dialog.source_transform_operation().dimensions is None
+        dialog.target_coords_table.item(0, 0).setCheckState(
+            QtCore.Qt.CheckState.Unchecked
+        )
+        previous_summary = dialog.target_coords_table.item(1, 2).text()
+        updated = data.isel(x=[0, 2]).assign_coords(eV=[-0.25, -0.05, 0.05, 0.25])
+
+        manager._data_replace([updated], [target_index])
+        dialog.target_tool_selector.refresh()
+
+        assert dialog.target_tool_selector.current_uid == target_node.uid
+        assert dialog.target_coords_table.item(0, 0).checkState() == (
+            QtCore.Qt.CheckState.Unchecked
+        )
+        assert dialog.target_coords_table.item(1, 2).text() != previous_summary
+        assert (
+            dialog.all_coords_check.checkState()
+            == QtCore.Qt.CheckState.PartiallyChecked
+        )
+        operation = dialog.source_transform_operation()
+        assert operation.dimensions == ("eV",)
+        xr.testing.assert_identical(
+            operation.apply_with_inputs(data, {"target": updated}),
+            data.interp(eV=updated.eV),
+        )
+        ok_button = dialog.buttonBox.button(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+        )
+        assert ok_button is not None
+        dialog.target_coords_table.item(1, 0).setCheckState(
+            QtCore.Qt.CheckState.Unchecked
+        )
+        assert not ok_button.isEnabled()
+        assert not dialog.copy_button.isEnabled()
+        dialog.target_coords_table.item(1, 0).setCheckState(
+            QtCore.Qt.CheckState.Checked
+        )
+        assert ok_button.isEnabled()
+
+        target_node._set_source_state("stale")
+        dialog.target_tool_selector.refresh()
+        assert dialog.target_tool_selector.current_uid is None
+        assert not ok_button.isEnabled()
+        target_node._set_source_state("fresh")
+        dialog.target_tool_selector.refresh()
+        assert dialog.target_tool_selector.current_uid is None
+        dialog.target_tool_selector.set_current_uid(target_node.uid)
+        assert ok_button.isEnabled()
+
+        manager.remove_imagetool(target_index)
+        dialog.target_tool_selector.refresh()
+        assert dialog.target_tool_selector.current_uid is None
+        assert not ok_button.isEnabled()
+        assert not dialog.copy_button.isEnabled()
+        warnings = []
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox, "warning", lambda *_args: warnings.append(True)
+        )
+        dialog.accept()
+        assert warnings == [True]
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+
+
+def test_manager_interpolation_dialog_retains_missing_selected_coordinate(
+    qtbot, manager_context
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "eV"),
+        coords={"x": [0.0, 1.0, 2.0], "eV": [-0.3, -0.1, 0.1, 0.3]},
+    )
+    target = data.isel(x=[0, 2], eV=[0, 2])
+    with manager_context() as manager:
+        source_tool = itool(data, manager=False, execute=False)
+        manager.add_imagetool(source_tool, show=False)
+        target_index = manager.add_imagetool(
+            itool(target, manager=False, execute=False), show=False
+        )
+        target_uid = manager._node_for_target(target_index).uid
+        dialog = imagetool_dialogs.InterpolationDialog(source_tool.slicer_area)
+        qtbot.addWidget(dialog)
+        dialog.target_tabs.setCurrentIndex(1)
+        dialog.target_tool_selector.set_current_uid(target_uid)
+        dialog.target_coords_table.item(0, 0).setCheckState(
+            QtCore.Qt.CheckState.Unchecked
+        )
+        assert dialog.source_transform_operation().dimensions == ("eV",)
+
+        updated = target.rename({"eV": "other"})
+        manager._data_replace([updated], [target_index])
+        dialog.target_tool_selector.refresh()
+
+        assert dialog.target_tool_selector.current_uid == target_uid
+        assert [
+            dialog.target_coords_table.item(row, 0).data(
+                QtCore.Qt.ItemDataRole.UserRole
+            )
+            for row in range(dialog.target_coords_table.rowCount())
+        ] == ["x", "eV"]
+        ok_button = dialog.buttonBox.button(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+        )
+        assert ok_button is not None
+        assert not ok_button.isEnabled()
+        missing_item = dialog.target_coords_table.item(1, 0)
+        assert missing_item.checkState() == QtCore.Qt.CheckState.Checked
+        assert missing_item.toolTip()
+        dialog.target_coords_table.item(0, 0).setCheckState(
+            QtCore.Qt.CheckState.Checked
+        )
+        assert not ok_button.isEnabled()
+        assert missing_item.checkState() == QtCore.Qt.CheckState.Checked
+
+        missing_item.setCheckState(QtCore.Qt.CheckState.Unchecked)
+
+        assert ok_button.isEnabled()
+        operation = dialog.source_transform_operation()
+        assert operation.dimensions == ("x",)
+        xr.testing.assert_identical(
+            operation.apply_with_inputs(data, {"target": updated}),
+            data.interp(x=updated.x),
+        )
+
+
+def test_manager_interpolation_dialog_excludes_invalid_target_coordinates(
+    qtbot, monkeypatch, manager_context
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "eV"),
+        coords={"x": [0.0, 1.0, 2.0], "eV": [-0.3, -0.1, 0.1, 0.3]},
+    )
+    target = data.isel(x=[0, 2], eV=[0, 2])
+    invalid_target = target.assign_coords(x=[0.0j, 1.0j])
+    with manager_context() as manager:
+        source_tool = itool(data, manager=False, execute=False)
+        source_index = manager.add_imagetool(source_tool, show=False)
+        target_index = manager.add_imagetool(
+            itool(target, manager=False, execute=False), show=False
+        )
+        incompatible_index = manager.add_imagetool(
+            itool(data.rename({"x": "a", "eV": "b"}), manager=False, execute=False),
+            show=False,
+        )
+        target_node = manager._node_for_target(target_index)
+        monkeypatch.setattr(
+            target_node, "data_for_role", lambda *_args, **_kwargs: invalid_target
+        )
+        dialog = imagetool_dialogs.InterpolationDialog(source_tool.slicer_area)
+        qtbot.addWidget(dialog)
+        assert dialog.target_tool_selector.candidate_uids == (target_node.uid,)
+        assert (
+            manager._node_for_target(source_index).uid
+            not in dialog.target_tool_selector.candidate_uids
+        )
+        assert (
+            manager._node_for_target(incompatible_index).uid
+            not in dialog.target_tool_selector.candidate_uids
+        )
+        dialog.target_tabs.setCurrentIndex(1)
+        dialog.target_tool_selector.set_current_uid(target_node.uid)
+        ok_button = dialog.buttonBox.button(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+        )
+        assert ok_button is not None
+        assert not ok_button.isEnabled()
+        assert dialog.target_status.text()
+
+        dialog.target_coords_table.item(0, 0).setCheckState(
+            QtCore.Qt.CheckState.Unchecked
+        )
+
+        assert ok_button.isEnabled()
+        assert dialog.source_transform_operation().dimensions == ("eV",)
+        dialog.accept()
+        child_uid = manager._node_for_target(source_index)._childtool_indices[-1]
+        xr.testing.assert_identical(
+            manager._child_node(child_uid).data_for_role("source"),
+            data.interp(eV=target.eV),
+        )
+
+
+@pytest.mark.parametrize("placement", ["detach", "replace"])
+def test_manager_interpolation_dialog_placements_and_cycles(
+    qtbot, monkeypatch, manager_context, placement
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "eV"),
+        coords={"x": [0.0, 1.0, 2.0], "eV": [-0.3, -0.1, 0.1, 0.3]},
+    )
+    target = data.isel(x=[0, 2], eV=[0, 2])
+    with manager_context() as manager:
+        source_tool = itool(data, manager=False, execute=False)
+        source_index = manager.add_imagetool(source_tool, show=False)
+        target_index = manager.add_imagetool(
+            itool(target, manager=False, execute=False), show=False
+        )
+        source_node = manager._node_for_target(source_index)
+        target_node = manager._node_for_target(target_index)
+        dialog = imagetool_dialogs.InterpolationDialog(source_tool.slicer_area)
+        qtbot.addWidget(dialog)
+        dialog.target_tabs.setCurrentIndex(1)
+        dialog.target_tool_selector.set_current_uid(target_node.uid)
+        dialog.launch_mode_combo.setCurrentIndex(
+            dialog.launch_mode_combo.findData(placement)
+        )
+        dialog.accept()
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+        result_node = (
+            source_node if placement == "replace" else manager._node_for_target(2)
+        )
+        assert result_node.parent_uid is None
+        xr.testing.assert_identical(
+            result_node.data_for_role("source"), data.interp_like(target)
+        )
+        spec = result_node.provenance_spec
+        assert spec is not None
+        assert isinstance(spec.operations[-1], InterpolationFromInputOperation)
+        if placement == "replace":
+            assert spec.script_inputs[0].node_uid is None
+            assert spec.script_inputs[0].revision_id is not None
+            assert not spec.script_inputs[0].follow_source
+            xr.testing.assert_identical(
+                manager._provenance_revisions.resolve_data(
+                    spec.script_inputs[0].revision_id
+                ),
+                data,
+            )
+
+        current = source_node.data_for_role("source")
+        dependent_uid = manager.add_imagetool_child(
+            itool(current, manager=False, execute=False),
+            source_index,
+            show=False,
+            source_spec=full_data(),
+        )
+        cycle_dialog = imagetool_dialogs.InterpolationDialog(source_tool.slicer_area)
+        qtbot.addWidget(cycle_dialog)
+        cycle_dialog.target_tabs.setCurrentIndex(1)
+        cycle_dialog.target_tool_selector.set_current_uid(dependent_uid)
+        assert cycle_dialog.target_tool_selector.current_uid == dependent_uid
+        assert not cycle_dialog._replacement_is_safe()
+        assert cycle_dialog.target_status.text()
+        assert not cycle_dialog.target_status.isHidden()
+        replace_index = cycle_dialog.launch_mode_combo.findData("replace")
+        replace_item = cycle_dialog.launch_mode_combo.model().item(replace_index)
+        assert not replace_item.isEnabled()
+        replace_item.setEnabled(True)
+        cycle_dialog.launch_mode_combo.setCurrentIndex(replace_index)
+        cycle_dialog._sync_target_controls()
+        assert cycle_dialog.launch_mode == "nest"
+        replace_item.setEnabled(True)
+        cycle_dialog.launch_mode_combo.setCurrentIndex(replace_index)
+        warnings = []
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox, "warning", lambda *_args: warnings.append(True)
+        )
+        cycle_dialog.accept()
+        assert warnings == [True]
+        assert cycle_dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+
+
+def test_manager_interpolation_dialog_workspace_reload_and_target_refresh(
+    qtbot, accept_dialog, manager_context, tmp_path
+) -> None:
+    data = xr.DataArray(
+        np.arange(1.0, 13.0).reshape(3, 4),
+        dims=("x", "eV"),
+        coords={"x": [0.0, 1.0, 2.0], "eV": [-0.3, -0.1, 0.1, 0.3]},
+        name="scan",
+    )
+    target = data.isel(x=[0, 2], eV=[0, 2]).rename("reference")
+    with manager_context() as manager:
+        source_tool = itool(data, manager=False, execute=False)
+        source_index = manager.add_imagetool(source_tool, show=False)
+        target_index = manager.add_imagetool(
+            itool(target, manager=False, execute=False), show=False
+        )
+        source_tool.slicer_area.apply_filter_operation(
+            NormalizeOperation(dims=("eV",), mode="min")
+        )
+        displayed = source_tool.slicer_area.displayed_data.copy(deep=True)
+        source_node = manager._node_for_target(source_index)
+        target_node = manager._node_for_target(target_index)
+        dialog = imagetool_dialogs.InterpolationDialog(source_tool.slicer_area)
+        qtbot.addWidget(dialog)
+        dialog.target_tabs.setCurrentIndex(1)
+        dialog.target_tool_selector.set_current_uid(target_node.uid)
+        dialog.accept()
+        child_uid = source_node._childtool_indices[-1]
+        expected = displayed.interp_like(target)
+        xr.testing.assert_identical(
+            manager._child_node(child_uid).data_for_role("source"), expected
+        )
+
+        manager.get_imagetool(target_index).hide()
+        workspace_path = tmp_path / "interpolation-target.itws"
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        restored = manager._child_node(child_uid)
+        spec = restored.provenance_spec
+        assert spec is not None
+        assert isinstance(spec.operations[-1], InterpolationFromInputOperation)
+        assert [item.node_uid for item in spec.script_inputs] == [
+            source_node.uid,
+            target_node.uid,
+        ]
+        assert [item.data_role for item in spec.script_inputs] == [
+            "displayed",
+            "displayed",
+        ]
+        xr.testing.assert_identical(restored.data_for_role("source"), expected)
+
+        restored_target = manager._node_for_target(target_index)
+        assert restored_target.imagetool is None
+        copy_dialog = imagetool_dialogs.InterpolationDialog(
+            manager.get_imagetool(source_index).slicer_area
+        )
+        qtbot.addWidget(copy_dialog)
+        copy_dialog.target_tabs.setCurrentIndex(1)
+        copy_dialog.target_tool_selector.set_current_uid(restored_target.uid)
+        copied = _exec_generated_code(
+            "result = " + copy_dialog.make_code(),
+            {"data": displayed, "target": target},
+        )
+        xr.testing.assert_identical(copied["result"], expected)
+        assert restored_target.imagetool is None
+
+        updated = target.assign_coords(x=[0.25, 1.75], eV=[-0.2, 0.2])
+        manager._data_replace([updated], [target_index])
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(child_uid) == "changed"
+        )
+        xr.testing.assert_identical(restored.data_for_role("source"), expected)
+
+        def reset_view(dialog: QtWidgets.QMessageBox) -> None:
+            next(
+                button
+                for button in dialog.buttons()
+                if dialog.buttonRole(button)
+                == QtWidgets.QMessageBox.ButtonRole.AcceptRole
+            ).click()
+
+        reloaded = []
+        accept_dialog(
+            lambda: reloaded.append(restored.reload_source_data()),
+            accept_call=reset_view,
+        )
+        assert reloaded == [True]
+        xr.testing.assert_identical(
+            restored.data_for_role("source"), displayed.interp_like(updated)
+        )
+        assert manager.dependency_status_for_uid(child_uid) == "current"
+
+
+@pytest.mark.parametrize(
+    ("source_name", "target_name", "copied_target"),
+    [("scan", "reference_grid", "reference_grid"), ("target", "target", "reference")],
+)
+def test_manager_interpolation_dialog_copies_watched_target_names(
+    qtbot, manager_context, source_name, target_name, copied_target
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0, 2.0], "y": [10.0, 20.0]},
+    )
+    target = data.interp(x=[0.25, 1.75])
+    with manager_context() as manager:
+        source_tool = itool(data, manager=False, execute=False)
+        manager.add_imagetool(
+            source_tool, show=False, watched_var=(source_name, "source-uid")
+        )
+        target_index = manager.add_imagetool(
+            itool(target, manager=False, execute=False),
+            show=False,
+            watched_var=(target_name, "target-uid"),
+        )
+        dialog = imagetool_dialogs.InterpolationDialog(source_tool.slicer_area)
+        qtbot.addWidget(dialog)
+        dialog.target_tabs.setCurrentIndex(1)
+        dialog.target_tool_selector.set_current_uid(
+            manager._node_for_target(target_index).uid
+        )
+
+        copied = _exec_generated_code(
+            "result = " + dialog.make_code(),
+            {source_name: data, copied_target: target},
+        )
+
+        xr.testing.assert_identical(copied["result"], data.interp_like(target))
+
+
+def test_manager_interpolation_dialog_revalidates_target_availability(
+    qtbot, monkeypatch, accept_dialog, manager_context
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0, 2.0], "y": [10.0, 20.0]},
+    )
+    target = data.isel(x=[0, 2])
+    with manager_context() as manager:
+        source_tool = itool(data, manager=False, execute=False)
+        source_index = manager.add_imagetool(source_tool, show=False)
+        target_index = manager.add_imagetool(
+            itool(target, manager=False, execute=False), show=False
+        )
+        target_node = manager._node_for_target(target_index)
+        batch_dialog = imagetool_dialogs.InterpolationDialog(
+            source_tool.slicer_area, batch_manager=manager
+        )
+        qtbot.addWidget(batch_dialog)
+        assert not batch_dialog.target_tool_selector.isEnabled()
+        assert not batch_dialog.target_tool_selector.candidate_uids
+        batch_dialog.target_tabs.setCurrentIndex(1)
+        assert not batch_dialog.copy_button.isEnabled()
+
+        dialog = imagetool_dialogs.InterpolationDialog(source_tool.slicer_area)
+        qtbot.addWidget(dialog)
+        dialog.target_tabs.setCurrentIndex(1)
+        dialog.target_tool_selector.set_current_uid(target_node.uid)
+        invalid = target.assign_coords(x=[0.0j, 1.0j], y=[10.0j, 20.0j])
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                target_node, "data_for_role", lambda *_args, **_kwargs: invalid
+            )
+            dialog.target_tool_selector.refresh()
+            assert dialog.target_tool_selector.current_uid is None
+            assert target_node.uid not in dialog.target_tool_selector.candidate_uids
+            with pytest.raises(ValueError, match="no usable matching coordinates"):
+                dialog._candidate_data(manager, target_node.uid, data)
+        dialog.target_tool_selector.refresh()
+        dialog.target_tool_selector.set_current_uid(target_node.uid)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(dialog, "_manager_target", lambda: (None, None))
+            with pytest.raises(ValueError, match="Manager is no longer available"):
+                dialog._target_data()
+            assert not dialog._replacement_is_safe()
+            dialog._sync_target_controls()
+            assert not dialog.copy_button.isEnabled()
+            assert dialog.target_status.text()
+            with pytest.raises(ValueError, match="individual ImageTool in Manager"):
+                dialog._accept_manager_target()
+            accept_dialog(dialog.accept)
+            assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+
+        dialog.target_tool_selector.set_current_uid(None)
+        with pytest.raises(ValueError, match="Select a target ImageTool"):
+            dialog._accept_manager_target()
+        manager.remove_imagetool(target_index)
+        with pytest.raises(ValueError, match="no longer available"):
+            dialog._candidate_data(manager, target_node.uid, data)
+        assert not manager._node_for_target(source_index)._childtool_indices
+        xr.testing.assert_identical(source_tool.slicer_area.displayed_data, data)
+
+
+def test_manager_interpolation_dialog_cancels_and_reports_creation_failure(
+    qtbot, monkeypatch, accept_dialog, manager_context
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0, 2.0], "y": [10.0, 20.0]},
+    )
+    target = data.isel(x=[0, 2])
+    with manager_context() as manager:
+        source_tool = itool(data, manager=False, execute=False)
+        source_index = manager.add_imagetool(source_tool, show=False)
+        target_index = manager.add_imagetool(
+            itool(target, manager=False, execute=False), show=False
+        )
+        original_uids = tuple(manager._tool_graph.nodes)
+        target_uid = manager._node_for_target(target_index).uid
+
+        def target_dialog() -> imagetool_dialogs.InterpolationDialog:
+            dialog = imagetool_dialogs.InterpolationDialog(source_tool.slicer_area)
+            qtbot.addWidget(dialog)
+            dialog.target_tabs.setCurrentIndex(1)
+            dialog.target_tool_selector.set_current_uid(target_uid)
+            return dialog
+
+        cancelled = target_dialog()
+        accept_dialog(cancelled.exec, accept_call=lambda dialog: dialog.reject())
+        assert cancelled.result() == QtWidgets.QDialog.DialogCode.Rejected
+        assert tuple(manager._tool_graph.nodes) == original_uids
+
+        failed = target_dialog()
+        monkeypatch.setattr(erlab.interactive, "itool", lambda **_kwargs: None)
+        accept_dialog(failed.accept)
+        assert failed.result() == QtWidgets.QDialog.DialogCode.Rejected
+        assert tuple(manager._tool_graph.nodes) == original_uids
+        assert not manager._node_for_target(source_index)._childtool_indices
+        xr.testing.assert_identical(source_tool.slicer_area.displayed_data, data)
 
 
 def test_manager_shift_dialog_child_and_manual_reload(
