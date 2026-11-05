@@ -69,9 +69,12 @@ _TransformComponent = typing.Literal["data", "axes", "figure", "dpi"]
 
 
 def _first_live_axis(
-    tool: FigureComposerTool, selection: FigureAxesSelectionState
+    tool: FigureComposerTool,
+    selection: FigureAxesSelectionState,
+    *,
+    render_if_missing: bool = True,
 ) -> Axes | None:
-    layout_axes = _live_layout_axes(tool, render_if_missing=True)
+    layout_axes = _live_layout_axes(tool, render_if_missing=render_if_missing)
     if layout_axes is None:
         return None
     if isinstance(layout_axes, dict) and not selection.axes_ids:
@@ -104,6 +107,7 @@ def _method_call_args(
         return _picked_plot_args(tool._document.source_data, operation, spec)
     if (
         default_axis is None
+        and not operation.method_args
         and spec.family == FigureMethodFamily.AXES
         and spec.name in {"set_xlim", "set_ylim"}
     ):
@@ -126,8 +130,12 @@ def _method_code_call_args(
     if _is_axes_plot_method(spec) and operation.method_plot_data_mode == "from_data":
         return _picked_plot_code_args(tool._document.source_data, operation, spec)
     default_axis = None
-    if spec.family == FigureMethodFamily.AXES and spec.name in {"set_xlim", "set_ylim"}:
-        default_axis = _first_live_axis(tool, operation.axes)
+    if (
+        not operation.method_args
+        and spec.family == FigureMethodFamily.AXES
+        and spec.name in {"set_xlim", "set_ylim"}
+    ):
+        default_axis = _first_live_axis(tool, operation.axes, render_if_missing=False)
     args = _method_args(
         operation,
         spec,

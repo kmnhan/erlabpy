@@ -31,7 +31,6 @@ from erlab.interactive._figurecomposer._operations._method._editor import (
     _build_method_editor,
 )
 from erlab.interactive._figurecomposer._operations._method._execution import (
-    _first_live_axis,
     _method_code,
     _render_method,
     _required_imports,
@@ -60,7 +59,7 @@ def _method_operation(
         name=spec.name,
         label=spec.label,
         axes=axes,
-        args=_default_method_args(spec, _first_live_axis(tool, axes)),
+        args=_default_method_args(spec, None),
     )
 
 

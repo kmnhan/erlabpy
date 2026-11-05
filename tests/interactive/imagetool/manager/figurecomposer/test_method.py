@@ -5,6 +5,7 @@ import typing
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
 
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
@@ -16,6 +17,7 @@ import erlab.interactive._completion as completion_widgets
 import erlab.interactive._figurecomposer._completion_values as completion_values
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
 import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
+import erlab.interactive._figurecomposer._ui._color_widgets as color_widgets
 import erlab.interactive._figurecomposer._ui._tick_params as figurecomposer_tick_params
 import erlab.interactive._stylesheets
 import erlab.plotting as eplt
@@ -793,6 +795,274 @@ def test_figure_composer_method_helper_edge_contracts(
     assert tool.tool_status.operations[1].text_values == ("label",)
 
 
+def test_figure_composer_color_controls_match_style_and_render(qtbot) -> None:
+    _set_figure_stylesheets([])
+    data = xr.DataArray(np.arange(2.0), dims="x", name="data")
+    operations = (
+        FigureOperationState.method(
+            family=FigureMethodFamily.AXES, name="plot", args=((0, 1), (1, 2))
+        ),
+        FigureOperationState.method(
+            family=FigureMethodFamily.AXES, name="plot", args=((0, 1), (2, 3))
+        ),
+        FigureOperationState.method(
+            family=FigureMethodFamily.AXES, name="text", args=(0.5, 0.5, "Text")
+        ),
+        FigureOperationState.method(family=FigureMethodFamily.AXES, name="set_title"),
+        FigureOperationState.method(family=FigureMethodFamily.AXES, name="set_xlabel"),
+        FigureOperationState.method(
+            family=FigureMethodFamily.AXES, name="tick_params", kwargs={"axis": "y"}
+        ),
+    )
+    with plt.rc_context(
+        {
+            "axes.prop_cycle": plt.cycler(color=["#010203", "#445566"]),
+            "text.color": "#112233",
+            "axes.titlecolor": "#334455",
+            "axes.labelcolor": "#556677",
+            "lines.markerfacecolor": "#8899aa",
+            "lines.markeredgecolor": "auto",
+            "ytick.color": "#aabbcc",
+            "ytick.labelcolor": "inherit",
+            "grid.color": "#bbccdd",
+        }
+    ):
+        tool = FigureComposerTool.from_sources(
+            {"data": data},
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=operations,
+            primary_source="data",
+        )
+        qtbot.addWidget(tool)
+        tool.show()
+        tool.show_figure_window(activate=False)
+
+        def swatch(row: int, name: str) -> color_widgets._ColorPickerButton:
+            _select_operation_rows(tool, (row,))
+            tool.operation_editor.select_section("method")
+            button = tool.operation_editor.current_page.findChild(
+                color_widgets._ColorPickerButton, name
+            )
+            assert button is not None
+            if not button.isVisible():
+                tick_editor = tool.operation_editor.current_page.findChild(
+                    figurecomposer_tick_params.TickParamsEditorWidget
+                )
+                assert tick_editor is not None
+                tick_editor.grid_disclosure.setExpanded(True)
+            return button
+
+        for row, name, expected in (
+            (1, "figureComposerAxesMethodPlotColorEditButton", "#445566"),
+            (1, "figureComposerAxesMethodPlotMarkerFaceColorEditButton", "#8899aa"),
+            (1, "figureComposerAxesMethodPlotMarkerEdgeColorEditButton", "#445566"),
+            (2, "figureComposerAxesMethodTextColorEditButton", "#112233"),
+            (3, "figureComposerAxesMethodTitleColorEditButton", "#334455"),
+            (4, "figureComposerAxesMethodXLabelColorEditButton", "#556677"),
+            (5, "figureComposerAxesMethodTickParamsTickColorEditButton", "#aabbcc"),
+            (5, "figureComposerAxesMethodTickParamsLabelColorEditButton", "#aabbcc"),
+            (5, "figureComposerAxesMethodTickParamsGridColorEditButton", "#bbccdd"),
+        ):
+            assert swatch(row, name).color() == QtGui.QColor(expected)
+        assert all(
+            operation.method_kwargs == original.method_kwargs
+            for operation, original in zip(
+                tool.tool_status.operations, operations, strict=True
+            )
+        )
+
+        color_button = swatch(1, "figureComposerAxesMethodPlotColorEditButton")
+        color_edit = tool.operation_editor.current_page.findChild(
+            QtWidgets.QLineEdit, "figureComposerAxesMethodPlotColorEdit"
+        )
+        marker_button = tool.operation_editor.current_page.findChild(
+            color_widgets._ColorPickerButton,
+            "figureComposerAxesMethodPlotMarkerEdgeColorEditButton",
+        )
+        color_edit.setText("red")
+        color_edit.editingFinished.emit()
+        assert color_button.color() == QtGui.QColor("red")
+        assert marker_button.color() == QtGui.QColor("red")
+        color_edit.setText("")
+        color_edit.editingFinished.emit()
+        assert "color" not in tool.tool_status.operations[1].method_kwargs
+        tool.operation_editor.select_section("axes")
+        qtbot.waitUntil(lambda: not tool._preview_render_update_pending)
+        tool.operation_editor.select_section("method")
+        qtbot.waitUntil(lambda: color_button.color() == QtGui.QColor("#445566"))
+        assert marker_button.color() == QtGui.QColor("#445566")
+
+
+def test_figure_composer_cycle_colors_share_a_visible_render_cache(
+    qtbot, monkeypatch
+) -> None:
+    _set_figure_stylesheets([])
+    data = xr.DataArray(np.arange(2.0), dims="x", name="data")
+    operations = tuple(
+        FigureOperationState.method(
+            family=FigureMethodFamily.AXES, name="plot", args=((0, 1), (1, 2))
+        )
+        for _index in range(2)
+    )
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data"),),
+        operations=operations,
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    _select_operation_rows(tool, (1,))
+    tool.operation_editor.select_section("axes")
+    tool.show()
+    qtbot.waitUntil(lambda: not tool._show_figure_window_pending)
+    tool.show_figure_window(activate=False)
+    cache = tool._rendered_color_cache
+    collect = cache._collect
+    scans: list[None] = []
+
+    def collect_colors(*args, **kwargs):
+        scans.append(None)
+        return collect(*args, **kwargs)
+
+    monkeypatch.setattr(cache, "_collect", collect_colors)
+    tool.operation_editor.refresh_rendered_values()
+    assert scans == []
+    tool.operation_editor.select_section("method")
+    button = tool.operation_editor.current_page.findChild(
+        color_widgets._ColorPickerButton, "figureComposerAxesMethodPlotColorEditButton"
+    )
+    assert button is not None
+    assert scans == [None]
+    expected = QtGui.QColor.fromRgbF(*mcolors.to_rgba("C1"))
+    assert button.color() == expected
+    for _index in range(3):
+        tool.operation_editor.refresh_rendered_values()
+    assert scans == [None]
+
+    tool.operation_editor.select_section("axes")
+    tool._redraw_plot()
+    assert scans == [None]
+    assert cache._values == {}
+    tool.operation_editor.select_section("method")
+    assert scans == [None, None]
+    assert button.color() == expected
+
+    tool.auto_redraw_check.setChecked(False)
+    tool._update_operations_by_ids(
+        (operations[1].operation_id,),
+        lambda _index, operation: operation.model_copy(
+            update={"method_kwargs": {"alpha": 0.5}}
+        ),
+    )
+    assert cache._values == {}
+    tool.operation_editor.refresh_rendered_values()
+    assert scans == [None, None]
+    tool.auto_redraw_check.setChecked(True)
+    assert scans == [None, None, None]
+    assert button.color() == expected
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert cache._values == {}
+    tool.operation_editor.refresh_rendered_values()
+    assert scans == [None, None, None, None]
+
+    axis = tool.figure.axes[0]
+    axis.set_xlim(0.2, 0.8)
+    tool._figure_window_navigation_changed({axis: (True, False)})
+    assert len(scans) == 5
+    assert button.color() == expected
+    assert tool.tool_status.operations[-1].method_name == "set_xlim"
+
+
+@pytest.mark.parametrize("location", ["left", "right"])
+@pytest.mark.parametrize("title_color", ["auto", "#334455"])
+def test_figure_composer_title_defaults_use_rcparams_without_artist_inspection(
+    qtbot, monkeypatch, location, title_color
+) -> None:
+    _set_figure_stylesheets([])
+    data = xr.DataArray(np.arange(2.0), dims="x", name="data")
+    operations = (
+        FigureOperationState.method(
+            family=FigureMethodFamily.AXES,
+            name="set_title",
+            args=("Center",),
+            kwargs={"color": "red", "loc": "center"},
+        ),
+        FigureOperationState.method(
+            family=FigureMethodFamily.AXES,
+            name="set_title",
+            args=("Side",),
+            kwargs={"loc": location},
+        ),
+    )
+    with plt.rc_context({"text.color": "#112233", "axes.titlecolor": title_color}):
+        tool = FigureComposerTool.from_sources(
+            {"data": data},
+            sources=(FigureSourceState(name="data"),),
+            operations=operations,
+            primary_source="data",
+        )
+        qtbot.addWidget(tool)
+        monkeypatch.setattr(
+            tool.operation_editor,
+            "rendered_color",
+            lambda *_args: pytest.fail("Title defaults must not inspect artists"),
+        )
+        _select_operation_rows(tool, (1,))
+        tool.operation_editor.select_section("method")
+        button = tool.operation_editor.current_page.findChild(
+            color_widgets._ColorPickerButton,
+            "figureComposerAxesMethodTitleColorEditButton",
+        )
+        assert button is not None
+        expected = "#112233" if title_color == "auto" else title_color
+        assert button.color() == QtGui.QColor(expected)
+
+        tool.show_figure_window(activate=False)
+        axis = tool.figure.axes[0]
+        assert axis.title.get_color() == "red"
+        side_title = axis._left_title if location == "left" else axis._right_title
+        assert side_title.get_color() == expected
+        assert button.color() == QtGui.QColor(expected)
+        assert tool.tool_status.operations[1].method_kwargs == {"loc": location}
+
+
+@pytest.mark.parametrize("method_name", ["supxlabel", "supylabel"])
+def test_figure_composer_figure_label_color_defaults_match_render(
+    qtbot, method_name
+) -> None:
+    _set_figure_stylesheets([])
+    data = xr.DataArray(np.arange(2.0), dims="x", name="data")
+    operation = FigureOperationState.method(
+        family=FigureMethodFamily.FIGURE,
+        name=method_name,
+        args=("Figure label",),
+    )
+    with plt.rc_context({"text.color": "#112233", "axes.labelcolor": "#445566"}):
+        tool = FigureComposerTool.from_sources(
+            {"data": data},
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        )
+        qtbot.addWidget(tool)
+        _select_operation_rows(tool, (0,))
+        tool.operation_editor.select_section("method")
+        button = tool.operation_editor.current_page.findChild(
+            color_widgets._ColorPickerButton,
+            "figureComposerFigureMethodTextColorEditButton",
+        )
+        assert button is not None
+        assert tool._figure_window is None
+        assert button.color() == QtGui.QColor("#112233")
+
+        tool.show_figure_window(activate=False)
+        [label] = tool.figure.texts
+        assert label.get_color() == "#112233"
+        assert button.color() == QtGui.QColor(label.get_color())
+        assert tool.tool_status.operations[0].method_kwargs == {}
+
+
 def test_figure_composer_tick_params_controls_update_state(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
@@ -922,15 +1192,17 @@ def test_figure_composer_tick_params_controls_update_state(qtbot) -> None:
 def test_figure_composer_limit_methods_default_to_current_axis_limits(qtbot) -> None:
     tool = FigureComposerTool(_figure_composer_profile_source("data"))
     qtbot.addWidget(tool)
+    tool.show()
+    qtbot.waitUntil(lambda: not tool._show_figure_window_pending)
+    tool.show_figure_window(activate=False)
     layout_axes = figurecomposer_rendering._live_layout_axes(
-        tool, render_if_missing=True
+        tool, render_if_missing=False
     )
     assert layout_axes is not None
 
     axis = figurecomposer_rendering._iter_axes(layout_axes)[0]
     expected_xlim = tuple(float(value) for value in axis.get_xlim())
     expected_ylim = tuple(float(value) for value in axis.get_ylim())
-    assert tool._figure_window is None
 
     tool._add_operation("method:axes")
     method_editor._update_current_method_name(tool.operation_editor, "set_xlim")
@@ -969,6 +1241,128 @@ def test_figure_composer_limit_methods_default_to_current_axis_limits(qtbot) -> 
     assert limits_edit is not None
     assert tool.tool_status.operations[-1].method_args == pytest.approx(expected_ylim)
     assert limits_edit.text() == f"{expected_ylim[0]:g}, {expected_ylim[1]:g}"
+
+
+@pytest.mark.parametrize("args", [(), (1.0, 8.0)])
+def test_figure_composer_hidden_limit_controls_do_not_render(
+    qtbot, monkeypatch, args
+) -> None:
+    tool = FigureComposerTool.from_sources(
+        {"data": _figure_composer_profile_source("data")},
+        sources=(FigureSourceState(name="data"),),
+        operations=(
+            FigureOperationState.line(label="Line", source="data"),
+            FigureOperationState.method(
+                family=FigureMethodFamily.AXES, name="set_xlim", args=args
+            ),
+        ),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    tool.auto_redraw_check.setChecked(False)
+    renders = []
+    monkeypatch.setattr(
+        figurecomposer_rendering,
+        "_render_into_figure",
+        lambda *args, **kwargs: renders.append(None),
+    )
+    _select_operation_rows(tool, (1,))
+    tool.operation_editor.select_section("method")
+    tool._update_operation_editor()
+    tool.generated_code()
+    tool._add_operation("method:axes")
+    method_editor._update_current_method_name(tool.operation_editor, "set_ylim")
+    tool.generated_code()
+    assert renders == []
+    assert tool._figure_window is None
+
+
+def test_figure_composer_limit_defaults_refresh_when_shown(qtbot, monkeypatch) -> None:
+    tool = FigureComposerTool.from_sources(
+        {"data": _figure_composer_profile_source("data")},
+        sources=(FigureSourceState(name="data"),),
+        operations=(
+            FigureOperationState.method(
+                family=FigureMethodFamily.AXES, name="set_xlim"
+            ),
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.auto_redraw_check.setChecked(False)
+    tool.operation_editor.select_section("method")
+    lookups = []
+    axis_available = False
+    figure = plt.Figure()
+    axis = figure.add_subplot()
+
+    def live_axes(*args, **kwargs):
+        assert kwargs == {"render_if_missing": False}
+        lookups.append(None)
+        return np.array([[axis]], dtype=object) if axis_available else None
+
+    monkeypatch.setattr(figurecomposer_tool_module, "_live_layout_axes", live_axes)
+    tool._update_operation_editor()
+    edit = tool.operation_editor.current_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodLimitsEdit"
+    )
+    assert edit is not None
+    assert lookups == []
+    axis.set_xlim(2.0, 6.0)
+    tool.show()
+    assert edit.text() == ""
+    assert lookups == [None]
+    axis_available = True
+    tool.operation_editor.refresh_rendered_values()
+    assert edit.text() == "2, 6"
+    assert lookups == [None, None]
+    tool.operation_editor.select_section("axes")
+    axis.set_xlim(3.0, 7.0)
+    tool.operation_editor.refresh_rendered_values()
+    assert lookups == [None, None]
+    tool.operation_editor.select_section("method")
+    assert edit.text() == "3, 7"
+    assert lookups == [None, None, None]
+    axis.set_xlim(4.0, 8.0)
+    tool.operation_editor.refresh_rendered_values()
+    assert edit.text() == "4, 8"
+    assert lookups == [None, None, None, None]
+
+
+@pytest.mark.parametrize("committed", [False, True])
+def test_figure_composer_limit_reveal_preserves_uncommitted_or_invalid_text(
+    qtbot, committed
+) -> None:
+    tool = FigureComposerTool.from_sources(
+        {"data": _figure_composer_profile_source("data")},
+        sources=(FigureSourceState(name="data"),),
+        operations=(
+            FigureOperationState.method(
+                family=FigureMethodFamily.AXES,
+                name="set_xlim",
+                args=(0.0, 1.0),
+            ),
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.auto_redraw_check.setChecked(False)
+    tool.show()
+    tool.operation_editor.select_section("method")
+    edit = tool.operation_editor.current_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodLimitsEdit"
+    )
+    assert edit is not None
+    edit.setText("bad")
+    if committed:
+        edit.editingFinished.emit()
+    operation = tool.tool_status.operations[0]
+    assert tool.operation_editor.has_input_error(operation) is committed
+    tool.operation_editor.select_section("axes")
+    tool.operation_editor.select_section("method")
+    assert edit.text() == "bad"
+    assert tool.operation_editor.has_input_error(operation) is committed
+    tool.operation_editor.refresh_rendered_values()
+    assert edit.text() == "bad"
+    assert tool.operation_editor.has_input_error(operation) is committed
 
 
 def test_figure_composer_method_selector_preserves_compatible_values(qtbot) -> None:

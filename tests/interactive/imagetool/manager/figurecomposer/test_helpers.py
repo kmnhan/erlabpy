@@ -1,11 +1,13 @@
 import gc
 import typing
+import weakref
 
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 import xarray as xr
+from matplotlib.figure import Figure
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.interactive._completion as completion_widgets
@@ -15,6 +17,7 @@ import erlab.interactive._figurecomposer._line_transform as _line_transform
 import erlab.interactive._figurecomposer._model._axes as figurecomposer_axes
 import erlab.interactive._figurecomposer._model._gridspec as figurecomposer_gridspec
 import erlab.interactive._figurecomposer._norms as figurecomposer_norms
+import erlab.interactive._figurecomposer._rendered_colors as _rendered_colors
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
 import erlab.interactive._figurecomposer._ui._color_widgets as color_widgets
 import erlab.interactive._figurecomposer._ui._editor_controls as _editor_controls
@@ -35,6 +38,7 @@ from erlab.interactive._figurecomposer import (
     FigureSourceState,
     FigureSubplotsState,
 )
+from erlab.interactive._figurecomposer._ui._operation_editor import StepSection
 
 from ._common import (
     _assert_step_editor_section,
@@ -139,6 +143,214 @@ def test_figure_composer_color_list_row_completion_preserves_other_colors(qtbot)
     assert color_list.main_edit.completer() is None
 
 
+def test_figure_composer_color_widget_separates_default_and_auto(qtbot) -> None:
+    colors = {"default": "red", "auto": "blue"}
+    widget = color_widgets._ColorLineEditWidget(
+        "auto",
+        inherited_color=colors["default"],
+        auto_color=colors["auto"],
+        inherited_color_getter=lambda: colors["default"],
+        auto_color_getter=lambda: colors["auto"],
+    )
+    qtbot.addWidget(widget)
+    widget.show()
+    assert widget.color_button.color() == QtGui.QColor("blue")
+    widget.setText("")
+    assert widget.color_button.color() == QtGui.QColor("red")
+    widget.setText("auto")
+    colors.update(default="purple", auto="green")
+    widget.refreshInheritedColor()
+    assert widget.color_button.color() == QtGui.QColor("green")
+    widget.setText("")
+    widget.refreshInheritedColor()
+    assert widget.color_button.color() == QtGui.QColor("purple")
+
+
+def test_figure_composer_color_widget_resolves_only_visible_defaults(qtbot) -> None:
+    colors = {"default": "red", "auto": "blue"}
+    reads: list[str] = []
+
+    def read_color(key: str) -> str:
+        reads.append(key)
+        return colors[key]
+
+    widget = color_widgets._ColorLineEditWidget(
+        "",
+        inherited_color="black",
+        auto_color="black",
+        inherited_color_getter=lambda: read_color("default"),
+        auto_color_getter=lambda: read_color("auto"),
+    )
+    qtbot.addWidget(widget)
+    widget.refreshInheritedColor()
+    assert reads == []
+    widget.show()
+    assert reads == ["default"]
+    assert widget.color_button.color() == QtGui.QColor("red")
+
+    reads.clear()
+    widget.setText("auto")
+    assert reads == []
+    widget.line_edit.editingFinished.emit()
+    assert reads == ["auto"]
+    assert widget.color_button.color() == QtGui.QColor("blue")
+    reads.clear()
+    widget.setText("orange")
+    widget.line_edit.editingFinished.emit()
+    widget.refreshInheritedColor()
+    assert reads == []
+
+    widget.hide()
+    colors.update(default="purple", auto="green")
+    widget.setText("")
+    widget.refreshInheritedColor()
+    assert reads == []
+    widget.show()
+    assert reads == ["default"]
+    assert widget.color_button.color() == QtGui.QColor("purple")
+    reads.clear()
+    widget.hide()
+    widget.setText("auto")
+    widget.show()
+    assert reads == ["auto"]
+    assert widget.color_button.color() == QtGui.QColor("green")
+
+    fallback = color_widgets._ColorLineEditWidget(
+        "auto", inherited_color_getter=lambda: read_color("default")
+    )
+    qtbot.addWidget(fallback)
+    reads.clear()
+    fallback.show()
+    assert reads == ["default"]
+    assert fallback.color_button.color() == QtGui.QColor("purple")
+
+
+def test_figure_composer_deferred_form_tracks_visible_current_state(qtbot) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x", name="data")
+    operation = FigureOperationState.method(
+        family=FigureMethodFamily.AXES, name="text", label="original"
+    )
+    other = FigureOperationState.method(
+        family=FigureMethodFamily.AXES, name="text", label="other"
+    )
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data"),),
+        operations=(operation, other),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    editor = tool.operation_editor
+    tool.operation_panel.select_row(0)
+    editor.prepare_rebuild()
+    idle, _idle_layout = editor.new_form_page("deferredIdlePage")
+    unrelated = editor.line_edit("unrelated", parent=idle)
+    unrelated.setObjectName("deferredUnrelatedEdit")
+    _idle_layout.addRow(unrelated)
+    page, _layout = editor.new_form_page("deferredTestPage")
+    built: list[tuple[str, str, float, int]] = []
+
+    def build(current, target_page, layout):
+        source = editor.context.source_data["data"]
+        built.append(
+            (
+                current.operation_id,
+                current.label,
+                float(source.values[0]),
+                id(editor.context.source_payloads["data"]),
+            )
+        )
+        edit = editor.line_edit(current.label, parent=target_page)
+        edit.setObjectName("deferredTestEdit")
+        layout.addRow(edit)
+
+    editor.defer_form_page(page, build)
+    editor.replace_sections(
+        (
+            StepSection("idle", "Idle", idle, ""),
+            StepSection("deferred", "Deferred", page, ""),
+        ),
+        summaries={},
+    )
+    latest = operation.model_copy(update={"label": "latest"})
+    tool._document.replace_operations((other, latest))
+    refreshed_data = xr.DataArray([3.0, 4.0], dims="x", name="data")
+    tool._document.replace_source_payloads({"data": refreshed_data}, {})
+    payload_id = id(tool._document.source_payloads["data"])
+    assert built == []
+    tool.show()
+    assert idle.isVisible()
+    assert built == []
+
+    editor.select_section("deferred")
+    assert built == [(operation.operation_id, "latest", 3.0, payload_id)]
+    first_edit = page.findChild(QtWidgets.QLineEdit, "deferredTestEdit")
+    assert first_edit is not None
+    first_edit.setText("invalid raw input")
+    editor.set_input_errors(
+        {
+            operation.operation_id: {
+                "deferredTestEdit": "invalid field",
+                "deferredUnrelatedEdit": "unrelated error",
+            }
+        }
+    )
+    editor.select_section("idle")
+    editor.select_section("deferred")
+    assert len(built) == 1
+    assert page.findChild(QtWidgets.QLineEdit, "deferredTestEdit") is first_edit
+    assert first_edit.text() == "invalid raw input"
+    assert editor._input_errors[operation.operation_id] == {
+        "deferredTestEdit": "invalid field",
+        "deferredUnrelatedEdit": "unrelated error",
+    }
+
+    tool.hide()
+    latest = latest.model_copy(update={"label": "changed"})
+    tool._document.replace_operations((other, latest))
+    assert len(built) == 1
+    tool.show()
+    assert built[-1] == (operation.operation_id, "changed", 3.0, payload_id)
+    assert len(built) == 2
+    new_edit = page.findChild(QtWidgets.QLineEdit, "deferredTestEdit")
+    assert new_edit is not first_edit
+    assert new_edit is not None
+    assert new_edit.text() == "changed"
+    assert editor._input_errors[operation.operation_id] == {
+        "deferredUnrelatedEdit": "unrelated error"
+    }
+
+    editor.select_section("idle")
+    refreshed_data.values[0] = 5.0
+    tool._document.touch_source_payloads()
+    assert id(tool._document.source_payloads["data"]) == payload_id
+    assert len(built) == 2
+    editor.select_section("deferred")
+    assert built[-1] == (operation.operation_id, "changed", 5.0, payload_id)
+    assert len(built) == 3
+
+    editor.select_section("idle")
+    replacement = xr.DataArray([7.0, 8.0], dims="x", name="data")
+    tool._document.replace_source_payloads({"data": replacement}, {})
+    editor.select_section("deferred")
+    assert built[-1] == (
+        operation.operation_id,
+        "changed",
+        7.0,
+        id(tool._document.source_payloads["data"]),
+    )
+    assert len(built) == 4
+
+    editor.select_section("idle")
+    tool._document.replace_operations((other,))
+    editor.select_section("deferred")
+    assert len(built) == 4
+    editor.prepare_rebuild()
+    tool._document.replace_operations((other, latest))
+    page.show()
+    assert len(built) == 4
+
+
 def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
     assert "" not in figurecomposer_line_style.LINE_STYLE_OPTIONS
     assert " " not in figurecomposer_line_style.LINE_STYLE_OPTIONS
@@ -187,6 +399,18 @@ def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
     assert (
         figurecomposer_line_style_ui.optional_positive_spinbox_value(spinbox.value())
         is None
+    )
+    spinbox.stepUp()
+    assert spinbox.value() == spinbox.singleStep()
+    spinbox.stepDown()
+    assert spinbox.value() == 0.0
+    spinbox.stepDown()
+    assert spinbox.value() == spinbox.minimum()
+    spinbox.setValue(0.0)
+    assert spinbox.value() > spinbox.minimum()
+    assert (
+        figurecomposer_line_style_ui.optional_positive_spinbox_value(spinbox.value())
+        == 0.0
     )
     spinbox.setValue(2.5)
     assert (
@@ -321,6 +545,7 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         source_data={"image": image, "line_map": line_map},
     )
     qtbot.addWidget(tool)
+    tool.show()
 
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
@@ -1476,3 +1701,177 @@ def test_subplots_shared_axes_groups_cover_boolean_modes() -> None:
         )
         == ()
     )
+
+
+def test_rendered_color_cache_reuses_frozen_colors_and_misses(monkeypatch) -> None:
+    figure = Figure()
+    axis = figure.subplots()
+    [line] = axis.plot(
+        [0.0, 1.0],
+        color="red",
+        markerfacecolor="green",
+        markeredgecolor="blue",
+    )
+    setattr(line, figurecomposer_rendering._OPERATION_ID_ATTR, "line")
+    calls = 0
+    findobj = figure.findobj
+
+    def counted_findobj(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return findobj(*args, **kwargs)
+
+    monkeypatch.setattr(figure, "findobj", counted_findobj)
+    cache = _rendered_colors._RenderedColorCache()
+    assert cache.color(figure, "line", "color") is None
+    assert calls == 0
+    cache.mark_rendered(figure)
+    assert cache.color(figure, "line", "color") == mcolors.to_rgba("red")
+    assert cache.color(figure, "line", "markerfacecolor") == mcolors.to_rgba("green")
+    assert cache.color(figure, "line", "markeredgecolor") == mcolors.to_rgba("blue")
+    assert cache.color(figure, "line", "facecolor") is None
+    assert cache.color(figure, "line", "facecolor") is None
+    assert calls == 1
+    assert len(cache._values) <= 5
+
+    line.set_color("yellow")
+    assert cache.color(figure, "line", "color") == mcolors.to_rgba("red")
+    assert calls == 1
+    cache.mark_rendered(figure)
+    assert cache.color(figure, "line", "color") == mcolors.to_rgba("yellow")
+    assert calls == 2
+
+    assert cache.color(figure, "missing", "color") is None
+    assert cache.color(figure, "missing", "markerfacecolor") is None
+    assert calls == 3
+    assert len(cache._values) <= 5
+    assert cache.color(figure, "line", "color") == mcolors.to_rgba("yellow")
+    assert calls == 4
+
+    cache.invalidate()
+    assert cache._values == {}
+    assert cache.color(figure, "line", "color") is None
+    assert calls == 4
+    cache.mark_rendered(figure)
+    assert cache.color(Figure(), "line", "color") is None
+    assert cache.color(figure, "line", "alpha") is None
+    assert cache.color(figure, "line", "color", field="unknown") is None
+    assert calls == 4
+
+
+def test_rendered_color_cache_bounds_fit_component_snapshots(monkeypatch) -> None:
+    figure = Figure()
+    axis = figure.subplots()
+    operation_attr = figurecomposer_rendering._OPERATION_ID_ATTR
+    style_attr = _rendered_colors._FIT_STYLE_ATTR
+
+    def tag(artist, field, component=None):
+        setattr(artist, operation_attr, "fit")
+        setattr(artist, style_attr, (field, component))
+
+    for field, color in (("fit_data_kw", "red"), ("fit_line_kw", "blue")):
+        [line] = axis.plot([0.0, 1.0], color=color)
+        tag(line, field)
+    band = axis.fill_between([0.0, 1.0], [0.0, 1.0], [1.0, 2.0])
+    band.set_facecolor(["yellow", "green"])
+    band.set_edgecolor("none")
+    tag(band, "fit_band_kw")
+    component_colors = plt.get_cmap("viridis")(np.linspace(0.0, 1.0, 8))
+    for index, color in enumerate(component_colors):
+        [line] = axis.plot([0.0, 1.0], color=color)
+        tag(line, "fit_component_kw", f"component-{index}")
+        band = axis.fill_between([0.0, 1.0], [0.0, 1.0], [1.0, 2.0], facecolor=color)
+        tag(band, "fit_component_band_kw", f"component-{index}")
+
+    calls = 0
+    findobj = figure.findobj
+
+    def counted_findobj(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return findobj(*args, **kwargs)
+
+    monkeypatch.setattr(figure, "findobj", counted_findobj)
+    cache = _rendered_colors._RenderedColorCache()
+    cache.mark_rendered(figure)
+    assert cache.color(figure, "fit", "color", field="fit_line_kw") == (
+        mcolors.to_rgba("blue")
+    )
+    assert cache.color(figure, "fit", "facecolor", field="fit_band_kw") == (
+        mcolors.to_rgba("yellow")
+    )
+    assert cache.color(figure, "fit", "edgecolor", field="fit_band_kw") == (
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    )
+    assert calls == 1
+
+    for index, color in enumerate(component_colors):
+        component = f"component-{index}"
+        assert cache.color(
+            figure, "fit", "color", field="fit_component_kw", component=component
+        ) == tuple(color)
+        assert cache.color(
+            figure,
+            "fit",
+            "facecolor",
+            field="fit_component_band_kw",
+            component=component,
+        ) == tuple(color)
+        assert cache.color(figure, "fit", "color", field="fit_data_kw") == (
+            mcolors.to_rgba("red")
+        )
+        assert (
+            cache.color(
+                figure,
+                "fit",
+                "edgecolor",
+                field="fit_component_kw",
+                component=component,
+            )
+            is None
+        )
+        assert calls == index + 2
+        assert len(cache._values) <= 25
+        assert all(
+            value is None or (isinstance(value, tuple) and len(value) == 4)
+            for value in cache._values.values()
+        )
+
+    assert (
+        cache.color(
+            figure, "fit", "color", field="fit_component_kw", component="missing"
+        )
+        is None
+    )
+    assert (
+        cache.color(
+            figure,
+            "fit",
+            "facecolor",
+            field="fit_component_band_kw",
+            component="missing",
+        )
+        is None
+    )
+    assert calls == len(component_colors) + 2
+    assert len(cache._values) <= 25
+
+
+def test_rendered_color_cache_does_not_retain_figure_or_artists() -> None:
+    cache = _rendered_colors._RenderedColorCache()
+
+    def transient_figure():
+        figure = Figure()
+        [line] = figure.subplots().plot([0.0, 1.0], color="red")
+        setattr(line, figurecomposer_rendering._OPERATION_ID_ATTR, "line")
+        cache.mark_rendered(figure)
+        assert cache.color(figure, "line", "color") == mcolors.to_rgba("red")
+        return weakref.ref(figure), weakref.ref(line)
+
+    figure_ref, artist_ref = transient_figure()
+    gc.collect()
+    assert figure_ref() is None
+    assert artist_ref() is None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import typing
 
 from qtpy import QtCore, QtWidgets
@@ -19,7 +20,6 @@ from erlab.interactive._figurecomposer._code import (
 from erlab.interactive._figurecomposer._labels import (
     attr_value_expression,
     coord_value_expression,
-    default_label_text,
     label_context,
     label_context_field_sources,
     label_context_original_field_names,
@@ -94,6 +94,7 @@ from erlab.interactive._figurecomposer._text import (
 from erlab.interactive._figurecomposer._ui._color_widgets import (
     _ColorLineEditWidget,
     _ColorListEditorWidget,
+    _default_mpl_marker_color,
 )
 from erlab.interactive._figurecomposer._ui._label_help import legend_label_input_widget
 from erlab.interactive._figurecomposer._ui._line_style import (
@@ -308,12 +309,33 @@ def _available_line_color_coords(
 def _build_line_editor(
     editor: FigureOperationEditor, operation: FigureOperationState
 ) -> list[tuple[str, str, QtWidgets.QWidget]]:
-    selection_page, selection_layout = editor.new_form_page(
+    selection_page, _selection_layout = editor.new_form_page(
         "figureComposerLineSelectionPage"
     )
-    view_page, view_layout = editor.new_form_page("figureComposerLineViewPage")
-    style_page, style_layout = editor.new_form_page("figureComposerLineStylePage")
-    other_page, other_layout = editor.new_form_page("figureComposerLineOtherPage")
+    view_page, _view_layout = editor.new_form_page("figureComposerLineViewPage")
+    style_page, _style_layout = editor.new_form_page("figureComposerLineStylePage")
+    other_page, _other_layout = editor.new_form_page("figureComposerLineOtherPage")
+    for page, builder in (
+        (selection_page, _build_line_selection_page),
+        (view_page, _build_line_view_page),
+        (style_page, _build_line_style_page),
+        (other_page, _build_line_transform_page),
+    ):
+        editor.defer_form_page(page, functools.partial(builder, editor))
+    return [
+        ("selection", "Selection", selection_page),
+        ("view", "View", view_page),
+        ("style", "Style", style_page),
+        ("other", "Transform", other_page),
+    ]
+
+
+def _build_line_selection_page(
+    editor: FigureOperationEditor,
+    operation: FigureOperationState,
+    selection_page: QtWidgets.QWidget,
+    selection_layout: QtWidgets.QFormLayout,
+) -> None:
     coordinate_options = _available_line_coordinate_names(editor.context, operation)
     coordinate_options_match = editor.batch_options_match(
         operation,
@@ -445,6 +467,13 @@ def _build_line_editor(
     if _line_reduce_controls_visible(editor, operation):
         _add_line_reduce_controls(editor, operation, selection_page, selection_layout)
 
+
+def _build_line_view_page(
+    editor: FigureOperationEditor,
+    operation: FigureOperationState,
+    view_page: QtWidgets.QWidget,
+    view_layout: QtWidgets.QFormLayout,
+) -> None:
     placement_mixed = editor.batch_is_mixed(
         operation, lambda target: target.line_placement
     )
@@ -491,6 +520,13 @@ def _build_line_editor(
         operation, view_page, view_layout, object_name_prefix="figureComposerLine"
     )
 
+
+def _build_line_style_page(
+    editor: FigureOperationEditor,
+    operation: FigureOperationState,
+    style_page: QtWidgets.QWidget,
+    style_layout: QtWidgets.QFormLayout,
+) -> None:
     editor.add_form_section(
         style_layout,
         "Legend",
@@ -539,7 +575,13 @@ def _build_line_editor(
         "Color",
         object_name="figureComposerLineStyleColorSection",
     )
-    _add_line_color_controls(editor, operation, style_page, style_layout)
+    coord_options = list(numeric_context_field_names(label_contexts))
+    for name in (operation.line_iter_dim, operation.line_color_coord):
+        if name and name not in coord_options:
+            coord_options.append(name)
+    _add_line_color_controls(
+        editor, operation, style_page, style_layout, coord_options=coord_options
+    )
 
     editor.add_form_section(
         style_layout,
@@ -555,6 +597,13 @@ def _build_line_editor(
     )
     _add_line_fill_controls(editor, operation, style_page, style_layout)
 
+
+def _build_line_transform_page(
+    editor: FigureOperationEditor,
+    operation: FigureOperationState,
+    other_page: QtWidgets.QWidget,
+    other_layout: QtWidgets.QFormLayout,
+) -> None:
     add_line_transform_controls(
         editor,
         operation,
@@ -565,12 +614,6 @@ def _build_line_editor(
             editor.context, target
         ),
     )
-    return [
-        ("selection", "Selection", selection_page),
-        ("view", "View", view_page),
-        ("style", "Style", style_page),
-        ("other", "Transform", other_page),
-    ]
 
 
 def _add_line_color_controls(
@@ -578,6 +621,8 @@ def _add_line_color_controls(
     operation: FigureOperationState,
     page: QtWidgets.QWidget,
     layout: QtWidgets.QFormLayout,
+    *,
+    coord_options: list[str] | None = None,
 ) -> None:
     row = QtWidgets.QWidget(page)
     row_layout = QtWidgets.QVBoxLayout(row)
@@ -603,7 +648,9 @@ def _add_line_color_controls(
     row_layout.addWidget(mode_combo)
 
     if not mode_mixed and line_colormap_active(operation):
-        _add_line_coordinate_color_controls(editor, operation, page, row_layout)
+        _add_line_coordinate_color_controls(
+            editor, operation, page, row_layout, coord_options=coord_options
+        )
     else:
         _add_line_manual_color_controls(editor, operation, page, row_layout)
 
@@ -654,14 +701,21 @@ def _add_line_coordinate_color_controls(
     operation: FigureOperationState,
     page: QtWidgets.QWidget,
     layout: QtWidgets.QVBoxLayout,
+    *,
+    coord_options: list[str] | None = None,
 ) -> None:
-    coord_options = _available_line_color_coords(
-        editor.context, editor.source_display_name, operation
-    )
+    if coord_options is None:
+        coord_options = _available_line_color_coords(
+            editor.context, editor.source_display_name, operation
+        )
     coord_options_match = editor.batch_options_match(
         operation,
-        lambda target: _available_line_color_coords(
-            editor.context, editor.source_display_name, target
+        lambda target: (
+            coord_options
+            if target.operation_id == operation.operation_id
+            else _available_line_color_coords(
+                editor.context, editor.source_display_name, target
+            )
         ),
     )
     coord_mixed = editor.batch_is_mixed(
@@ -1094,10 +1148,35 @@ def _add_line_style_controls(
         if operation.line_colors and not line_colormap_active(operation)
         else line_kw_text(operation, "color", "c") or None
     )
+
+    def marker_auto_color() -> object | None:
+        current = editor.current_operation()
+        target = (
+            current[1]
+            if current is not None and current[1].operation_id == operation.operation_id
+            else operation
+        )
+        if line_colormap_active(target):
+            return None
+        return (
+            target.line_colors[0]
+            if target.line_colors
+            else line_kw_text(target, "color", "c") or None
+        )
+
+    def marker_default_color(key: str) -> object | None:
+        color = editor.styled_rcparams_value(f"lines.{key}")
+        return marker_auto_color() if color == "auto" else color
+
     marker_face_edit = _ColorLineEditWidget(
         marker_face_text,
         parent=page,
-        inherited_color=marker_inherited_color,
+        inherited_color=_default_mpl_marker_color(
+            "markerfacecolor", marker_inherited_color
+        ),
+        auto_color=marker_inherited_color,
+        inherited_color_getter=lambda: marker_default_color("markerfacecolor"),
+        auto_color_getter=marker_auto_color,
     )
     marker_face_edit.setLineEditObjectName("figureComposerLineMarkerFaceColorEdit")
     marker_face_edit.setColorButtonObjectName("figureComposerLineMarkerFaceColorButton")
@@ -1124,7 +1203,12 @@ def _add_line_style_controls(
     marker_edge_edit = _ColorLineEditWidget(
         marker_edge_text,
         parent=page,
-        inherited_color=marker_inherited_color,
+        inherited_color=_default_mpl_marker_color(
+            "markeredgecolor", marker_inherited_color
+        ),
+        auto_color=marker_inherited_color,
+        inherited_color_getter=lambda: marker_default_color("markeredgecolor"),
+        auto_color_getter=marker_auto_color,
     )
     marker_edge_edit.setLineEditObjectName("figureComposerLineMarkerEdgeColorEdit")
     marker_edge_edit.setColorButtonObjectName("figureComposerLineMarkerEdgeColorButton")
@@ -2106,57 +2190,7 @@ def _create_line_operation(tool: FigureComposerTool) -> FigureOperationState:
         label="line",
         source=first_source,
         axes=tool._selected_axes_state(),
-    ).model_copy(update=_seeded_line_operation_defaults(tool, first_source))
-
-
-def _seeded_line_operation_defaults(
-    tool: FigureComposerTool, source_name: str
-) -> dict[str, typing.Any]:
-    updates: dict[str, typing.Any] = {}
-    current = tool._current_operation()
-    if current is None:
-        return updates
-    _index, current_operation = current
-    if current_operation.kind != FigureOperationKind.PLOT_SLICES:
-        return updates
-
-    updates.update(
-        {
-            "line_placement": "one_per_axis",
-            "line_values_axis": "y",
-            "line_normalize": "max",
-            "line_colors": ("black",),
-        }
     )
-    if current_operation.slice_dim and current_operation.slice_values:
-        updates["line_selection"] = {
-            current_operation.slice_dim: list(current_operation.slice_values)
-        }
-        if current_operation.slice_width is not None:
-            updates["line_selection"][f"{current_operation.slice_dim}_width"] = (
-                current_operation.slice_width
-            )
-        updates["line_iter_dim"] = current_operation.slice_dim
-        updates["line_label_text"] = default_label_text(
-            current_operation.slice_dim,
-            current_operation.slice_values,
-            fallback="profile {number}",
-        )
-    if not updates.get("line_x"):
-        updates["line_x"] = _default_profile_x_dim(tool, source_name, current_operation)
-    return updates
-
-
-def _default_profile_x_dim(
-    tool: FigureComposerTool, source_name: str, operation: FigureOperationState
-) -> str | None:
-    data = tool._document.source_data.get(source_name)
-    if data is None:
-        return None
-    candidates = [str(dim) for dim in data.dims if str(dim) != operation.slice_dim]
-    if candidates:
-        return candidates[-1]
-    return None
 
 
 def _display_text(tool: FigureComposerTool, operation: FigureOperationState) -> str:

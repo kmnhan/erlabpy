@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import textwrap
 import typing
@@ -12,6 +13,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 from erlab.interactive._completion import CompletingLineEdit
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
+from erlab.interactive._figurecomposer._ui._color_widgets import _ColorLineEditWidget
 from erlab.interactive._figurecomposer._ui._editor_controls import (
     MIXED_VALUE,
     MIXED_VALUES_TEXT,
@@ -101,7 +103,13 @@ class OperationEditorBinding:
     rendered_value: Callable[
         [FigureOperationState, Callable[[Sequence[Axes]], typing.Any]], typing.Any
     ]
+    rendered_color: Callable[
+        [FigureOperationState, str, str | None, str | None], object | None
+    ]
     styled_rcparams_value: Callable[[str], typing.Any]
+    form_context: Callable[[], contextlib.AbstractContextManager[None]] = (
+        contextlib.nullcontext
+    )
     can_add_source: Callable[[tuple[str, ...] | None], bool] = lambda _kinds: False
 
 
@@ -152,6 +160,7 @@ class _FigureComposerStepEditorPage(QtWidgets.QWidget):
     ) -> None:
         super().__init__(parent)
         self._editor_tabs = editor_tabs
+        self._show_callback: Callable[[], None] | None = None
         self._background_color = self.palette().color(QtGui.QPalette.ColorRole.Window)
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
 
@@ -180,6 +189,11 @@ class _FigureComposerStepEditorPage(QtWidgets.QWidget):
         if event is not None:
             super().paintEvent(event)
 
+    def showEvent(self, event: QtGui.QShowEvent | None) -> None:
+        if self._show_callback is not None:
+            self._show_callback()
+        super().showEvent(event)
+
     def changeEvent(self, event: QtCore.QEvent | None) -> None:
         if event is not None:
             super().changeEvent(event)
@@ -200,6 +214,7 @@ class FigureOperationEditor(QtWidgets.QWidget):
     edit_requested = QtCore.Signal(object)
     add_source_requested = QtCore.Signal(object)
     validation_changed = QtCore.Signal()
+    rendered_values_changed = QtCore.Signal()
 
     def __init__(
         self,
@@ -579,12 +594,11 @@ class FigureOperationEditor(QtWidgets.QWidget):
     def _combo_for_popup_view(
         self, view: QtWidgets.QAbstractItemView
     ) -> QtWidgets.QComboBox | None:
-        matched_combo: QtWidgets.QComboBox | None = None
         for combo in self._live_tracked_combos():
             combo_view = combo.view()
             if combo_view is not None and combo_view is view:
-                matched_combo = combo
-        return matched_combo
+                return combo
+        return None
 
     def _live_tracked_combos(self) -> tuple[QtWidgets.QComboBox, ...]:
         live_refs: list[weakref.ReferenceType[QtWidgets.QComboBox]] = []
@@ -872,12 +886,95 @@ class FigureOperationEditor(QtWidgets.QWidget):
         """Return an rcParam under the composition root's effective options."""
         return self.binding.styled_rcparams_value(key)
 
+    def rendered_color(
+        self,
+        operation: FigureOperationState,
+        key: str,
+        *,
+        field: str | None = None,
+        component: str | None = None,
+    ) -> object | None:
+        return self.binding.rendered_color(operation, key, field, component)
+
+    def refresh_rendered_values(self) -> None:
+        self.rendered_values_changed.emit()
+        page = self.current_page
+        if page is not None and page.isVisible():
+            for widget in page.findChildren(_ColorLineEditWidget):
+                if not widget.isVisible():
+                    continue
+                widget.refreshInheritedColor()
+
     def new_form_page(
         self, object_name: str
     ) -> tuple[QtWidgets.QWidget, QtWidgets.QFormLayout]:
         page = self.create_page(object_name, transient=True)
         layout = QtWidgets.QFormLayout(page)
         return page, layout
+
+    def defer_form_page(
+        self,
+        page: QtWidgets.QWidget,
+        builder: Callable[
+            [FigureOperationState, QtWidgets.QWidget, QtWidgets.QFormLayout], None
+        ],
+    ) -> None:
+        """Populate a form when shown, using the current recipe and sources."""
+        if not isinstance(page, _FigureComposerStepEditorPage):
+            raise TypeError("Deferred forms require an operation editor page")
+        current = self.current_operation()
+        if current is None:
+            return
+        operation_id = current[1].operation_id
+        generation = self._generation
+        previous_recipe = None
+        previous_source_revision = -1
+
+        def populate() -> None:
+            nonlocal previous_recipe, previous_source_revision
+            if self._closing or generation != self._generation or not page.isVisible():
+                return
+            operation = self.context.operation_by_id(operation_id)
+            if operation is None:
+                return
+            recipe = self.context.recipe
+            source_revision = self.context.source_revision
+            if (
+                recipe is previous_recipe
+                and source_revision == previous_source_revision
+            ):
+                return
+            layout = typing.cast("QtWidgets.QFormLayout", page.layout())
+            controls = page.findChildren(QtWidgets.QWidget)
+            retired_keys = {
+                self._input_error_key(child)
+                for child in controls
+                if child.property("figure_composer_editor_generation") == generation
+            }
+            for child in controls:
+                child.setObjectName("")
+            self.retire_form_controls(layout)
+            with self.binding.form_context():
+                builder(operation, page, layout)
+            previous_recipe = recipe
+            previous_source_revision = source_revision
+            operation_ids = set(self._operation_ids_for_error())
+            self.set_input_errors(
+                {
+                    operation_id: {
+                        key: message
+                        for key, message in errors.items()
+                        if operation_id not in operation_ids or key not in retired_keys
+                    }
+                    for operation_id, errors in self._input_errors.items()
+                }
+            )
+            self._reconcile_input_errors()
+            self._section_tab_stop_refs.clear()
+            self._queue_tab_order_refresh()
+
+        page._show_callback = populate
+        populate()
 
     def mark_control(self, widget: QtWidgets.QWidget) -> None:
         widget.setProperty("figure_composer_editor_generation", self._generation)
@@ -1502,8 +1599,17 @@ class FigureOperationEditor(QtWidgets.QWidget):
                     QtCore.QEvent.Type.Wheel,
                 }:
                     self._begin_transient_combo_popup_guard()
-            elif isinstance(watched, QtWidgets.QAbstractItemView) and (
-                self._combo_for_popup_view(watched) is not None
+            elif (
+                isinstance(watched, QtWidgets.QAbstractItemView)
+                and event_type
+                in {
+                    QtCore.QEvent.Type.Show,
+                    QtCore.QEvent.Type.ShowToParent,
+                    QtCore.QEvent.Type.Hide,
+                    QtCore.QEvent.Type.HideToParent,
+                    QtCore.QEvent.Type.Close,
+                }
+                and self._combo_for_popup_view(watched) is not None
             ):
                 if event_type in {
                     QtCore.QEvent.Type.Show,

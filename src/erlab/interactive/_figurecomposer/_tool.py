@@ -134,6 +134,7 @@ from erlab.interactive._figurecomposer._operations._plot_slices._render import (
     _PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR,
     _PLOT_SLICES_MAPPABLE_PANEL_KEY_ATTR,
 )
+from erlab.interactive._figurecomposer._rendered_colors import _RenderedColorCache
 from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
     _iter_axes,
@@ -503,6 +504,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._settings_dialog: OptionDialog | None = None
         self._updating_controls = False
         self._rendering = False
+        self._rendered_color_cache = _RenderedColorCache()
         self._auto_redraw_dirty = False
         self._operation_editor_update_pending = False
         self._preview_render_update_pending = False
@@ -641,6 +643,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         output_recipe_changed = output_recipe_payload != self._output_recipe_payload
         self._output_recipe_payload = output_recipe_payload
         if output_recipe_changed or source_payloads_changed:
+            self._rendered_color_cache.invalidate()
             self._notify_provenance_changed()
         if recipe_changed:
             self.sigStateChanged.emit()
@@ -697,6 +700,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             with contextlib.suppress(Exception):
                 options_model = self._options_getter()
         with figure_options_context(options_model):
+            yield
+
+    @contextlib.contextmanager
+    def _editor_form_context(self) -> Iterator[None]:
+        with self._figure_options_context(), _figure_style_context():
             yield
 
     @staticmethod
@@ -932,6 +940,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         else:
             _render_preview(self, show_window=show_window)
         self._auto_redraw_dirty = False
+        self.operation_editor.refresh_rendered_values()
         if emit_info:
             self.sigInfoChanged.emit()
 
@@ -1101,6 +1110,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         ):
             self._update_operation_editor_safely()
         self._mark_preview_pixmap_stale()
+        window = self._figure_window
+        if window is not None and erlab.interactive.utils.qt_is_valid(window):
+            self._rendered_color_cache.mark_rendered(window.figure)
+        self.operation_editor.refresh_rendered_values()
         self.sigInfoChanged.emit()
         self._write_state()
 
@@ -1220,6 +1233,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._mark_preview_pixmap_stale()
             if not self._cache_live_canvas_preview(redraw=True):
                 return False
+            self._rendered_color_cache.mark_rendered(window.figure)
         except Exception:
             return False
         return True
@@ -1430,6 +1444,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._figure_window.hide()
 
     def _close_figure_window(self) -> None:
+        self._rendered_color_cache.invalidate()
         erlab.interactive._figurecomposer._ui._toolbar_dialogs.close_toolbar_dialogs(
             self
         )
@@ -1717,7 +1732,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 first_live_axis=self._editor_first_live_axis,
                 subplot_parameter_default=self._editor_subplot_parameter_default,
                 rendered_value=self._editor_rendered_value,
+                rendered_color=self._editor_rendered_color,
                 styled_rcparams_value=self._editor_styled_rcparams_value,
+                form_context=self._editor_form_context,
             )
         )
         self.operation_editor.add_source_requested.connect(
@@ -4017,7 +4034,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _editor_first_live_axis(
         self, selection: FigureAxesSelectionState
     ) -> typing.Any:
-        layout_axes = _live_layout_axes(self, render_if_missing=True)
+        layout_axes = _live_layout_axes(self, render_if_missing=False)
         if layout_axes is None:
             return None
         if isinstance(layout_axes, dict) and not selection.axes_ids:
@@ -4083,6 +4100,28 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _editor_styled_rcparams_value(self, key: str) -> typing.Any:
         with self._figure_options_context(), _figure_style_context():
             return _styled_rcparams_value(key)
+
+    def _editor_rendered_color(
+        self,
+        operation: FigureOperationState,
+        key: str,
+        field: str | None = None,
+        component: str | None = None,
+    ) -> object | None:
+        if self._rendering or self._auto_redraw_dirty:
+            return None
+
+        def read_color(axes: Sequence[typing.Any]) -> object | None:
+            with self._figure_options_context(), _figure_style_context():
+                return self._rendered_color_cache.color(
+                    axes[0].figure,
+                    operation.operation_id,
+                    key,
+                    field=field,
+                    component=component,
+                )
+
+        return self._editor_rendered_value(operation, read_color)
 
     def _add_operation(self, action_id: str) -> None:
         operation = _registry.spec_for_action(action_id).create_operation(self)
@@ -4667,7 +4706,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     COMMON_AXES_SECTION_TOOLTIP,
                 )
             )
-        sections.extend(spec.build_editor_sections(self.operation_editor, operation))
+        with self._figure_options_context(), _figure_style_context():
+            sections.extend(
+                spec.build_editor_sections(self.operation_editor, operation)
+            )
         self._set_step_sections(sections)
 
     def _update_operation_editor_safely(self) -> None:

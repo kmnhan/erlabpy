@@ -5,7 +5,7 @@ import pytest
 import xarray as xr
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
-from qtpy import QtWidgets
+from qtpy import QtGui, QtWidgets
 
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
 import erlab.interactive._figurecomposer._seeding as figurecomposer_seeding
@@ -34,6 +34,7 @@ from erlab.interactive._figurecomposer._seeding import (
     bz_overlay_operation_from_momentum_data,
 )
 from erlab.interactive._figurecomposer._sources import ArraySourcePayload
+from erlab.interactive._figurecomposer._ui._color_widgets import _ColorPickerButton
 from tests.interactive.imagetool.manager.helpers import _exec_generated_code
 
 from ._common import (
@@ -47,6 +48,25 @@ from ._common import (
     _photon_energy_tool,
     _select_operation_rows,
 )
+
+
+def test_figure_composer_bz_default_color_matches_lines(qtbot) -> None:
+    operation = FigureOperationState.bz_overlay().model_copy(
+        update={"bz_bounds": (-20.0, 20.0, -20.0, 20.0)}
+    )
+    tool = _bz_tool(operation)
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+    tool.operation_editor.select_section("style")
+    page = tool.operation_editor.current_page
+    edit = page.findChild(QtWidgets.QLineEdit, "figureComposerBZColorEdit")
+    button = page.findChild(_ColorPickerButton, "figureComposerBZColorButton")
+    assert edit is not None
+    assert button is not None
+    assert edit.text() == ""
+    assert button.color() == QtGui.QColor("black")
+    assert tool.figure.axes[0].lines[0].get_color() == "k"
+    assert tool.tool_status.operations[0] == operation
 
 
 def test_figure_composer_bz_overlay_editor_updates_state(qtbot) -> None:
@@ -1234,23 +1254,24 @@ def test_figure_composer_photon_energy_overlay_helper_edges(qtbot, monkeypatch) 
     )
 
 
-def test_figure_composer_photon_energy_overlay_add_step_seeds_source_and_binding(
+def test_figure_composer_photon_energy_overlay_add_step_uses_defaults(
     qtbot,
 ) -> None:
-    data = _photon_energy_source()
+    primary = _photon_energy_source(name="primary")
+    selected = _photon_energy_source(name="selected")
     plot_operation = FigureOperationState.plot_slices(
         label="hvdep",
-        sources=("hvdep_kconv",),
-        axes=FigureAxesSelectionState(axes=((0, 0),)),
+        sources=("selected",),
+        axes=FigureAxesSelectionState(axes=((0, 1),)),
         slice_dim="eV",
         slice_values=(-0.3,),
     )
     tool = FigureComposerTool.from_sources(
-        {"hvdep_kconv": data},
-        sources=(FigureSourceState(name="hvdep_kconv", label="hvdep_kconv"),),
+        {"selected": selected, "primary": primary},
+        sources=(FigureSourceState(name="selected"), FigureSourceState(name="primary")),
         operations=(plot_operation,),
-        setup=FigureSubplotsState(),
-        primary_source="hvdep_kconv",
+        setup=FigureSubplotsState(ncols=2),
+        primary_source="primary",
     )
     qtbot.addWidget(tool)
     tool.operation_panel.operation_list.setCurrentItem(
@@ -1266,53 +1287,40 @@ def test_figure_composer_photon_energy_overlay_add_step_seeds_source_and_binding
 
     operation = tool.tool_status.operations[-1]
     assert operation.kind == FigureOperationKind.PHOTON_ENERGY_OVERLAY
-    assert operation.hv_overlay_source == "hvdep_kconv"
-    assert operation.binding_energy == -0.3
+    assert operation.hv_overlay_source == "primary"
+    assert operation.binding_energy is None
+    assert operation.axes == FigureAxesSelectionState(axes=((0, 1),))
     assert operation.photon_energies == ()
+    assert tool.tool_status.operations[0] == plot_operation
 
 
-def test_figure_composer_photon_energy_overlay_seed_fallbacks(qtbot) -> None:
-    data = _photon_energy_source()
-    unused_data = _photon_energy_source(name="unused")
+@pytest.mark.parametrize(
+    ("primary_source", "expected_source"), [("second", "second"), ("unused", "first")]
+)
+def test_figure_composer_photon_energy_overlay_add_step_source_fallbacks(
+    qtbot, primary_source, expected_source
+) -> None:
+    data = xr.DataArray(np.arange(2.0), dims="kx")
     tool = FigureComposerTool.from_sources(
-        {"unused": unused_data, "hvdep_kconv": data},
-        sources=(FigureSourceState(name="hvdep_kconv", label="hvdep_kconv"),),
+        {"unused": data, "first": data, "second": data},
+        sources=(FigureSourceState(name="first"), FigureSourceState(name="second")),
         operations=(),
         setup=FigureSubplotsState(),
-        primary_source="unused",
+        primary_source=primary_source,
     )
     qtbot.addWidget(tool)
 
-    assert figurecomposer_photon_energy._seed_source(tool) == "hvdep_kconv"
-    assert figurecomposer_photon_energy._seed_binding_energy(tool) is None
+    action = next(
+        action
+        for action in tool.operation_panel.add_step_menu.actions()
+        if action.data() == FigureOperationKind.PHOTON_ENERGY_OVERLAY.value
+    )
+    action.trigger()
 
-    primary_tool = FigureComposerTool.from_sources(
-        {"hvdep_kconv": data},
-        sources=(FigureSourceState(name="hvdep_kconv", label="hvdep_kconv"),),
-        operations=(),
-        setup=FigureSubplotsState(),
-        primary_source="hvdep_kconv",
-    )
-    qtbot.addWidget(primary_tool)
-    assert figurecomposer_photon_energy._seed_source(primary_tool) == "hvdep_kconv"
-
-    line_operation = FigureOperationState.line(
-        label="line", source="hvdep_kconv", axes=FigureAxesSelectionState()
-    )
-    line_tool = FigureComposerTool.from_sources(
-        {"hvdep_kconv": data},
-        sources=(FigureSourceState(name="hvdep_kconv", label="hvdep_kconv"),),
-        operations=(line_operation,),
-        setup=FigureSubplotsState(),
-        primary_source="hvdep_kconv",
-    )
-    qtbot.addWidget(line_tool)
-    line_tool.operation_panel.operation_list.setCurrentItem(
-        line_tool.operation_panel.operation_list.topLevelItem(0)
-    )
-
-    assert figurecomposer_photon_energy._seed_source(line_tool) == "hvdep_kconv"
-    assert figurecomposer_photon_energy._seed_binding_energy(line_tool) is None
+    operation = tool.tool_status.operations[-1]
+    assert operation.kind == FigureOperationKind.PHOTON_ENERGY_OVERLAY
+    assert operation.hv_overlay_source == expected_source
+    assert operation.binding_energy is None
 
 
 @pytest.mark.parametrize("with_array", [False, True])
@@ -1351,6 +1359,7 @@ def test_photon_energy_overlay_add_step_skips_selected_fit(qtbot, with_array) ->
     operation = tool.tool_status.operations[-1]
     assert operation.kind == FigureOperationKind.PHOTON_ENERGY_OVERLAY
     assert operation.hv_overlay_source == ("hvdep_kconv" if with_array else None)
+    assert operation.binding_energy is None
 
 
 def test_figure_composer_photon_energy_overlay_tracks_source_ownership(

@@ -5,12 +5,14 @@ import matplotlib.transforms as mtransforms
 import numpy as np
 import pytest
 import xarray as xr
+from matplotlib import style as mpl_style
 from matplotlib.container import ErrorbarContainer
 from qtpy import QtCore, QtWidgets
 
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
 import erlab.interactive._figurecomposer._ui._color_widgets as color_widgets
 import erlab.interactive._figurecomposer._ui._editor_controls as _editor_controls
+import erlab.interactive._stylesheets
 from erlab.interactive._figurecomposer import (
     FigureAxesSelectionState,
     FigureComposerTool,
@@ -46,7 +48,156 @@ from ._common import (
     _assert_errorbar_yerr,
     _select_operation_rows,
     _selected_operation_rows,
+    _set_figure_stylesheets,
 )
+
+
+@pytest.mark.parametrize(
+    ("spec", "control"),
+    [
+        (spec, control)
+        for methods in (method_catalog.AXES_METHODS, method_catalog.FIGURE_METHODS)
+        for spec in methods.values()
+        for control in spec.controls
+        if control.kind == method_catalog.MethodControlKind.FLOAT_KWARG
+        and control.default_rcparam is not None
+    ],
+    ids=lambda item: (
+        item.name if isinstance(item, method_catalog.MethodSpec) else item.key
+    ),
+)
+def test_figure_composer_method_numeric_defaults_use_active_style(
+    qtbot, monkeypatch, spec, control
+) -> None:
+    erlab.interactive._stylesheets.available_stylesheets(("erlab.general",))
+    rcparam = control.default_rcparam
+    monkeypatch.setitem(mpl_style.library, "composer-control-default", {rcparam: 7.25})
+    monkeypatch.setattr(
+        mpl_style, "available", [*mpl_style.available, "composer-control-default"]
+    )
+    _set_figure_stylesheets(["composer-control-default"])
+    data = xr.DataArray(np.arange(2.0), dims="x", name="data")
+    operation = FigureOperationState.method(family=spec.family, name=spec.name)
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    tool.operation_editor.select_section("method")
+    spinbox = tool.operation_editor.current_page.findChild(
+        QtWidgets.QDoubleSpinBox, control.object_name
+    )
+    assert spinbox is not None
+    assert spinbox.value() == spinbox.minimum()
+    assert "7.25" in spinbox.text()
+    assert tool.tool_status.operations[0].method_kwargs == {}
+
+    spinbox.setValue(0.0)
+    assert tool.tool_status.operations[0].method_kwargs == {control.key: 0.0}
+    spinbox.setValue(spinbox.minimum())
+    assert tool.tool_status.operations[0].method_kwargs == {}
+
+
+def test_figure_composer_errorbar_default_capsize_matches_render(qtbot) -> None:
+    _set_figure_stylesheets([])
+    data = xr.DataArray(np.arange(2.0), dims="x", name="data")
+    operation = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="errorbar",
+        args=((0.0, 1.0), (1.0, 2.0)),
+        kwargs={"yerr": 0.2},
+    )
+    with mpl.rc_context({"errorbar.capsize": 5.0}):
+        tool = FigureComposerTool.from_sources(
+            {"data": data},
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        )
+        qtbot.addWidget(tool)
+        tool.operation_editor.select_section("method")
+        spinbox = tool.operation_editor.current_page.findChild(
+            QtWidgets.QDoubleSpinBox, "figureComposerAxesMethodErrorbarCapSizeSpin"
+        )
+        assert spinbox is not None
+        assert spinbox.value() == spinbox.minimum()
+        assert "5" in spinbox.text()
+        spinbox.stepUp()
+        assert spinbox.value() == 5.5
+        spinbox.setValue(spinbox.minimum())
+
+        def rendered_errorbar():
+            figurecomposer_rendering._render_into_figure(
+                tool, tool.figure, sync_visible=False
+            )
+            return tool.figure.axes[0].containers[0]
+
+        _assert_errorbar_capsize(rendered_errorbar(), 5.0)
+        spinbox.setValue(0.0)
+        assert tool.tool_status.operations[0].method_kwargs["capsize"] == 0.0
+        assert not rendered_errorbar().lines[1]
+        spinbox.setValue(2.0)
+        _assert_errorbar_capsize(rendered_errorbar(), 2.0)
+        spinbox.setValue(spinbox.minimum())
+        assert "capsize" not in tool.tool_status.operations[0].method_kwargs
+        _assert_errorbar_capsize(rendered_errorbar(), 5.0)
+
+
+@pytest.mark.parametrize("family", [FigureMethodFamily.AXES, FigureMethodFamily.FIGURE])
+def test_figure_composer_legend_controls_preserve_style_defaults(qtbot, family) -> None:
+    _set_figure_stylesheets([])
+    data = xr.DataArray(np.arange(2.0), dims="x", name="data")
+    operations = (
+        FigureOperationState.method(
+            family=FigureMethodFamily.AXES,
+            name="plot",
+            args=((1.0, 2.0),),
+            kwargs={"label": "data"},
+        ),
+        FigureOperationState.method(family=family, name="legend"),
+    )
+    with mpl.rc_context({"legend.frameon": False, "legend.loc": "lower left"}):
+        tool = FigureComposerTool.from_sources(
+            {"data": data},
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=operations,
+            primary_source="data",
+        )
+        qtbot.addWidget(tool)
+        _select_operation_rows(tool, (1,))
+        tool.operation_editor.select_section("method")
+        prefix = "Axes" if family == FigureMethodFamily.AXES else "Figure"
+        loc = tool.operation_editor.current_page.findChild(
+            QtWidgets.QComboBox, f"figureComposer{prefix}MethodLegendLocCombo"
+        )
+        frame = tool.operation_editor.current_page.findChild(
+            QtWidgets.QComboBox, f"figureComposer{prefix}MethodLegendFrameCombo"
+        )
+        assert loc is not None
+        assert frame is not None
+        assert loc.currentData() is None
+        assert frame.currentData() is None
+
+        _activate_combo_index(loc, loc.findData("upper right"))
+        _activate_combo_index(frame, frame.findData("True"))
+        assert tool.tool_status.operations[1].method_kwargs == {
+            "loc": "upper right",
+            "frameon": True,
+        }
+        _activate_combo_index(loc, loc.findData(None))
+        _activate_combo_index(frame, frame.findData(None))
+        assert tool.tool_status.operations[1].method_kwargs == {}
+        figurecomposer_rendering._render_into_figure(
+            tool, tool.figure, sync_visible=False
+        )
+        legend = (
+            tool.figure.axes[0].get_legend()
+            if family == FigureMethodFamily.AXES
+            else tool.figure.legends[0]
+        )
+        assert legend.get_frame_on() is False
 
 
 def test_figure_composer_axes_plot_data_update_helper(qtbot) -> None:

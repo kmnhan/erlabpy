@@ -653,7 +653,25 @@ def _build_style_editor(
         lambda target: line_kw_text(target, "color", "c") or "",
         str,
     )
-    color_edit = _ColorLineEditWidget(color_text, parent=page)
+
+    def color_default() -> object:
+        current = editor.current_operation()
+        target = (
+            current[1]
+            if current is not None and current[1].operation_id == operation.operation_id
+            else operation
+        )
+        color = editor.rendered_value(
+            target, lambda axes: eplt.colors.axes_textcolor(axes[0])
+        )
+        return "black" if color is None else color
+
+    color_edit = _ColorLineEditWidget(
+        color_text,
+        parent=page,
+        inherited_color="black",
+        inherited_color_getter=color_default,
+    )
     color_edit.setLineEditObjectName("figureComposerBZColorEdit")
     color_edit.setColorButtonObjectName("figureComposerBZColorButton")
     editor.apply_mixed_line_edit(color_edit.line_edit, color_mixed)

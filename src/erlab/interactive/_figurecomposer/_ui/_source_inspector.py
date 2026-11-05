@@ -6,7 +6,7 @@ import html
 import logging
 import typing
 
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive._figurecomposer._model._sources import _source_display_label
@@ -215,11 +215,19 @@ class SourceInspectorWidget(QtWidgets.QWidget):
         if self._data is None or self._details_key is None:
             self.details_label.clear()
             return
+        if not self.isVisible() or not self.details_button.isChecked():
+            return
         if self._details_html is None:
             self._details_html = erlab.interactive.utils._apply_qt_accent_color(
                 _source_details_html(self._data)
             )
         self.details_label.setText(self._details_html)
+
+    def showEvent(self, event: QtGui.QShowEvent | None) -> None:
+        if event is not None:
+            super().showEvent(event)
+        if self.details_button.isChecked():
+            self._ensure_details_html()
 
     def invalidate_details(self) -> None:
         """Discard cached metadata after source data changes."""

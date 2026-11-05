@@ -16,7 +16,10 @@ from erlab.interactive._figurecomposer._line_style import (
     normalize_style_value,
 )
 from erlab.interactive._figurecomposer._text import _dict_from_text, _format_dict
-from erlab.interactive._figurecomposer._ui._color_widgets import _ColorLineEditWidget
+from erlab.interactive._figurecomposer._ui._color_widgets import (
+    _ColorLineEditWidget,
+    _mpl_color_value_text,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
@@ -154,10 +157,30 @@ def _text_control(
     text, mixed = editor.batch_text(
         operation,
         lambda target: _style_value(target, field, component, key),
-        lambda value: "" if value is None else str(value),
+        _mpl_color_value_text
+        if color
+        else lambda value: "" if value is None else str(value),
     )
     if color:
-        widget: QtWidgets.QWidget = _ColorLineEditWidget(text, page)
+
+        def color_default() -> object:
+            current = editor.current_operation()
+            target = (
+                current[1]
+                if current is not None
+                and current[1].operation_id == operation.operation_id
+                else operation
+            )
+            return _fit_color_default(editor, target, field, component, key)
+
+        widget: QtWidgets.QWidget = _ColorLineEditWidget(
+            text,
+            page,
+            inherited_color=_fit_color_default(
+                editor, operation, field, component, key, resolve_rendered=False
+            ),
+            inherited_color_getter=color_default,
+        )
         color_widget = typing.cast("_ColorLineEditWidget", widget)
         edit = color_widget.line_edit
         color_widget.setLineEditObjectName(object_name)
@@ -180,6 +203,54 @@ def _text_control(
         unchanged_mixed=lambda: editor.line_edit_batch_unchanged(edit),
     )
     editor.add_form_row(layout, title, widget, tooltip)
+
+
+def _fit_color_default(
+    editor: FigureOperationEditor,
+    operation: FigureOperationState,
+    field: str,
+    component: str | None,
+    key: str,
+    *,
+    resolve_rendered: bool = True,
+) -> object:
+    actual = (
+        editor.rendered_color(
+            operation,
+            "color" if key in {"color", "ecolor"} else key,
+            field=field,
+            component=component,
+        )
+        if resolve_rendered
+        else None
+    )
+    if actual is not None:
+        return actual
+    if key == "edgecolor":
+        return "none"
+    line_field = {
+        "fit_band_kw": "fit_line_kw",
+        "fit_component_band_kw": "fit_component_kw",
+    }.get(field, field)
+    explicit = _style_value(operation, line_field, component, "color")
+    if explicit is not None:
+        return explicit
+    index = int(operation.show_fit) if line_field == "fit_data_kw" else 0
+    if line_field == "fit_component_kw":
+        index = int(operation.show_fit) + int(operation.show_data)
+        names = tuple(
+            dict.fromkeys(
+                (*operation.fit_component_kw, *operation.fit_component_band_kw)
+            )
+        )
+        if component in names:
+            index += names.index(component)
+    colors = editor.styled_rcparams_value("axes.prop_cycle").by_key().get("color", ())
+    return (
+        colors[index % len(colors)]
+        if colors
+        else editor.styled_rcparams_value("lines.color")
+    )
 
 
 def _additional_properties(

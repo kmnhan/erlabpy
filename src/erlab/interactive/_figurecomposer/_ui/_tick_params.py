@@ -12,6 +12,7 @@ from erlab.interactive._figurecomposer._completion_values import (
     _completion_literal_from_text,
     _format_completion_literal,
 )
+from erlab.interactive._figurecomposer._defaults import _styled_rcparams_value
 from erlab.interactive._figurecomposer._line_style import (
     LINE_STYLE_OPTIONS,
     color_kw_value_from_text,
@@ -20,14 +21,17 @@ from erlab.interactive._figurecomposer._operations._method._catalog import (
     TICK_PARAMS_CONTROLLED_KWARGS,
     TICK_PARAMS_DEFAULT_KWARGS,
 )
-from erlab.interactive._figurecomposer._ui._color_widgets import _ColorLineEditWidget
+from erlab.interactive._figurecomposer._ui._color_widgets import (
+    _ColorLineEditWidget,
+    _mpl_color_value_text,
+)
 from erlab.interactive._figurecomposer._ui._line_style import (
     configure_style_combo,
     style_combo_value,
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
 _SIDE_ROWS = (
     ("Bottom", "bottom", "labelbottom"),
@@ -48,11 +52,13 @@ class TickParamsEditorWidget(QtWidgets.QWidget):
         parent: QtWidgets.QWidget | None = None,
         *,
         object_prefix: str = "figureComposerAxesMethodTickParams",
+        color_defaults: Callable[[str, str], Mapping[str, object]] | None = None,
     ) -> None:
         super().__init__(parent)
         self._object_prefix = object_prefix
         self._kwargs: dict[str, typing.Any] = {}
         self._updating = False
+        self._color_defaults = color_defaults
         self.setObjectName(f"{object_prefix}Editor")
         self.setProperty("figureComposerTickParamsEditor", True)
 
@@ -97,20 +103,26 @@ class TickParamsEditorWidget(QtWidgets.QWidget):
         self.grid_alpha_edit = _line_edit(f"{object_prefix}GridAlphaEdit", self)
         self.grid_width_edit = _line_edit(f"{object_prefix}GridLineWidthEdit", self)
 
-        self.colors_edit = _color_edit(self)
+        self.colors_edit = _color_edit(self, lambda: self._inherited_colors()["colors"])
         self.colors_edit.setLineEditObjectName(f"{object_prefix}ColorsEdit")
         self.colors_edit.setColorButtonObjectName(f"{object_prefix}ColorsEditButton")
-        self.tick_color_edit = _color_edit(self)
+        self.tick_color_edit = _color_edit(
+            self, lambda: self._inherited_colors()["color"]
+        )
         self.tick_color_edit.setLineEditObjectName(f"{object_prefix}TickColorEdit")
         self.tick_color_edit.setColorButtonObjectName(
             f"{object_prefix}TickColorEditButton"
         )
-        self.label_color_edit = _color_edit(self)
+        self.label_color_edit = _color_edit(
+            self, lambda: self._inherited_colors()["labelcolor"]
+        )
         self.label_color_edit.setLineEditObjectName(f"{object_prefix}LabelColorEdit")
         self.label_color_edit.setColorButtonObjectName(
             f"{object_prefix}LabelColorEditButton"
         )
-        self.grid_color_edit = _color_edit(self)
+        self.grid_color_edit = _color_edit(
+            self, lambda: self._inherited_colors()["grid_color"]
+        )
         self.grid_color_edit.setLineEditObjectName(f"{object_prefix}GridColorEdit")
         self.grid_color_edit.setColorButtonObjectName(
             f"{object_prefix}GridColorEditButton"
@@ -175,14 +187,21 @@ class TickParamsEditorWidget(QtWidgets.QWidget):
             self._set_line_edit(
                 self.label_font_edit, str(self._kwargs.get("labelfontfamily") or "")
             )
-            self.colors_edit.setText(str(self._kwargs.get("colors") or ""))
-            self.tick_color_edit.setText(str(self._kwargs.get("color") or ""))
-            self.label_color_edit.setText(str(self._kwargs.get("labelcolor") or ""))
+            self.colors_edit.setText(_mpl_color_value_text(self._kwargs.get("colors")))
+            self.tick_color_edit.setText(
+                _mpl_color_value_text(self._kwargs.get("color"))
+            )
+            self.label_color_edit.setText(
+                _mpl_color_value_text(self._kwargs.get("labelcolor"))
+            )
             self._set_line_edit(
                 self.zorder_edit,
                 _format_float(self._kwargs.get("zorder")),
             )
-            self.grid_color_edit.setText(str(self._kwargs.get("grid_color") or ""))
+            self.grid_color_edit.setText(
+                _mpl_color_value_text(self._kwargs.get("grid_color"))
+            )
+            self._update_color_defaults()
             self._set_line_edit(
                 self.grid_alpha_edit, _format_float(self._kwargs.get("grid_alpha"))
             )
@@ -428,7 +447,37 @@ class TickParamsEditorWidget(QtWidgets.QWidget):
             self._kwargs.pop(key, None)
         else:
             self._kwargs[key] = value
+        self._update_color_defaults()
         self.sigTickParamsChanged.emit(self.tick_params())
+
+    def _update_color_defaults(self) -> None:
+        for widget in (
+            self.colors_edit,
+            self.tick_color_edit,
+            self.label_color_edit,
+            self.grid_color_edit,
+        ):
+            widget.refreshInheritedColor()
+
+    def _inherited_colors(self) -> dict[str, object]:
+        axis = self._kwargs.get("axis", "both")
+        which = self._kwargs.get("which", "major")
+        axis_name = "y" if axis == "y" else "x"
+        tick_color = _styled_rcparams_value(f"{axis_name}tick.color")
+        label_color = _styled_rcparams_value(f"{axis_name}tick.labelcolor")
+        defaults = {
+            "color": tick_color,
+            "labelcolor": tick_color if label_color == "inherit" else label_color,
+            "grid_color": _styled_rcparams_value("grid.color"),
+        }
+        if self._color_defaults is not None:
+            defaults.update(self._color_defaults(axis, which))
+        return {
+            "colors": defaults["color"],
+            "color": self._kwargs.get("colors", defaults["color"]),
+            "labelcolor": self._kwargs.get("colors", defaults["labelcolor"]),
+            "grid_color": defaults["grid_color"],
+        }
 
     def _commit_float(
         self,
@@ -631,8 +680,12 @@ def _line_edit(
     return edit
 
 
-def _color_edit(parent: QtWidgets.QWidget) -> _ColorLineEditWidget:
-    edit = _ColorLineEditWidget("", parent)
+def _color_edit(
+    parent: QtWidgets.QWidget, inherited_color_getter: Callable[[], object]
+) -> _ColorLineEditWidget:
+    edit = _ColorLineEditWidget(
+        "", parent, inherited_color_getter=inherited_color_getter
+    )
     edit.line_edit.setPlaceholderText("Auto")
     edit.line_edit.setMaximumWidth(82)
     edit.color_button.setFixedWidth(34)
