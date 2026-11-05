@@ -13723,7 +13723,8 @@ def test_shift_dialog_fallback_and_stale_manager_context(qtbot) -> None:
     with pytest.raises(RuntimeError, match="manager-backed"):
         dialog._current_manager_context()
 
-    dialog.shift_tool_combo.addItem("Missing ImageTool", userData="missing")
+    assert dialog.shift_tool_selector.current_uid is None
+    assert dialog.shift_tool_selector.candidate_uids == ()
     dialog.shift_source_combo.addItem(
         "Existing ImageTool", userData=dialog._SOURCE_MANAGER
     )

@@ -40,6 +40,10 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _text_to_loader_extension_value,
     _WeightedFtoolDialog,
 )
+from erlab.interactive.imagetool.manager._source_selector import (
+    ManagerSourceSelector,
+    _ManagerSourceTree,
+)
 from erlab.interactive.imagetool.manager._spreadsheet_metadata import (
     _MAPPING_NAME_COLUMN,
     _MAPPING_VALUE_ROLE,
@@ -47,6 +51,227 @@ from erlab.interactive.imagetool.manager._spreadsheet_metadata import (
     _SpreadsheetDiscoveryWorker,
     _SpreadsheetMetadataDialog,
 )
+
+
+def test_manager_source_selector_keeps_context_and_search(qtbot, manager_context):
+    data = xr.DataArray([[0.0, 1.0], [2.0, 3.0]], dims=("x", "y"), name="parent")
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        root_uid = manager._tool_graph.root_wrappers[index].uid
+        context_uid = manager.add_imagetool_child(
+            erlab.interactive.imagetool.ImageTool(
+                data.rename("context"), _in_manager=True
+            ),
+            index,
+            show=False,
+        )
+        named_uid = manager.add_imagetool_child(
+            erlab.interactive.imagetool.ImageTool(
+                data.rename("source"), _in_manager=True
+            ),
+            context_uid,
+            show=False,
+        )
+        unnamed_uid = manager.add_imagetool_child(
+            erlab.interactive.imagetool.ImageTool(data.rename(None), _in_manager=True),
+            context_uid,
+            show=False,
+        )
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(
+                data.rename("unrelated"), _in_manager=True
+            ),
+            show=False,
+        )
+        allowed = {named_uid, unnamed_uid}
+        selector = ManagerSourceSelector(
+            manager,
+            eligibility=lambda node: (
+                None if node.uid in allowed else "Incompatible data"
+            ),
+        )
+        qtbot.addWidget(selector)
+        assert selector.current_uid is None
+        assert selector.candidate_uids == (named_uid, unnamed_uid)
+        assert set(selector._content.items) == {
+            root_uid,
+            context_uid,
+            named_uid,
+            unnamed_uid,
+        }
+        context = selector._content.items[context_uid]
+        assert context.flags() & QtCore.Qt.ItemFlag.ItemIsEnabled
+        assert not context.flags() & QtCore.Qt.ItemFlag.ItemIsSelectable
+        assert context.toolTip(0)
+        assert context.text(0) == "context"
+        assert selector._content.items[named_uid].text(0) == "source"
+        assert selector._content.items[unnamed_uid].text(0) == "(unnamed)"
+        assert unnamed_uid not in selector._content.paths[unnamed_uid]
+
+        selector.show()
+        selector._button.click()
+        assert selector._popup.isVisible()
+        context = selector._content.items[context_uid]
+        tree = selector._content.tree
+        qtbot.mouseClick(
+            tree.viewport(),
+            QtCore.Qt.MouseButton.LeftButton,
+            pos=tree.visualItemRect(context).center(),
+        )
+        assert selector.current_uid is None
+        assert selector._popup.isVisible()
+        context.setExpanded(False)
+        selector._content.search_edit.setText("source")
+        assert context.isExpanded()
+        assert not selector._content.items[root_uid].isHidden()
+        assert not selector._content.items[named_uid].isHidden()
+        assert selector._content.items[unnamed_uid].isHidden()
+        selector._content.search_edit.clear()
+        assert not context.isExpanded()
+        selector._content.search_edit.setText("context")
+        assert not selector._content.items[unnamed_uid].isHidden()
+        selector._content.select_uid(named_uid)
+        qtbot.keyClick(selector._content.tree, QtCore.Qt.Key.Key_Up)
+        assert (
+            selector._content.tree.currentItem() is selector._content.items[named_uid]
+        )
+        qtbot.keyClick(selector._content.tree, QtCore.Qt.Key.Key_Down)
+        assert (
+            selector._content.tree.currentItem() is selector._content.items[unnamed_uid]
+        )
+        assert selector.current_uid is None
+        selector._content.search_edit.setText("missing")
+        assert selector._content.empty_label.isVisible()
+        assert not selector._content.tree.isVisible()
+        selector._content.search_edit.clear()
+        qtbot.keyClick(selector._content.search_edit, QtCore.Qt.Key.Key_Escape)
+        assert not selector._popup.isVisible()
+
+
+def test_manager_source_selector_popup_accepts_and_cancels(qtbot, manager_context):
+    data = xr.DataArray([[0.0, 1.0], [2.0, 3.0]], dims=("x", "y"), name="same")
+    with manager_context() as manager:
+        for _ in range(2):
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
+                show=False,
+            )
+        selector = ManagerSourceSelector(manager, eligibility=lambda node: None)
+        qtbot.addWidget(selector)
+        first, second = selector.candidate_uids
+        assert selector._content.paths[first] != selector._content.paths[second]
+        selector.show()
+        qtbot.keyClick(selector._button, QtCore.Qt.Key.Key_Down)
+        assert selector._popup.isVisible()
+        qtbot.keyClick(selector._content.search_edit, QtCore.Qt.Key.Key_Escape)
+        assert selector.current_uid is None
+        assert not selector._popup.isVisible()
+        qtbot.keyClick(selector._button, QtCore.Qt.Key.Key_F4)
+        tree = selector._content.tree
+        second_item = selector._content.items[second]
+        qtbot.mouseClick(
+            tree.viewport(),
+            QtCore.Qt.MouseButton.LeftButton,
+            pos=tree.visualItemRect(second_item).center(),
+        )
+        assert selector.current_uid == second
+        assert not selector._popup.isVisible()
+
+        selector._button.click()
+        selector._content.select_uid(first)
+        qtbot.keyClick(tree, QtCore.Qt.Key.Key_Escape)
+        assert selector.current_uid == second
+        assert not selector._popup.isVisible()
+
+        selector._button.click()
+        selector._content.search_edit.setText(selector._content.items[first].text(0))
+        qtbot.keyClick(selector._content.search_edit, QtCore.Qt.Key.Key_Down)
+        qtbot.keyClick(tree, QtCore.Qt.Key.Key_Return)
+        assert selector.current_uid == first
+        assert selector._content.paths[first] == selector._button.text()
+
+
+def test_manager_source_selector_refreshes_selection_by_uid(qtbot, manager_context):
+    data = xr.DataArray([[0.0, 1.0], [2.0, 3.0]], dims=("x", "y"), name="source")
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        allowed = True
+        selector = ManagerSourceSelector(
+            manager, eligibility=lambda node: None if allowed else "Incompatible data"
+        )
+        qtbot.addWidget(selector)
+        uid = selector.candidate_uids[0]
+        with qtbot.waitSignal(selector.selectionChanged):
+            selector.set_current_uid(uid)
+        manager.rename_imagetool(index, "renamed")
+        qtbot.wait_until(lambda: "renamed" in selector._button.text())
+        assert selector.current_uid == uid
+
+        allowed = False
+        with qtbot.waitSignals([selector.selectionChanged, selector.candidatesChanged]):
+            manager._sigDataReplaced.emit()
+        assert selector.current_uid is None
+        assert not selector.candidate_uids
+        selector.set_current_uid(uid)
+        assert selector.current_uid is None
+
+        allowed = True
+        selector.refresh()
+        selector.set_current_uid(uid)
+        with qtbot.waitSignal(selector.selectionChanged):
+            manager.remove_imagetool(index)
+        assert selector.current_uid is None
+        assert not selector.candidate_uids
+
+
+def test_manager_source_selector_without_manager(qtbot):
+    selector = ManagerSourceSelector(None, eligibility=lambda node: None)
+    qtbot.addWidget(selector)
+    selector.show()
+    selector._button.click()
+    assert selector.current_uid is None
+    assert not selector.candidate_uids
+    assert selector._content.empty_label.isVisible()
+    assert not selector._content.tree.isVisible()
+    selector.hide()
+    assert not selector._popup.isVisible()
+
+
+def test_manager_source_tree_dismissal_preserves_container(qtbot):
+    dialog = QtWidgets.QDialog()
+    qtbot.addWidget(dialog)
+    content = _ManagerSourceTree(dialog)
+    layout = QtWidgets.QVBoxLayout(dialog)
+    layout.addWidget(content)
+    dialog.show()
+    with qtbot.waitSignal(content.dismissed):
+        qtbot.keyClick(content.search_edit, QtCore.Qt.Key.Key_Escape)
+    assert dialog.isVisible()
+
+
+def test_manager_source_selector_bounds_long_labels(qtbot, manager_context):
+    data = xr.DataArray(
+        [[0.0, 1.0], [2.0, 3.0]], dims=("x", "y"), name="long source name " * 100
+    )
+    with manager_context() as manager:
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        selector = ManagerSourceSelector(manager, eligibility=lambda node: None)
+        qtbot.addWidget(selector)
+        selector.set_current_uid(selector.candidate_uids[0])
+        assert selector.minimumSizeHint().width() <= 320
+        assert selector.sizeHint().width() <= 320
+        assert selector._button.toolTip() == selector._button.text()
+        assert selector._button.accessibleName() == selector._button.text()
+        selector.resize(180, selector.sizeHint().height())
+        selector.show()
+        assert selector.width() == 180
+        selector.grab()
 
 
 @pytest.mark.parametrize(

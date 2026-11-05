@@ -625,25 +625,9 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 )
 
         if type_rect and type_text and type_color:
-            _fill_rounded_rect(
-                painter,
-                type_rect,
-                facecolor=option.palette.base(),
-                edgecolor=type_color,
-                linewidth=self.icon_border_width,
-                radius=self.icon_corner_radius,
+            self._paint_tool_type_badge(
+                painter, option, type_rect, type_text, type_color
             )
-            type_font = self._scaled_font(option.font, self.tool_type_font_scale)
-            painter.save()
-            painter.setFont(type_font)
-            painter.setPen(type_color)
-            painter.drawText(
-                type_rect,
-                QtCore.Qt.AlignmentFlag.AlignVCenter
-                | QtCore.Qt.AlignmentFlag.AlignCenter,
-                type_text,
-            )
-            painter.restore()
 
         if not is_editing:  # pragma: no branch
             role = (
@@ -774,6 +758,33 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 pixmap.transformed(QtGui.QTransform().scale(1.0, -1.0)),
                 option,
             )
+
+    def _paint_tool_type_badge(
+        self,
+        painter: QtGui.QPainter,
+        option: QtWidgets.QStyleOptionViewItem,
+        rect: QtCore.QRect,
+        text: str,
+        color: QtGui.QColor,
+    ) -> None:
+        _fill_rounded_rect(
+            painter,
+            rect,
+            facecolor=option.palette.base(),
+            edgecolor=color,
+            linewidth=self.icon_border_width,
+            radius=self.icon_corner_radius,
+        )
+        badge_font = self._scaled_font(option.font, self.tool_type_font_scale)
+        painter.save()
+        painter.setFont(badge_font)
+        painter.setPen(color)
+        painter.drawText(
+            rect,
+            QtCore.Qt.AlignmentFlag.AlignVCenter | QtCore.Qt.AlignmentFlag.AlignCenter,
+            text,
+        )
+        painter.restore()
 
     def _compute_tool_type_info(
         self,

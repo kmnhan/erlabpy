@@ -9188,17 +9188,8 @@ def test_manager_shift_dialog_child_and_manual_reload(
                 dialog._SOURCE_MANAGER, QtCore.Qt.ItemDataRole.UserRole
             )
         )
-        assert (
-            dialog.shift_tool_combo.findData(
-                shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
-            )
-            >= 0
-        )
-        dialog.shift_tool_combo.setCurrentIndex(
-            dialog.shift_tool_combo.findData(
-                shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
-            )
-        )
+        assert shift_node.uid in dialog.shift_tool_selector.candidate_uids
+        dialog.shift_tool_selector.set_current_uid(shift_node.uid)
         assert dialog.launch_mode == "nest"
 
         expected = erlab.analysis.transform.shift(data, -shift, along="eV")
@@ -9326,50 +9317,52 @@ def test_manager_shift_dialog_filters_and_revalidates_candidates(
                 manager.get_imagetool(0).slicer_area
             )
             qtbot.addWidget(unavailable_dialog)
-            assert unavailable_dialog.shift_tool_combo.count() == 0
+            assert len(unavailable_dialog.shift_tool_selector.candidate_uids) == 0
 
         dialog = imagetool_dialogs.ShiftDialog(manager.get_imagetool(0).slicer_area)
         qtbot.addWidget(dialog)
-        candidate_uids = {
-            dialog.shift_tool_combo.itemData(i, QtCore.Qt.ItemDataRole.UserRole)
-            for i in range(dialog.shift_tool_combo.count())
-        }
+        candidate_uids = set(dialog.shift_tool_selector.candidate_uids)
         assert candidate_uids == {compatible_node.uid}
 
         dialog.along_combo.setCurrentIndex(
             dialog.along_combo.findData("x", QtCore.Qt.ItemDataRole.UserRole)
         )
-        assert dialog.shift_tool_combo.count() == 0
+        assert len(dialog.shift_tool_selector.candidate_uids) == 0
         dialog.along_combo.setCurrentIndex(
             dialog.along_combo.findData("eV", QtCore.Qt.ItemDataRole.UserRole)
         )
-        assert (
-            dialog.shift_tool_combo.findData(
-                compatible_node.uid, QtCore.Qt.ItemDataRole.UserRole
-            )
-            >= 0
-        )
+        assert compatible_node.uid in dialog.shift_tool_selector.candidate_uids
 
         dialog.shift_source_combo.setCurrentIndex(
             dialog.shift_source_combo.findData(
                 dialog._SOURCE_MANAGER, QtCore.Qt.ItemDataRole.UserRole
             )
         )
+        dialog.shift_tool_selector.set_current_uid(compatible_node.uid)
         compatible_node._set_source_state("stale")
-        dialog._populate_shift_candidates()
-        assert dialog.shift_tool_combo.count() == 0
-        assert not dialog.uses_manager_shift
+        qtbot.wait_until(lambda: not dialog.shift_tool_selector.candidate_uids)
+        assert dialog.uses_manager_shift
+        assert dialog.shift_tool_selector.current_uid is None
+        ok_button = dialog.buttonBox.button(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+        )
+        assert ok_button is not None
+        assert not ok_button.isEnabled()
 
         compatible_node._set_source_state("fresh")
-        dialog._populate_shift_candidates()
+        qtbot.wait_until(
+            lambda: compatible_node.uid in dialog.shift_tool_selector.candidate_uids
+        )
+        assert dialog.shift_tool_selector.current_uid is None
+        assert not ok_button.isEnabled()
         dialog.shift_source_combo.setCurrentIndex(
             dialog.shift_source_combo.findData(
                 dialog._SOURCE_MANAGER, QtCore.Qt.ItemDataRole.UserRole
             )
         )
-        selected_uid = dialog.shift_tool_combo.currentData(
-            QtCore.Qt.ItemDataRole.UserRole
-        )
+        dialog.shift_tool_selector.set_current_uid(compatible_node.uid)
+        assert ok_button.isEnabled()
+        selected_uid = dialog.shift_tool_selector.current_uid
         assert selected_uid == compatible_node.uid
         manager.remove_imagetool(1)
         warnings: list[str] = []
@@ -9383,6 +9376,82 @@ def test_manager_shift_dialog_filters_and_revalidates_candidates(
 
         assert len(warnings) == 1
         assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+
+
+def test_manager_shift_dialog_selects_nested_unnamed_source(
+    qtbot, manager_context, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": [0, 1, 2], "eV": np.linspace(-0.2, 0.2, 5)},
+    )
+    shift = xr.DataArray([0.0, 0.1, -0.1], dims="x", coords={"x": [0, 1, 2]})
+    with manager_context() as manager:
+        source_tool = itool(data, manager=False, execute=False)
+        manager.add_imagetool(source_tool, show=False)
+        context_tool = GoldTool(data)
+        context_tool.set_script_inputs(
+            (ScriptInput(name="data", data_role="source"),), primary_input="data"
+        )
+        context_uid = manager.add_childtool(
+            context_tool, script_inputs={"data": 0}, show=False
+        )
+        manager._child_node(context_uid).name = "reference"
+        shift_tool = itool(shift, manager=False, execute=False)
+        shift_uid = manager.add_imagetool_child(shift_tool, context_uid, show=False)
+        source_node = manager._node_for_target(0)
+
+        dialog = imagetool_dialogs.ShiftDialog(source_tool.slicer_area)
+        qtbot.addWidget(dialog)
+        selector = dialog.shift_tool_selector
+        assert selector.candidate_uids == (shift_uid,)
+        context_item = selector._content.items[context_uid]
+        assert not context_item.flags() & QtCore.Qt.ItemFlag.ItemIsSelectable
+        assert context_item.parent() == selector._content.items[source_node.uid]
+        assert context_item.text(0) == "reference"
+        assert context_item.data(0, _TOOL_TYPE_ROLE) == "goldtool"
+        assert selector._content.items[shift_uid].data(0, _TOOL_TYPE_ROLE) is None
+        selector._content.search_edit.setText("goldtool")
+        assert not selector._content.items[shift_uid].isHidden()
+        selector._content.search_edit.clear()
+        dialog.shift_source_combo.setCurrentIndex(
+            dialog.shift_source_combo.findData(dialog._SOURCE_MANAGER)
+        )
+        ok_button = dialog.buttonBox.button(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+        )
+        assert ok_button is not None
+        assert not ok_button.isEnabled()
+        selector.set_current_uid(shift_uid)
+        assert "reference > " in selector._button.text()
+        assert "goldtool" not in selector._button.text()
+        assert ok_button.isEnabled()
+        tree = selector._content.tree
+        painted_types = []
+        paint_badge = manager.tree_view._delegate._paint_tool_type_badge
+
+        def record_badge(painter, option, rect, text, color):
+            if option.widget is tree:
+                painted_types.append(text)
+            paint_badge(painter, option, rect, text, color)
+
+        monkeypatch.setattr(
+            manager.tree_view._delegate, "_paint_tool_type_badge", record_badge
+        )
+        dialog.show()
+        selector._button.click()
+        tree.viewport().grab()
+        assert set(painted_types) == {"goldtool"}
+        qtbot.keyClick(selector._content.search_edit, QtCore.Qt.Key.Key_Escape)
+        dialog.accept()
+
+        result_uid = source_node._childtool_indices[-1]
+        assert result_uid != shift_uid
+        xr.testing.assert_identical(
+            manager._node_for_target(result_uid).data_for_role("source"),
+            erlab.analysis.transform.shift(data, -shift, along="eV"),
+        )
 
 
 def test_manager_shift_dialog_reports_stale_and_failed_results(
@@ -9418,16 +9487,11 @@ def test_manager_shift_dialog_reports_stale_and_failed_results(
                     QtCore.Qt.ItemDataRole.UserRole,
                 )
             )
-            dialog.shift_tool_combo.setCurrentIndex(
-                dialog.shift_tool_combo.findData(
-                    shift_uid,
-                    QtCore.Qt.ItemDataRole.UserRole,
-                )
-            )
+            dialog.shift_tool_selector.set_current_uid(shift_uid)
             return dialog
 
         dialog = new_dialog()
-        dialog.shift_tool_combo.setCurrentIndex(-1)
+        dialog.shift_tool_selector.set_current_uid(None)
         warnings: list[object] = []
         with monkeypatch.context() as patch:
             patch.setattr(
@@ -9521,11 +9585,7 @@ def test_manager_shift_dialog_result_placements_and_cycle_preflight(
                 top_level._SOURCE_MANAGER, QtCore.Qt.ItemDataRole.UserRole
             )
         )
-        top_level.shift_tool_combo.setCurrentIndex(
-            top_level.shift_tool_combo.findData(
-                shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
-            )
-        )
+        top_level.shift_tool_selector.set_current_uid(shift_node.uid)
         top_level.launch_mode_combo.setCurrentIndex(
             top_level.launch_mode_combo.findData(
                 "detach", QtCore.Qt.ItemDataRole.UserRole
@@ -9553,11 +9613,7 @@ def test_manager_shift_dialog_result_placements_and_cycle_preflight(
                 replacement._SOURCE_MANAGER, QtCore.Qt.ItemDataRole.UserRole
             )
         )
-        replacement.shift_tool_combo.setCurrentIndex(
-            replacement.shift_tool_combo.findData(
-                shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
-            )
-        )
+        replacement.shift_tool_selector.set_current_uid(shift_node.uid)
         replace_index = replacement.launch_mode_combo.findData(
             "replace", QtCore.Qt.ItemDataRole.UserRole
         )
@@ -9665,11 +9721,7 @@ def test_manager_shift_dialog_result_placements_and_cycle_preflight(
                 cycle_dialog._SOURCE_MANAGER, QtCore.Qt.ItemDataRole.UserRole
             )
         )
-        cycle_dialog.shift_tool_combo.setCurrentIndex(
-            cycle_dialog.shift_tool_combo.findData(
-                dependent_uid, QtCore.Qt.ItemDataRole.UserRole
-            )
-        )
+        cycle_dialog.shift_tool_selector.set_current_uid(dependent_uid)
         assert not cycle_dialog._replacement_is_safe()
         replace_item = typing.cast(
             "QtGui.QStandardItemModel", cycle_dialog.launch_mode_combo.model()

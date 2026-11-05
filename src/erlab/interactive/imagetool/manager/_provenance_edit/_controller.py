@@ -2840,10 +2840,8 @@ class _ProvenanceEditController:
                 return
             if not dialog.uses_manager_shift:
                 raise TypeError("A bound shift step requires an ImageTool input")
-            selected_uid = dialog.shift_tool_combo.currentData(
-                QtCore.Qt.ItemDataRole.UserRole
-            )
-            if not isinstance(selected_uid, str):
+            selected_uid = dialog.shift_tool_selector.current_uid
+            if selected_uid is None:
                 raise TypeError("Select a compatible shift ImageTool")
             dialog._candidate_data(self._manager, selected_uid, prefix_data)
             if self._manager._dependency_tracker.transitively_depends_on(
@@ -2927,7 +2925,7 @@ class _ProvenanceEditController:
         dialog.prefilter_check.setChecked(operation.prefilter)
         dialog._populate_shift_candidates()
         if shift_uid is not None:
-            select(dialog.shift_tool_combo, shift_uid)
+            dialog.shift_tool_selector.set_current_uid(shift_uid)
 
     def _edited_script_code_operation(
         self,
