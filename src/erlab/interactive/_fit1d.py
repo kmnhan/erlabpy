@@ -41,7 +41,10 @@ if typing.TYPE_CHECKING:
     import lmfit
     import varname
 
-    from erlab.interactive._figurecomposer._fit_sources import FigureFitSourceSnapshot
+    from erlab.interactive._figurecomposer._fit_sources import (
+        FigureFitParameterSourceSnapshot,
+        FigureFitSourceSnapshot,
+    )
     from erlab.interactive._figurecomposer._providers import FigureSourceProvider
     from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
 else:
@@ -4949,9 +4952,37 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         return None
 
     def figure_source_providers(self) -> tuple[FigureSourceProvider, ...]:
-        from erlab.interactive._figurecomposer._providers import FitSourceProvider
+        from erlab.interactive._figurecomposer._providers import (
+            FitParameterSourceProvider,
+            FitSourceProvider,
+        )
 
-        return (FitSourceProvider(self),)
+        return (FitSourceProvider(self), FitParameterSourceProvider(self))
+
+    def figure_parameter_source_name(self) -> str:
+        return f"{self.figure_fit_source_name()}_parameters"
+
+    def has_figure_parameter_source(self) -> bool:
+        return self.has_figure_fit_source()
+
+    def figure_parameter_source_snapshot(self) -> FigureFitParameterSourceSnapshot:
+        from erlab.interactive._figurecomposer._fit_sources import (
+            FigureFitParameterSourceSnapshot,
+        )
+
+        self._flush_restore_work()
+        if not self.has_figure_parameter_source():
+            raise ValueError("A completed fit is required to plot fit parameters")
+        result_ds = self._unpack_figure_fit_metadata(
+            typing.cast("xr.Dataset", self._last_result_ds)
+        )
+        raw_provenance = result_ds.attrs.get("__figure_fit_provenance__")
+        return FigureFitParameterSourceSnapshot.from_dataset(
+            result_ds,
+            provenance_spec=None
+            if raw_provenance is None
+            else json.loads(raw_provenance),
+        )
 
     def _figure_fit_configuration(self) -> str:
         weighting = self._figure_fit_weighting_data()

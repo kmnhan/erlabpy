@@ -1095,6 +1095,18 @@ def test_figure_composer_generated_provenance_covers_operation_kinds(qtbot) -> N
                 name="linear_fit", kind="fit", provenance_spec=fit_provenance
             ),
         ),
+        setup=FigureSubplotsState(nrows=1, ncols=2),
+        operations=(
+            FigureOperationState.fit_plot(
+                source="linear_fit",
+                axes=FigureAxesSelectionState(axes=((0, 0),)),
+            ),
+            FigureOperationState.fit_parameters(
+                source="linear_fit",
+                parameter="c1",
+                axes=FigureAxesSelectionState(axes=((0, 1),)),
+            ),
+        ),
     )
     qtbot.addWidget(fit_tool)
 
@@ -1116,6 +1128,22 @@ def test_figure_composer_generated_provenance_covers_operation_kinds(qtbot) -> N
             case_label=case_label,
         )
         assert "fig, axs = plt.subplots" in code
+        if tool is fit_tool:
+            namespace = {"xr": xr, "era": erlab.analysis}
+            exec(code, namespace)  # noqa: S102
+            figure = namespace["fig"]
+            try:
+                parameter_axis = figure.axes[1]
+                np.testing.assert_equal(parameter_axis.lines[0].get_xdata(), ["c1"])
+                value = fit_result.modelfit_coefficients.sel(param="c1").item()
+                stderr = fit_result.modelfit_stderr.sel(param="c1").item()
+                np.testing.assert_allclose(parameter_axis.lines[0].get_ydata(), [value])
+                np.testing.assert_allclose(
+                    parameter_axis.collections[0].get_segments(),
+                    [[[0.0, value - stderr], [0.0, value + stderr]]],
+                )
+            finally:
+                plt.close(figure)
 
 
 def test_axes_selector_size_hint_tracks_grid(qtbot):

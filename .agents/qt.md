@@ -5,6 +5,10 @@ bindings through `qtpy` and use explicit Qt6 enums. Follow the existing
 [Qt import and UI conventions](../docs/source/contributing/development.md#code-standards).
 Validate changed lifetime or binding-sensitive paths under both bindings.
 
+Make GUI behavior understandable from visible state. Do not require users to infer
+hidden internal conditions. When a condition blocks an action or output, show the
+reason and how to resolve it.
+
 Avoid binding-specific signal or metaobject assumptions. Isolate unavoidable low-level
 differences in a compatibility helper.
 

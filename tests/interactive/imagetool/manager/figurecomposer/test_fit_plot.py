@@ -1706,3 +1706,185 @@ def test_fit_source_available_to_python_step(qtbot, fit_snapshot):
     _assert_equal_artists(rendered, namespace["fig"].axes[0])
     assert rendered.lines[0].get_xdata().size == 37
     assert tool._document.source_usage_count("edc_fit") == 1
+
+
+@pytest.mark.parametrize("show_errors", [False, True])
+def test_fit_parameters_from_fit1d_source(qtbot, fit_snapshot, show_errors):
+    operation = FigureOperationState.fit_parameters(
+        source="edc_fit", parameter="center"
+    )
+    operation = operation.model_copy(update={"fit_show_yerr": show_errors})
+    tool = _tool(qtbot, fit_snapshot, operation)
+    axis = _render(tool)
+    np.testing.assert_equal(axis.lines[0].get_xdata(), ["center"])
+    np.testing.assert_allclose(
+        axis.lines[0].get_ydata(),
+        [fit_snapshot.native_dataset.modelfit_coefficients.sel(param="center").item()],
+    )
+    assert len(axis.collections) == int(show_errors)
+    namespace = _exec_generated_code(
+        tool.generated_code(), {"edc_fit": fit_snapshot.native_dataset}
+    )
+    exported_axis = namespace["fig"].axes[0]
+    np.testing.assert_equal(exported_axis.lines[0].get_xdata(), ["center"])
+    np.testing.assert_allclose(
+        axis.lines[0].get_ydata(), exported_axis.lines[0].get_ydata()
+    )
+    assert len(exported_axis.collections) == int(show_errors)
+    if show_errors:
+        np.testing.assert_allclose(
+            axis.collections[0].get_segments(),
+            exported_axis.collections[0].get_segments(),
+        )
+
+
+def test_fit_parameters_scan_render_code_and_roundtrip(qtbot):
+    from erlab.interactive._figurecomposer._fit_sources import (
+        FigureFitParameterSourceSnapshot,
+    )
+
+    dataset = xr.Dataset(
+        {
+            "modelfit_coefficients": (
+                ("beta", "param"),
+                [[1.0, 3.0], [2.0, 4.0], [5.0, 6.0]],
+            ),
+            "modelfit_stderr": (
+                ("beta", "param"),
+                [[0.1, 0.3], [np.nan, 0.4], [0.5, 0.6]],
+            ),
+        },
+        coords={"beta": [2.0, 4.0, 8.0], "param": ["center", "sigma"]},
+    )
+    tool = FigureComposerTool.from_source_payloads(
+        {"scan_parameters": FigureFitParameterSourceSnapshot(dataset)},
+        sources=(FigureSourceState(name="scan_parameters", kind="fit_parameters"),),
+        operations=(FigureOperationState.fit_parameters(source="scan_parameters"),),
+    )
+    qtbot.addWidget(tool)
+    axis = _render(tool)
+    assert len(axis.lines) == 2
+    np.testing.assert_allclose(axis.lines[0].get_xdata(), dataset.beta)
+    np.testing.assert_allclose(
+        axis.lines[1].get_ydata(), dataset.modelfit_coefficients.sel(param="sigma")
+    )
+    namespace = _exec_generated_code(
+        tool.generated_code(), {"scan_parameters": dataset}
+    )
+    _assert_equal_artists(axis, namespace["fig"].axes[0])
+
+    restored = ToolWindow.from_dataset(tool.to_dataset())
+    qtbot.addWidget(restored)
+    _assert_equal_artists(axis, _render(restored))
+    _select_operation_rows(restored, (0,))
+    editor = restored.operation_editor
+    editor.select_section("fit_parameters")
+    combo = editor.current_page.findChild(
+        QtWidgets.QComboBox, "figureComposerFitParametersParameterCombo"
+    )
+    assert combo is not None
+    index = combo.findData("sigma")
+    combo.setCurrentIndex(index)
+    combo.activated.emit(index)
+    assert restored.tool_status.operations[0].fit_parameter == "sigma"
+    assert len(_render(restored).lines) == 1
+
+
+def test_fit_parameters_missing_source_and_parameter(qtbot, fit_snapshot):
+    from erlab.interactive._figurecomposer._operations import _fit_parameters
+
+    tool = _tool(
+        qtbot, fit_snapshot, FigureOperationState.fit_parameters(source="edc_fit")
+    )
+    with pytest.raises(FigureComposerInputError):
+        _fit_parameters._code_lines(
+            tool, FigureOperationState.fit_parameters(source="missing")
+        )
+    with pytest.raises(FigureComposerInputError):
+        _fit_parameters._code_lines(
+            tool,
+            FigureOperationState.fit_parameters(source="edc_fit", parameter="missing"),
+        )
+
+
+@pytest.mark.parametrize("accepted", [False, True])
+def test_fit_parameters_add_source(qtbot, fit_snapshot, accepted):
+    tool = _tool(
+        qtbot,
+        fit_snapshot,
+        FigureOperationState.fit_parameters(source="edc_fit", parameter="center"),
+    )
+    requests = []
+
+    def add_source(kinds):
+        requests.append(kinds)
+        if accepted:
+            tool.add_fit_sources(
+                (FigureSourceState(name="other_fit", kind="fit"),),
+                {"other_fit": fit_snapshot},
+            )
+        return accepted
+
+    tool._set_source_add_callbacks(add_sources=add_source)
+    button = next(
+        widget
+        for widget in tool.operation_editor.source_controls.findChildren(
+            QtWidgets.QPushButton, "figureComposerFitParametersAddSourceButton"
+        )
+        if widget.isEnabled()
+    )
+    button.click()
+    assert requests == [("fit_parameters", "fit")]
+    operation = tool.tool_status.operations[0]
+    assert operation.sources == ("other_fit" if accepted else "edc_fit",)
+    assert operation.fit_parameter == "center"
+    assert len(_render(tool).lines) == 1
+
+
+def test_fit_parameters_refresh_retains_unavailable_parameter(qtbot, fit_snapshot):
+    from erlab.interactive._figurecomposer._fit_sources import (
+        FigureFitParameterSourceSnapshot,
+    )
+
+    original = FigureFitParameterSourceSnapshot.from_dataset(
+        fit_snapshot.native_dataset
+    )
+    source = FigureSourceState(name="parameters", kind="fit_parameters")
+    tool = FigureComposerTool.from_source_payloads(
+        {"parameters": original},
+        sources=(source,),
+        operations=(
+            FigureOperationState.fit_parameters(
+                source="parameters", parameter="center"
+            ),
+        ),
+    )
+    qtbot.addWidget(tool)
+    replacement = FigureFitParameterSourceSnapshot.from_dataset(
+        original.native_dataset.sel(param=["sigma"])
+    )
+    assert tool.replace_source_payload("parameters", source, replacement)
+    assert tool.tool_status.operations[0].fit_parameter == "center"
+    rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert tool._operation_render_errors
+
+    tool.operation_editor.select_section("fit_parameters")
+    combo = tool.operation_editor.current_page.findChild(
+        QtWidgets.QComboBox, "figureComposerFitParametersParameterCombo"
+    )
+    assert combo is not None
+    assert combo.currentData() == "center"
+    model = combo.model()
+    assert (
+        not model.flags(model.index(combo.currentIndex(), 0))
+        & QtCore.Qt.ItemFlag.ItemIsEnabled
+    )
+    available = combo.findData("sigma")
+    combo.setCurrentIndex(available)
+    combo.activated.emit(available)
+    assert tool.tool_status.operations[0].fit_parameter == "sigma"
+    axis = _render(tool)
+    np.testing.assert_allclose(
+        axis.lines[0].get_ydata(),
+        [original.native_dataset.modelfit_coefficients.sel(param="sigma").item()],
+    )

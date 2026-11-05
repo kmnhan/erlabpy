@@ -21,6 +21,7 @@ from erlab.interactive._figurecomposer import (
     FigureRecipeState,
     FigureSubplotsState,
 )
+from erlab.interactive._figurecomposer._providers import FigureSourceTarget
 from erlab.interactive.imagetool._provenance._model import ScriptInput
 from erlab.interactive.imagetool.manager._figurecomposer import _dialogs
 from tests.interactive.imagetool.manager.helpers import select_child_tool, select_tools
@@ -700,7 +701,7 @@ def test_manager_fit_workflows_skip_unavailable_targets(qtbot, manager_context, 
         fit_uid = manager.add_childtool(fit_tool, script_inputs={"data": 0}, show=False)
         result = data.xlm.modelfit("x", model=fit_tool._model, params=fit_tool._params)
         fit_tool._set_fit_ds(result, 0.0)
-        targets = ("unavailable-fit", fit_uid)
+        targets = ("unavailable-fit", FigureSourceTarget(fit_uid, "fit"))
         if action == "create":
             figure_uid = manager._figure_workflows.create_figure_from_targets(
                 targets, title="Fit figure", show=False
@@ -713,7 +714,7 @@ def test_manager_fit_workflows_skip_unavailable_targets(qtbot, manager_context, 
                 assert composer._grow_subplot_grid("column")
                 before = composer.tool_status
                 assert not manager._figure_workflows.append_figure_from_targets(
-                    (0, fit_uid),
+                    (0, FigureSourceTarget(fit_uid, "fit")),
                     figure_uid=figure_uid,
                     axes_selection=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
                     show=False,
@@ -776,7 +777,8 @@ def test_manager_explicit_fit_requests_are_preserved(
             if argument == "custom_code"
             else {"operation": FigureOperationState.custom(label="summary", code=code)}
         )
-        targets = (0, fit_uid) if mixed else (fit_uid,)
+        fit_target = FigureSourceTarget(fit_uid, "fit")
+        targets = (0, fit_target) if mixed else (fit_target,)
         figure_uid = manager.create_figure_from_targets(targets, show=False, **kwargs)
         assert figure_uid is not None
         composer = manager._child_node(figure_uid).tool_window
@@ -852,7 +854,8 @@ def test_explicit_fit_creation_preserves_existing_source_aliases(
             )
             fit_tool._set_fit_ds(result, 0.0)
             fit_uids.append(fit_uid)
-        targets = (0, fit_uids[1]) if first_kind == "array" else tuple(fit_uids)
+        fit_targets = tuple(FigureSourceTarget(uid, "fit") for uid in fit_uids)
+        targets = (0, fit_targets[1]) if first_kind == "array" else fit_targets
         kwargs = (
             {"custom_code": "fig._source_total = float(data_fit.sum())"}
             if first_kind == "array"
@@ -886,8 +889,9 @@ def test_explicit_fit_creation_preserves_existing_source_aliases(
         "cancel",
     ],
 )
+@pytest.mark.parametrize("provider_id", ["fit", "fit_parameters"])
 def test_fit_action_destination_preserves_snapshot_and_recipe(
-    qtbot, manager_context, accept_dialog, action
+    qtbot, manager_context, accept_dialog, action, provider_id
 ):
     from erlab.analysis.fit.models import PolynomialModel
 
@@ -912,7 +916,9 @@ def test_fit_action_destination_preserves_snapshot_and_recipe(
             tool._set_fit_ds(fitted, 0.0)
             fit_tools.append(tool)
         workflow = manager._figure_workflows
-        figure_uid = manager.create_figure_from_targets((fit_uids[0],), show=False)
+        figure_uid = manager.create_figure_from_targets(
+            (FigureSourceTarget(fit_uids[0], provider_id),), show=False
+        )
         composer = manager._child_node(figure_uid).tool_window
         initial = composer.tool_status
         [original] = composer.source_states()
@@ -932,8 +938,18 @@ def test_fit_action_destination_preserves_snapshot_and_recipe(
             assert dialog._ok_button().isEnabled()
 
         returned = []
+        add_to_figure = (
+            workflow.add_fit_to_figure
+            if provider_id == "fit"
+            else lambda tool: workflow.add_fit_parameters_to_figure(
+                tool, parameter="c1"
+            )
+        )
+        original_imagetools = {
+            uid for uid, node in manager._tool_graph.nodes.items() if node.is_imagetool
+        }
         accept_dialog(
-            lambda: returned.append(workflow.add_fit_to_figure(fit_tools[1])),
+            lambda: returned.append(add_to_figure(fit_tools[1])),
             pre_call=choose_destination,
             accept_call=(lambda dialog: dialog.reject())
             if action == "cancel"
@@ -953,9 +969,13 @@ def test_fit_action_destination_preserves_snapshot_and_recipe(
                 if source.node_uid == fit_uids[1]
             )
             xr.testing.assert_allclose(
-                target.source_payloads()[source.name].native_dataset.modelfit_best_fit,
-                fitted.modelfit_best_fit,
+                target.source_payloads()[
+                    source.name
+                ].native_dataset.modelfit_coefficients,
+                fitted.modelfit_coefficients,
             )
+            assert source.provider_id == provider_id
+            assert source.kind == provider_id
             assert workflow._can_refresh_figure_source(target_uid, source.name)
             if action == _dialogs._FIGURE_DIALOG_NEW:
                 assert target_uid != figure_uid
@@ -979,6 +999,10 @@ def test_fit_action_destination_preserves_snapshot_and_recipe(
                 composer.source_payloads()[original.name].native_dataset,
                 original_snapshot,
             )
+
+        assert {
+            uid for uid, node in manager._tool_graph.nodes.items() if node.is_imagetool
+        } == original_imagetools
 
 
 def test_manager_fit_sources_replay_refresh_and_retain_snapshot(
@@ -1068,13 +1092,20 @@ def test_manager_fit_sources_replay_refresh_and_retain_snapshot(
         picker = _dialogs._FigureSourcePickerDialog(manager)
         qtbot.addWidget(picker)
         item = _source_picker_item(picker, fit_uid)
-        assert item.flags() & QtCore.Qt.ItemFlag.ItemIsUserCheckable
-        item.setCheckState(0, QtCore.Qt.CheckState.Checked)
-        assert fit_uid in picker.selected_targets()
+        assert not item.flags() & QtCore.Qt.ItemFlag.ItemIsUserCheckable
+        assert item.childCount() == 2
+        fit_item = next(
+            item.child(index)
+            for index in range(item.childCount())
+            if item.child(index).data(0, QtCore.Qt.ItemDataRole.UserRole)
+            == FigureSourceTarget(fit_uid, "fit")
+        )
+        fit_item.setCheckState(0, QtCore.Qt.CheckState.Checked)
+        assert FigureSourceTarget(fit_uid, "fit") in picker.selected_targets()
         empty_uid = manager.create_empty_figure(show=False)
         empty = manager._child_node(empty_uid).tool_window
         assert manager._figure_workflows._add_imagetool_sources_to_figure(
-            empty_uid, (fit_uid,)
+            empty_uid, (FigureSourceTarget(fit_uid, "fit"),)
         )
         assert empty.source_states()[0].kind == "fit"
         assert not empty.tool_status.operations
@@ -1162,4 +1193,151 @@ def test_manager_fit_sources_replay_refresh_and_retain_snapshot(
         xr.testing.assert_identical(
             composer.source_payloads()[source.name].native_dataset,
             stored.native_dataset,
+        )
+
+
+def test_manager_parameter_sources_refresh_current_state_and_retain_snapshot(
+    qtbot, manager_context
+):
+    from erlab.analysis.fit.models import PolynomialModel
+    from erlab.interactive._figurecomposer._rendering import _render_into_figure
+
+    x = np.linspace(-1.0, 1.0, 21)
+    data = xr.DataArray(
+        np.arange(1.0, 4.0)[:, None]
+        + np.arange(2.0, 5.0)[:, None] * x
+        + 0.2 * x**3
+        + 0.01 * np.cos(5 * x),
+        dims=("cut", "energy"),
+        coords={"cut": [10.0, 20.0, 30.0], "energy": x},
+        name="spectra",
+    )
+    linear_bias = 0.2 * np.sum(x**4) / np.sum(x**2)
+    with manager_context() as manager:
+        erlab.interactive.itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1)
+        tool = erlab.interactive.ftool(
+            data, model=PolynomialModel(degree=1), execute=False
+        )
+        tool.set_script_inputs((ScriptInput(name="data"),), primary_input="data")
+        fit_uid = manager.add_childtool(tool, script_inputs={"data": 0}, show=False)
+        tool.y_max_spin.setValue(1)
+        for index in range(2):
+            tool._set_current_index(index)
+            job = tool._fit_job()
+            fitted = tool._fit_data().xlm.modelfit(
+                "energy", model=tool._model, params=tool._params
+            )
+            tool._set_fit_ds(tool._fit_result_for_job(fitted, job), 0.0)
+        tool.param_plot_combo.setCurrentText("c1")
+        original_nodes = set(manager._tool_graph.nodes)
+
+        tool.param_plot._add_parameter_plot_to_figure()
+
+        [figure_uid] = manager._figure_uids()
+        assert set(manager._tool_graph.nodes) == original_nodes | {figure_uid}
+        composer = manager._child_node(figure_uid).tool_window
+        assert isinstance(composer, FigureComposerTool)
+        [source] = composer.source_states()
+        assert source.node_uid == fit_uid
+        assert source.kind == source.provider_id == "fit_parameters"
+        assert source.provider_selection == {}
+        [operation] = composer.tool_status.operations
+        assert operation.kind == FigureOperationKind.FIT_PARAMETERS
+        assert operation.fit_parameter == "c1"
+        assert operation.sources == (source.name,)
+        native = composer.source_payloads()[source.name].native_dataset
+        np.testing.assert_allclose(
+            native.modelfit_coefficients.sel(param="c1"), np.array([2, 3]) + linear_bias
+        )
+        np.testing.assert_array_equal(native.cut, [10, 20])
+        assert "modelfit_results" not in native
+
+        provenance = composer.current_provenance_spec()
+        assert provenance is not None
+        namespace = {"data": data}
+        exec(provenance.display_code(), namespace)  # noqa: S102
+        axes = namespace["axs"].flat[0]
+        np.testing.assert_allclose(
+            np.asarray(axes.lines[0].get_xdata(), dtype=float), [10, 20]
+        )
+        np.testing.assert_allclose(
+            np.asarray(axes.lines[0].get_ydata(), dtype=float),
+            np.array([2, 3]) + linear_bias,
+        )
+
+        tool.y_max_spin.setValue(2)
+        tool.y_min_spin.setValue(1)
+        tool._set_current_index(2)
+        job = tool._fit_job()
+        fitted = tool._fit_data().xlm.modelfit(
+            "energy", model=tool._model, params=tool._params
+        )
+        tool._set_fit_ds(tool._fit_result_for_job(fitted, job), 0.0)
+        workflow = manager._figure_workflows
+        xr.testing.assert_identical(
+            composer.source_payloads()[source.name].native_dataset, native
+        )
+        assert workflow._can_refresh_figure_source(figure_uid, source.name)
+        assert workflow._refresh_figure_source(figure_uid, source.name)
+        assert tool._current_idx == 2
+        assert tool.y_min_spin.value() == 1
+        assert tool.y_max_spin.value() == 2
+        assert composer.source_states()[0].provider_selection == {}
+        refreshed = composer.source_payloads()[source.name].native_dataset
+        np.testing.assert_array_equal(refreshed.cut, [20, 30])
+        np.testing.assert_allclose(
+            refreshed.modelfit_coefficients.sel(param="c1"),
+            np.array([3, 4]) + linear_bias,
+        )
+        assert composer.tool_status.operations[0] == operation
+        _render_into_figure(composer, composer.figure, sync_visible=False)
+        np.testing.assert_allclose(
+            composer.figure.axes[0].lines[0].get_xdata(), [20, 30]
+        )
+
+        tool.domain_min_spin.setValue(-0.6)
+        tool.domain_max_spin.setValue(0.9)
+        tool.set_model(PolynomialModel(degree=3))
+        current_slopes = []
+        for index in (1, 2):
+            tool._set_current_index(index)
+            job = tool._fit_job()
+            fitted = tool._fit_data().xlm.modelfit(
+                "energy", model=tool._model, params=tool._params
+            )
+            tool._set_fit_ds(tool._fit_result_for_job(fitted, job), 0.0)
+            current_slopes.append(float(fitted.modelfit_coefficients.sel(param="c1")))
+        xr.testing.assert_identical(
+            composer.source_payloads()[source.name].native_dataset, refreshed
+        )
+        assert workflow._can_refresh_figure_source(figure_uid, source.name)
+        assert workflow._refresh_figure_source(figure_uid, source.name)
+        stored = composer.source_payloads()[source.name].native_dataset
+        np.testing.assert_array_equal(stored.cut, [20, 30])
+        np.testing.assert_allclose(
+            stored.modelfit_coefficients.sel(param="c1"), current_slopes
+        )
+        assert "c3" in stored.param
+        assert composer.tool_status.operations[0] == operation
+        _render_into_figure(composer, composer.figure, sync_visible=False)
+        assert not composer._operation_render_errors
+        np.testing.assert_allclose(
+            composer.figure.axes[0].lines[0].get_xdata(), [20, 30]
+        )
+        np.testing.assert_allclose(
+            composer.figure.axes[0].lines[0].get_ydata(), current_slopes
+        )
+
+        restored = erlab.interactive.utils.ToolWindow.from_dataset(
+            composer.to_dataset()
+        )
+        qtbot.addWidget(restored)
+        xr.testing.assert_identical(
+            restored.source_payloads()[source.name].native_dataset, stored
+        )
+        manager._remove_childtool(fit_uid)
+        assert not workflow._can_refresh_figure_source(figure_uid, source.name)
+        xr.testing.assert_identical(
+            composer.source_payloads()[source.name].native_dataset, stored
         )
