@@ -621,7 +621,8 @@ def fermi_dirac_linbkg_broad(
 def _tll_bare(x, amp=1.0, center=0.0, alpha=0.1, temp=10.0):
     r"""Tomonaga-Luttinger liquid spectral function.
 
-    The TLL spectral function is calculated as :cite:p:`ohtsubo2015tll`:
+    The TLL spectral function is calculated using the expression in Ref.
+    :cite:`ohtsubo2015tll`:
 
     .. math::
 
@@ -669,7 +670,8 @@ def tll(
 ) -> npt.NDArray[np.float64] | xr.DataArray:
     r"""Resolution-broadened Tomonaga-Luttinger liquid (TLL) spectral function.
 
-    The TLL spectral function is calculated as :cite:p:`ohtsubo2015tll`:
+    The TLL spectral function is calculated using the expression in Ref.
+    :cite:`ohtsubo2015tll`:
 
     .. math::
 
@@ -812,7 +814,7 @@ def bcs_gap(
 def dynes(x, n0=1.0, gamma=0.003, delta=0.01):
     r"""Dynes formula for superconducting density of states.
 
-    The formula is given by :cite:p:`dynes1978dynes`:
+    The formula is given in Ref. :cite:`dynes1978dynes`:
 
     .. math::
 
@@ -843,7 +845,7 @@ def dynes(x, n0=1.0, gamma=0.003, delta=0.01):
 def sc_self_energy(x, gamma1=1e-5, gamma0=0.0, delta=0.0):
     r"""General phenomenological self-energy for superconductors.
 
-    The function is given by :cite:p:`norman1998sc`:
+    The function is given in Ref. :cite:`norman1998sc`:
 
     .. math::
 
@@ -1065,9 +1067,9 @@ def active_shirley(
     r"""Evaluate a Shirley-like background from the intensity of the peaks.
 
     The model function is a Shirley-Végh-Salvi-Castle type background
-    :cite:p:`shirley1972,vegh1988shirley,salvi1998shirley,herreragomez2014bkg` together
-    with a slope background :cite:p:`herreragomez2013slope` and a linear baseline. For
-    more information about the model function, see :cite:t:`herreragomez2014bkg`.
+    :cite:`shirley1972,vegh1988shirley,salvi1998shirley,herreragomez2014bkg` together
+    with a slope background :cite:`herreragomez2013slope` and a linear baseline. For
+    more information about the model function, see Ref. :cite:`herreragomez2014bkg`.
 
     This function is intended for "active" fitting where the background is computed from
     individual peak components during the fitting process, so that the background

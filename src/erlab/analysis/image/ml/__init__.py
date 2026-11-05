@@ -1,6 +1,6 @@
 """Machine learning methods for ARPES image processing.
 
-Denoising uses the pretrained model from Ref. :cite:p:`kim2021denoise`.
+Denoising uses the pretrained model from Ref. :cite:`kim2021denoise`.
 
 """
 

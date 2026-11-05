@@ -1578,15 +1578,15 @@ def ptable(
     The periodic table combines several reference datasets.
 
     - Element symbols, names, atomic masses, and the absorption-edge values are loaded
-      from :mod:`xraydb` :cite:p:`newville2023xraydb`, which is based on the compilation
-      described by :cite:t:`elam2002xraydb`.
+      from :mod:`xraydb` :cite:`newville2023xraydb`, which is based on the compilation
+      described in Ref. :cite:`elam2002xraydb`.
     - Photoionization cross sections shown by
       :func:`erlab.analysis.xps.get_cross_section` use the bundled
       ``yeh_lindau_1985_pics.npz`` archive, obtained from the `Elettra WebCrossSections
       <https://vuo.elettra.eu/services/elements/WebElements.html>`_ service based on of
-      the original Yeh-Lindau subshell tables :cite:p:`yeh1985photoionization`.
+      the original Yeh-Lindau subshell tables :cite:`yeh1985photoionization`.
     - Ground-state shell configurations for elements :math:`Z=1\ldots108` are taken from
-      the NIST Atomic Spectra Database :cite:p:`kramida2024asd`.
+      the NIST Atomic Spectra Database :cite:`kramida2024asd`.
     """
     with erlab.interactive.utils.setup_qapp(execute):
         win = PeriodicTableWindow(

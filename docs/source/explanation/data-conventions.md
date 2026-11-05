@@ -64,7 +64,8 @@ data.kspace.sample_work_function = 4.8  # Only when the sample value is known.
 
 ## Experimental geometry
 
-Momentum conversion follows the four configurations defined in {cite:t}`ishida2018kconv`.
+Momentum conversion follows the four configurations defined in
+Ref. {cite}`ishida2018kconv`.
 `alpha` is always the analyzer angle. `delta` is always the sample azimuth. The roles of
 the other angles depend on `configuration`.
 

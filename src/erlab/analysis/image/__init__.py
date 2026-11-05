@@ -21,7 +21,7 @@ Notes
   good practice to avoid direct imports.
 - The `ml` submodule contains machine learning methods for image processing. Currently,
   it only contains a denoising method that uses a pretrained model from Ref.
-  :cite:p:`kim2021denoise`.
+  :cite:`kim2021denoise`.
 
 """
 
@@ -673,7 +673,7 @@ def gradient_magnitude(
 ) -> npt.NDArray[np.float64]:
     r"""Calculate the gradient magnitude of an image.
 
-    The gradient magnitude is calculated as defined in Ref. :cite:p:`he2017mingrad`,
+    The gradient magnitude is calculated as defined in Ref. :cite:`he2017mingrad`,
     using given :math:`\Delta x` and :math:`\Delta y` values.
 
     Parameters
@@ -830,7 +830,7 @@ def minimum_gradient(
     """Minimum gradient method for detecting dispersive features in 2D data.
 
     The minimum gradient is calculated by dividing the input DataArray by the gradient
-    magnitude. See Ref. :cite:p:`he2017mingrad`.
+    magnitude. See Ref. :cite:`he2017mingrad`.
 
     Parameters
     ----------
@@ -885,7 +885,7 @@ def scaled_laplace(darr, factor: float = 1.0, **kwargs) -> xr.DataArray:
         \Delta f \sim \frac{\partial^2 f}{\partial x^2}
         \left(\frac{\Delta x}{\Delta y}\right)^{\!2} + \frac{\partial^2 f}{\partial y^2}
 
-    See Ref. :cite:p:`zhang2011curvature` for more information.
+    See Ref. :cite:`zhang2011curvature` for more information.
 
     Parameters
     ----------

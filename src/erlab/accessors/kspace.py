@@ -1119,7 +1119,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     def best_kz_resolution(self) -> float:
         r"""Estimated minimum out-of-plane momentum resolution.
 
-        The resolution is estimated based on the mean free path :cite:p:`seah1979imfp`
+        The resolution is estimated based on the mean free path :cite:`seah1979imfp`
         and the kinetic energy. Note that this is a rough estimate based on the
         universal curve of mean free path.
 
@@ -1555,10 +1555,11 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             If ``False``, print progress messages during the conversion.
         jacobian
             If ``True``, applies Jacobian correction to the intensity following the
-            change of coordinate measure described in :cite:t:`Gauthier2021` and
-            :cite:t:`Miao2026`. Derivatives are calculated numerically using fixed
-            finite differences with Richardson extrapolation at the original measured
-            coordinates, independent of source and target grid spacing.
+            change of coordinate measure described in Refs.
+            :cite:`Gauthier2021,Miao2026`. Derivatives are calculated numerically
+            using fixed finite differences with Richardson extrapolation at the
+            original measured coordinates, independent of source and target grid
+            spacing.
         **coords
             Explicit one-dimensional target coordinates, in Å⁻¹, supplied as ``kx``,
             ``ky``, or ``kz``. An explicit coordinate overrides ``bounds`` and
