@@ -9378,6 +9378,48 @@ def test_manager_shift_dialog_filters_and_revalidates_candidates(
         assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
 
 
+def test_manager_shift_dialog_invalidates_removed_target(
+    qtbot, manager_context
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": [0, 1, 2], "eV": np.linspace(-0.2, 0.2, 5)},
+    )
+    shift = xr.DataArray([0.0, 0.1, -0.1], dims="x", coords={"x": [0, 1, 2]})
+    with manager_context() as manager:
+        source_tool = itool(data, manager=False, execute=False)
+        source_index = manager.add_imagetool(source_tool, show=False)
+        shift_tool = itool(shift, manager=False, execute=False)
+        shift_index = manager.add_imagetool(shift_tool, show=False)
+        shift_node = manager._node_for_target(shift_index)
+        dialog = imagetool_dialogs.ShiftDialog(
+            source_tool.slicer_area, dialog_parent=manager
+        )
+        qtbot.addWidget(dialog)
+        dialog.shift_source_combo.setCurrentIndex(
+            dialog.shift_source_combo.findData(dialog._SOURCE_MANAGER)
+        )
+        dialog.shift_tool_selector.set_current_uid(shift_node.uid)
+        assert dialog._replacement_is_safe()
+
+        manager.remove_imagetool(source_index)
+
+        assert dialog.shift_tool_selector.current_uid == shift_node.uid
+        assert not dialog._replacement_is_safe()
+        assert dialog._shift_candidate_error(shift_node)
+        dialog._populate_shift_candidates()
+        assert dialog.uses_manager_shift
+        assert dialog.shift_tool_selector.current_uid is None
+        assert dialog.shift_tool_selector.candidate_uids == ()
+        ok_button = dialog.buttonBox.button(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+        )
+        assert ok_button is not None
+        assert not ok_button.isEnabled()
+        assert not dialog.copy_button.isEnabled()
+
+
 def test_manager_shift_dialog_selects_nested_unnamed_source(
     qtbot, manager_context, monkeypatch
 ) -> None:

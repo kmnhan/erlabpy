@@ -36,22 +36,23 @@ class _ManagerSourceDelegate(QtWidgets.QStyledItemDelegate):
         manager = None if self._manager is None else self._manager()
         if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
             return None
-        if not erlab.interactive.utils.qt_is_valid(manager.tree_view):
-            return None
         node = manager._tool_graph.nodes.get(
             index.data(QtCore.Qt.ItemDataRole.UserRole)
         )
         if node is None or node.is_imagetool:
             return None
         delegate = manager.tree_view.itemDelegate()
-        if not isinstance(delegate, _ImageToolWrapperItemDelegate) or not (
-            erlab.interactive.utils.qt_is_valid(delegate)
-        ):
+        if not isinstance(delegate, _ImageToolWrapperItemDelegate):
             return None
         rect, text, color = delegate._compute_tool_type_info(option, node)
-        if rect is None or text is None or color is None:
+        if rect is None:
             return None
-        return delegate, rect, text, color
+        return (
+            delegate,
+            rect,
+            typing.cast("str", text),
+            typing.cast("QtGui.QColor", color),
+        )
 
     def paint(
         self,
@@ -157,6 +158,7 @@ class _ManagerSourceTree(QtWidgets.QWidget):
             *,
             root_label: str | None = None,
         ) -> QtWidgets.QTreeWidgetItem | None:
+            active_manager = typing.cast("ImageToolManager", manager)
             reason = eligibility(node)
             label = node.display_text
             if root_label is not None:
@@ -181,14 +183,11 @@ class _ManagerSourceTree(QtWidgets.QWidget):
                 )
                 item.setToolTip(0, reason)
             node_path = (*path, label)
-            if manager is not None:
-                for uid in node._childtool_indices:
-                    child = manager._tool_graph.nodes.get(uid)
-                    if child is None or manager._is_figure_node(child):
-                        continue
-                    child_item = add_node(child, node_path)
-                    if child_item is not None:
-                        item.addChild(child_item)
+            for uid in node._childtool_indices:
+                child = active_manager._tool_graph.nodes[uid]
+                child_item = add_node(child, node_path)
+                if child_item is not None:
+                    item.addChild(child_item)
             if reason is not None and item.childCount() == 0:
                 return None
             self.items[node.uid] = item
@@ -243,17 +242,17 @@ class _ManagerSourceTree(QtWidgets.QWidget):
                 )
                 child_match = False
                 for row in range(item.childCount()):
-                    child = item.child(row)
-                    if child is not None:
-                        child_match |= filter_item(child, ancestor_match=matches)
+                    child = typing.cast("QtWidgets.QTreeWidgetItem", item.child(row))
+                    child_match |= filter_item(child, ancestor_match=matches)
                 item.setHidden(not (matches or child_match))
                 item.setExpanded(child_match)
                 return matches or child_match
 
             for row in range(self.tree.topLevelItemCount()):
-                item = self.tree.topLevelItem(row)
-                if item is not None:
-                    filter_item(item)
+                item = typing.cast(
+                    "QtWidgets.QTreeWidgetItem", self.tree.topLevelItem(row)
+                )
+                filter_item(item)
         visible = any(not item.isHidden() for item in self.items.values())
         self.tree.setVisible(visible)
         self.empty_label.setVisible(not visible)
@@ -400,7 +399,10 @@ class ManagerSourceSelector(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._button)
 
-        self._popup = QtWidgets.QFrame(self, QtCore.Qt.WindowType.Popup)
+        self._popup = QtWidgets.QFrame(
+            self,
+            QtCore.Qt.WindowType.Popup | QtCore.Qt.WindowType.FramelessWindowHint,
+        )
         self._popup.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         popup_layout = QtWidgets.QVBoxLayout(self._popup)
         popup_layout.setContentsMargins(0, 0, 0, 0)
