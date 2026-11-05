@@ -905,6 +905,15 @@ class FigureOperationEditor(QtWidgets.QWidget):
                     continue
                 widget.refreshInheritedColor()
 
+    def connect_rendered_value_refresh(
+        self,
+        widget: QtWidgets.QWidget,
+        callback: Callable[[], None],
+    ) -> None:
+        """Connect a control's read-only refresh without committing its input."""
+        self.mark_control(widget)
+        self.rendered_values_changed.connect(callback)
+
     def new_form_page(
         self, object_name: str
     ) -> tuple[QtWidgets.QWidget, QtWidgets.QFormLayout]:

@@ -129,8 +129,7 @@ class _MethodLimitsEdit(QtWidgets.QLineEdit):
         self._operation_id = operation.operation_id
         self._spec = spec
         self._displayed_text = text
-        editor.mark_control(self)
-        editor.rendered_values_changed.connect(self.refresh_rendered_value)
+        editor.connect_rendered_value_refresh(self, self.refresh_rendered_value)
 
     @QtCore.Slot()
     def refresh_rendered_value(self) -> None:
