@@ -255,8 +255,14 @@ top-level row, or replace the current row.
   {meth}`xarray.DataArray.isel`.
 - {menuselection}`Edit --> Aggregate…` reduces selected dimensions with mean, minimum,
   maximum, or sum.
-- {menuselection}`Edit --> Interpolate…` calls {meth}`xarray.DataArray.interp` along one
-  dimension with `linear` or `nearest` interpolation.
+- {menuselection}`Edit --> Interpolate…` interpolates with `linear` or `nearest`.
+  In {guilabel}`Custom Grid`, set the target coordinate values for a dimension.
+  In {guilabel}`From ImageTool`, select another ImageTool from the Manager tree.
+  Leave all matching coordinates checked to use {meth}`xarray.DataArray.interp_like`,
+  or check only the coordinates to match with {meth}`xarray.DataArray.interp`.
+  The list shows the input and target point counts and the target coordinate range.
+  A result in Manager keeps both input tools as dependencies. Refresh the result
+  after an input changes. This mode is available for individual tools in Manager.
 - {menuselection}`Edit --> Sort By…` calls {meth}`xarray.DataArray.sortby` with one or
   more coordinate keys.
 - {menuselection}`Edit --> Leading Edge…` calls

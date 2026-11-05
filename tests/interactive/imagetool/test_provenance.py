@@ -152,6 +152,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     GaussianFilterOperation,
     ImageDerivativeOperation,
     ImageToolSelectionSourceBinding,
+    InterpolationFromInputOperation,
     InterpolationOperation,
     IselOperation,
     KspaceConfigurationOperation,
@@ -2271,6 +2272,322 @@ def test_tool_provenance_interpolation_operation_round_trip_and_code() -> None:
         {"data": data.copy(deep=True), "np": np},
     )
     xr.testing.assert_identical(namespace["derived"], expected)
+
+
+@pytest.mark.parametrize(
+    "dim",
+    [
+        "eV",
+        "method",
+        "coords",
+        "assume_sorted",
+        "kwargs",
+        "class",
+        "k-space",
+        "real",
+        "_hidden",
+    ],
+)
+def test_interpolation_coordinates_round_trip_and_safe_code(dim) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=[dim, "y"],
+        coords={dim: ([dim], [0.0, 1.0, 2.0]), "y": [0.0, 1.0, 2.0, 3.0]},
+        name="spectrum",
+    )
+    coords = {dim: [0.25, 1.75], "y": [0.5, 1.5, 2.5]}
+    operation = InterpolationOperation(coords=coords, method="nearest")
+    expected = data.interp(coords, method="nearest")
+    restored = parse_tool_provenance_operation(json.loads(operation.model_dump_json()))
+    assert restored == operation
+    assert set(operation.decoded_coords) == set(coords)
+    xr.testing.assert_identical(restored.apply(data), expected)
+    code = operation.replay_code("data", output_name="result")
+    namespace = _exec_generated_code(code, {"data": data, "np": np})
+    xr.testing.assert_identical(namespace["result"], expected)
+    if dim == "eV":
+        assert "eV=np.linspace" in code
+    with pytest.raises(ValueError, match="more than one"):
+        _ = operation.dim
+
+
+@pytest.mark.parametrize("method", ["linear", "nearest"])
+@pytest.mark.parametrize("indexers", ["single", "paired", "mixed"])
+def test_interpolation_preserves_dataarray_indexer_metadata(method, indexers) -> None:
+    data = xr.DataArray(
+        np.arange(24.0).reshape(3, 4, 2),
+        dims=("x", "y", "z"),
+        coords={"x": [0.0, 1.0, 2.0], "y": [10.0, 20.0, 30.0, 40.0], "z": [-1, 1]},
+        name="spectrum",
+        attrs={"sample": "scan"},
+    )
+    path_coords = {
+        "path": xr.DataArray(["A", "B"], dims="path", attrs={"long_name": "Cut point"}),
+        "distance": xr.DataArray(
+            [0.0, 1.0], dims="path", attrs={"units": "1/angstrom"}
+        ),
+        "hv": xr.DataArray(21.2, attrs={"units": "eV"}),
+    }
+    x_indexer = xr.DataArray(
+        [0.25, 1.75],
+        dims="path",
+        coords=path_coords,
+        name="x_path",
+        attrs={"units": "1/angstrom", "metadata": {"labels": ["first", "last"]}},
+    )
+    y_indexer = xr.DataArray(
+        [15.0, 35.0],
+        dims="path",
+        coords=path_coords,
+        name="y_path",
+        attrs={"units": "1/angstrom"},
+    )
+    coords = {"x": x_indexer}
+    if indexers == "paired":
+        coords["y"] = y_indexer
+    elif indexers == "mixed":
+        coords["y"] = np.array([15.0, 35.0])
+    expected = data.interp(coords, method=method).copy(deep=True)
+    operation = operation_from_console_call(
+        ConsoleCall(
+            dataarray_method="interp",
+            kwargs={**coords, "method": method},
+            display_code="data.interp(**coords, method=method)",
+            has_extra_tracked_inputs=False,
+            receiver_data=data,
+        )
+    )
+    assert isinstance(operation, InterpolationOperation)
+    xr.testing.assert_identical(operation.apply(data), expected)
+    if indexers == "paired":
+        assert operation.apply(data).dims == ("path", "z")
+    restored = parse_tool_provenance_operation(json.loads(operation.model_dump_json()))
+    assert restored == operation
+    assert isinstance(restored, InterpolationOperation)
+    xr.testing.assert_identical(restored.apply(data), expected)
+    for dim, original in coords.items():
+        decoded = restored.decoded_coords[dim]
+        if isinstance(original, xr.DataArray):
+            xr.testing.assert_identical(decoded, original)
+        else:
+            np.testing.assert_array_equal(decoded, original)
+    namespace = _exec_generated_code(
+        restored.replay_code("data", output_name="result"),
+        {"data": data, "np": np, "xr": xr},
+    )
+    xr.testing.assert_identical(namespace["result"], expected)
+    spec = recipe(
+        ReplayStep(operation=restored),
+        start_label="Interpolate labeled coordinates",
+        active_name="derived",
+        script_inputs=(ScriptInput(name="data"),),
+        primary_input="data",
+    )
+    spec = parse_tool_provenance_spec(json.loads(spec.model_dump_json()))
+    xr.testing.assert_identical(
+        replay_script_provenance(spec, {"data": data}), expected
+    )
+    code = full_data(restored).to_replay_spec().display_code(parent_data=data)
+    assert code is not None
+    namespace = _exec_generated_code(code, {"data": data, "np": np, "xr": xr})
+    xr.testing.assert_identical(namespace["derived"], expected)
+
+    # Indexer values and nested attrs are snapshots, including decoded accessors.
+    x_indexer.values[0] = 0.0
+    x_indexer.attrs["metadata"]["labels"][0] = "changed"
+    decoded_x = operation.decoded_coords["x"]
+    decoded_x.values[0] = 0.0
+    decoded_x.attrs["metadata"]["labels"][0] = "changed again"
+    xr.testing.assert_identical(operation.apply(data), expected)
+    assert operation.decoded_coords["x"].attrs["metadata"]["labels"][0] == "first"
+
+
+def test_interpolation_legacy_single_coordinate_payload() -> None:
+    legacy = {
+        "op": "interpolate",
+        "dim": "eV",
+        "values": [0.25, 0.75],
+        "method": "nearest",
+    }
+    operation = parse_tool_provenance_operation(legacy)
+    assert isinstance(operation, InterpolationOperation)
+    assert operation.dim == "eV"
+    assert operation.values == [0.25, 0.75]
+    np.testing.assert_array_equal(operation.decoded_values, [0.25, 0.75])
+    dumped = operation.model_dump(mode="json")
+    assert set(dumped) == {"op", "coords", "method"}
+    assert decode_provenance_value(dumped["coords"]) == {"eV": [0.25, 0.75]}
+
+
+@pytest.mark.parametrize("dim", [7, ("energy", 1)])
+def test_interpolation_nonstring_dimension_serialization(dim) -> None:
+    operation = InterpolationOperation(coords={dim: [0.25, 0.75]})
+    assert (
+        parse_tool_provenance_operation(json.loads(operation.model_dump_json()))
+        == operation
+    )
+    legacy = {
+        "op": "interpolate",
+        "dim": encode_provenance_value(dim),
+        "values": [0.25, 0.75],
+    }
+    assert parse_tool_provenance_operation(legacy) == operation
+    bound = InterpolationFromInputOperation(dimensions=(dim,))
+    assert parse_tool_provenance_operation(json.loads(bound.model_dump_json())) == bound
+    expression = ast.parse(
+        bound.expression_code_with_inputs("data", {"target": "target"}), mode="eval"
+    ).body
+    assert isinstance(expression, ast.Call)
+    assert len(expression.args) == 1
+    assert isinstance(expression.args[0], ast.Dict)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"coords": {}},
+        {"coords": {"eV": []}},
+        {"coords": {"eV": [[0.0, 1.0]]}},
+        {"coords": {"eV": [np.nan]}},
+        {"coords": {"eV": [np.inf]}},
+        {"coords": {"eV": [1 + 1j]}},
+        {"coords": {"eV": ["a"]}},
+        {"dim": "eV"},
+        {"values": [0.0]},
+        {"coords": {"eV": [0.0]}, "dim": "eV", "values": [0.0]},
+    ],
+)
+def test_interpolation_rejects_invalid_coordinates(fields) -> None:
+    with pytest.raises((TypeError, ValueError, ValidationError)):
+        InterpolationOperation(**fields)
+
+
+@pytest.mark.parametrize("dimensions", [None, ("eV",), ("eV", "alpha")])
+def test_interpolation_from_input_replay_and_code(dimensions) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("eV", "alpha"),
+        coords={"eV": [0.0, 1.0, 2.0], "alpha": [0.0, 1.0, 2.0, 3.0]},
+        name="spectrum",
+    )
+    target = xr.DataArray(
+        np.zeros((2, 3)),
+        dims=("eV", "alpha"),
+        coords={"eV": [0.25, 1.75], "alpha": [0.5, 1.5, 2.5], "hv": 21.2},
+    )
+    operation = InterpolationFromInputOperation(dimensions=dimensions, method="nearest")
+    expected = (
+        data.interp_like(target, method="nearest")
+        if dimensions is None
+        else data.interp(
+            {dim: target.coords[dim] for dim in dimensions}, method="nearest"
+        )
+    )
+    assert operation.target_dimensions(data, target) == (dimensions or ("eV", "alpha"))
+    spec = recipe(
+        ReplayStep(operation=operation, input_bindings={"target": "target"}),
+        start_label="Interpolate to another ImageTool",
+        active_name="interpolated",
+        script_inputs=(ScriptInput(name="data"), ScriptInput(name="target")),
+        primary_input="data",
+    )
+    restored = parse_tool_provenance_spec(json.loads(spec.model_dump_json()))
+    assert restored == spec
+    inputs = {"data": data, "target": target}
+    xr.testing.assert_identical(replay_script_provenance(restored, inputs), expected)
+    assert script_provenance_replayable(restored, external_input_names=set(inputs))
+    assert provenance_code_trust_entries(restored, location_prefix="interpolate") == ()
+    code = spec.display_code()
+    assert code is not None
+    namespace = _exec_generated_code(code, inputs)
+    xr.testing.assert_identical(namespace["interpolated"], expected)
+    if dimensions == ("eV",):
+        assert ".interp(eV=target.eV" in code
+        assert "hv" in namespace["interpolated"].coords
+    elif dimensions is None:
+        assert ".interp_like(target" in code
+        assert "hv" not in namespace["interpolated"].coords
+
+
+@pytest.mark.parametrize(
+    "dim",
+    [
+        "class",
+        "k-space",
+        "real",
+        "_hidden",
+        "method",
+        "coords",
+        "assume_sorted",
+        "kwargs",
+    ],
+)
+def test_interpolation_from_input_safe_coordinate_code(dim) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=[dim, "y"],
+        coords={dim: ([dim], [0.0, 1.0, 2.0]), "y": [0.0, 1.0]},
+    )
+    target = xr.DataArray([0.0, 0.0], dims=[dim], coords={dim: ([dim], [0.25, 1.75])})
+    operation = InterpolationFromInputOperation(dimensions=(dim,))
+    code = operation.replay_code(
+        "data + 1", output_name="result", bound_inputs={"target": "target + 2"}
+    )
+    namespace = _exec_generated_code(code, {"data": data, "target": target})
+    expected = operation.apply_with_inputs(data + 1, {"target": target + 2})
+    xr.testing.assert_identical(namespace["result"], expected)
+
+
+@pytest.mark.parametrize("dimensions", [(), ("eV", "eV"), "eV"])
+def test_interpolation_from_input_rejects_invalid_dimensions(dimensions) -> None:
+    with pytest.raises((TypeError, ValueError, ValidationError)):
+        InterpolationFromInputOperation(dimensions=dimensions)
+
+
+def test_interpolation_from_input_validates_changed_coordinates() -> None:
+    data = xr.DataArray([0.0, 1.0, 2.0], dims="eV", coords={"eV": [0.0, 1.0, 2.0]})
+    target = xr.DataArray([0.0, 0.0], dims="eV", coords={"eV": [0.25, 1.75]})
+    operation = InterpolationFromInputOperation(dimensions=("eV",))
+    for invalid in (
+        target.rename({"eV": "alpha"}),
+        target.assign_coords(eV=[0.0, np.nan]),
+        target.assign_coords(eV=[0.0, np.inf]),
+        target.assign_coords(eV=[0.0, 1.0j]),
+        target.assign_coords(eV=["a", "b"]),
+        target.isel(eV=slice(0, 0)),
+    ):
+        with pytest.raises((TypeError, ValueError)):
+            operation.apply_with_inputs(data, {"target": invalid})
+    with pytest.raises(ValueError, match="unique"):
+        operation.validate_inputs(data.assign_coords(eV=[0.0, 0.0, 1.0]), target)
+    with pytest.raises(ValueError, match="source dimension"):
+        operation.validate_inputs(data.rename({"eV": "alpha"}), target)
+    with pytest.raises(ValueError, match="no matching"):
+        InterpolationFromInputOperation().validate_inputs(
+            data, target.rename({"eV": "alpha"})
+        )
+
+
+@pytest.mark.parametrize("dimensions", [None, ("eV",)])
+def test_interpolation_expression_preserves_input_grouping(dimensions) -> None:
+    data = xr.DataArray([0.0, 1.0, 2.0], dims="eV", coords={"eV": [0.0, 1.0, 2.0]})
+    target = xr.DataArray([0.0, 0.0], dims="eV", coords={"eV": [0.25, 1.75]})
+    operation = InterpolationFromInputOperation(dimensions=dimensions)
+    expression = operation.expression_code_with_inputs(
+        "data + 1", {"target": "target + 2"}
+    )
+    namespace = _exec_generated_code(
+        f"result = {expression}", {"data": data, "target": target}
+    )
+    xr.testing.assert_identical(
+        namespace["result"],
+        operation.apply_with_inputs(data + 1, {"target": target + 2}),
+    )
+    custom = InterpolationOperation(coords={"eV": [0.25, 1.75]})
+    namespace = _exec_generated_code(
+        f"result = {custom.expression_code('data + 1')}", {"data": data, "np": np}
+    )
+    xr.testing.assert_identical(namespace["result"], custom.apply(data + 1))
 
 
 def test_tool_provenance_leading_edge_operation_round_trip_and_code() -> None:
@@ -4546,6 +4863,7 @@ def test_current_structured_operations_round_trip_without_script_fallback() -> N
     operations = _representative_structured_operations()
     assert {operation.op for operation in operations} == set(_OPERATION_TYPES) - {
         "concat",
+        "interpolate_from_input",
         "script_code",
         "shift_from_input",
         "source_view",
@@ -9067,10 +9385,12 @@ def test_console_operations_match_branch_specific_calls() -> None:
             kwargs={"method": "nearest", "assume_sorted": False, "kwargs": None},
         )
     ) == InterpolationOperation(dim="x", values=[0.25, 0.75], method="nearest")
+    assert InterpolationOperation.from_console_call(
+        call(dataarray_method="interp", args=({"x": [0.5], "y": [0.5]},))
+    ) == InterpolationOperation(coords={"x": [0.5], "y": [0.5]})
     for bad_call in (
         call(dataarray_method="interp", kwargs={"method": "cubic", "x": [0.5]}),
         call(dataarray_method="interp", kwargs={"x": [0.5], "assume_sorted": True}),
-        call(dataarray_method="interp", args=({"x": [0.5], "y": [0.5]},)),
         call(dataarray_method="interp", kwargs={"x": [[0.0, 1.0]]}),
     ):
         assert InterpolationOperation.from_console_call(bad_call) is None

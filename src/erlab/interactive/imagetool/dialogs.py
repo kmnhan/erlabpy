@@ -14,6 +14,7 @@ from collections.abc import Callable, Mapping
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
+import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
@@ -49,6 +50,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     DropScalarCoordsOperation,
     GaussianFilterOperation,
     ImageDerivativeOperation,
+    InterpolationFromInputOperation,
     InterpolationOperation,
     IselOperation,
     KspaceConfigurationOperation,
@@ -110,8 +112,6 @@ __all__ = [
 
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Iterable, Sequence
-
-    import xarray as xr
 
     from erlab.interactive.imagetool.manager import ImageToolManager
     from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
@@ -2941,18 +2941,116 @@ class SelectionDialog(DataTransformDialog):
 class InterpolationDialog(DataTransformDialog):
     title = "Interpolate"
     enable_copy = True
-    operation_types = (InterpolationOperation,)
+    operation_types = (InterpolationOperation, InterpolationFromInputOperation)
+
+    def __init__(
+        self,
+        slicer_area: ImageSlicerArea | None,
+        *,
+        batch_manager: ImageToolManager | None = None,
+        provenance_edit_mode: bool = False,
+        dialog_parent: QtWidgets.QWidget | None = None,
+        provenance_edit_manager_target: (
+            tuple[ImageToolManager, int | str] | None
+        ) = None,
+    ) -> None:
+        super().__init__(
+            slicer_area,
+            batch_manager=batch_manager,
+            provenance_edit_mode=provenance_edit_mode,
+            dialog_parent=dialog_parent,
+            provenance_edit_manager_target=provenance_edit_manager_target,
+        )
+        self._target_tab_changed(self.target_tabs.currentIndex())
 
     def setup_widgets(self) -> None:
         self._source_data = self.data
+        self._custom_grids: dict[Hashable, CoordinateGridWidget] = {}
+        self._custom_coord_templates: dict[Hashable, xr.DataArray] = {}
+        self._target_uid: str | None = None
+        self._target_dimensions: tuple[Hashable, ...] | None = None
+        self._recorded_target: xr.DataArray | None = None
+
+        self.target_tabs = QtWidgets.QTabWidget()
+        custom_page = QtWidgets.QWidget()
+        custom_layout = QtWidgets.QFormLayout(custom_page)
 
         self.dim_combo = QtWidgets.QComboBox()
         for dim in self._source_data.dims:
             self.dim_combo.addItem(str(dim), userData=dim)
         self.dim_combo.currentIndexChanged.connect(self._dimension_changed)
-        self.layout_.addRow("Dimension", self.dim_combo)
+        custom_layout.addRow("Dimension", self.dim_combo)
+        self.custom_summary = QtWidgets.QLabel()
+        self.custom_summary.setWordWrap(True)
+        self.custom_summary.hide()
+        custom_layout.addRow(self.custom_summary)
 
-        self.coord_widget = CoordinateGridWidget(
+        self._grid_stack = QtWidgets.QStackedWidget()
+        self._grid_widget = self._new_grid()
+        self._grid_stack.addWidget(self._grid_widget)
+        custom_layout.addRow(self._grid_stack)
+        self.target_tabs.addTab(custom_page, "Custom Grid")
+
+        target_page = QtWidgets.QWidget()
+        target_layout = QtWidgets.QVBoxLayout(target_page)
+        from erlab.interactive.imagetool.manager._source_selector import (
+            ManagerSourceSelector,
+        )
+
+        manager, target = self._manager_target()
+        target_layout.addWidget(QtWidgets.QLabel("ImageTool"))
+        self.target_tool_selector = ManagerSourceSelector(
+            manager, eligibility=self._target_candidate_error, parent=self
+        )
+        target_layout.addWidget(self.target_tool_selector)
+        self.all_coords_check = QtWidgets.QCheckBox("All matching coordinates")
+        self.all_coords_check.setTristate(True)
+        self.all_coords_check.clicked.connect(self._toggle_all_coordinates)
+        target_layout.addWidget(self.all_coords_check)
+        self.target_coords_table = QtWidgets.QTableWidget(0, 3)
+        self.target_coords_table.setHorizontalHeaderLabels(
+            ["Coordinate", "Points", "Target Range"]
+        )
+        typing.cast(
+            "QtWidgets.QHeaderView", self.target_coords_table.verticalHeader()
+        ).hide()
+        self.target_coords_table.setEditTriggers(
+            QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.target_coords_table.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.NoSelection
+        )
+        header = typing.cast(
+            "QtWidgets.QHeaderView", self.target_coords_table.horizontalHeader()
+        )
+        header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setStretchLastSection(True)
+        self.target_coords_table.itemChanged.connect(self._coordinate_checked)
+        target_layout.addWidget(self.target_coords_table)
+        self.target_status = QtWidgets.QLabel()
+        self.target_status.setWordWrap(True)
+        target_layout.addWidget(self.target_status)
+        target_layout.addStretch()
+        self._manager_targets_available = (
+            manager is not None and target is not None and not self.is_batch_mode
+        )
+        self.target_tool_selector.setEnabled(self._manager_targets_available)
+        self.target_tabs.addTab(target_page, "From ImageTool")
+        self.target_tool_selector.selectionChanged.connect(self._refresh_target)
+        self.target_tool_selector.refreshed.connect(self._refresh_target)
+        self.target_tabs.currentChanged.connect(self._target_tab_changed)
+
+        self.layout_.addRow(self.target_tabs)
+
+        self.method_combo = QtWidgets.QComboBox()
+        self.method_combo.addItems(["linear", "nearest"])
+        self.layout_.addRow("Method", self.method_combo)
+        self._dimension_changed()
+        self._refresh_target()
+
+    @staticmethod
+    def _new_grid() -> CoordinateGridWidget:
+        return CoordinateGridWidget(
             np.array([0.0, 1.0]),
             editable_count=True,
             preserve_shape=False,
@@ -2962,13 +3060,18 @@ class InterpolationDialog(DataTransformDialog):
             reset_table_to_reference=False,
             update_table_on_mode_changed=True,
         )
-        self.layout_.addRow("Target Coordinates", self.coord_widget)
 
-        self.method_combo = QtWidgets.QComboBox()
-        self.method_combo.addItems(["linear", "nearest"])
-        self.layout_.addRow("Method", self.method_combo)
+    @property
+    def coord_widget(self) -> CoordinateGridWidget:
+        return typing.cast("CoordinateGridWidget", self._grid_stack.currentWidget())
 
-        self._dimension_changed()
+    @property
+    def uses_manager_target(self) -> bool:
+        return self.target_tabs.currentIndex() == 1
+
+    @property
+    def _selected_target_dimensions(self) -> tuple[Hashable, ...] | None:
+        return self._target_dimensions
 
     @property
     def _selected_dim(self) -> Hashable | None:
@@ -3005,6 +3108,17 @@ class InterpolationDialog(DataTransformDialog):
         dim = self._selected_dim
         if dim is None:
             return
+        if self._custom_grids:
+            self._grid_stack.setCurrentWidget(self._custom_grids[dim])
+            return
+        template = self._custom_coord_templates.get(dim)
+        if template is not None:
+            self.coord_widget.set_reference_coord(template.values)
+            self._restore_grid_values(self.coord_widget, template)
+            return
+        self.coord_widget.count_spin.setEnabled(True)
+        self.coord_widget.count_spin.setToolTip("")
+        self.coord_widget._reset_table_to_reference = False
         coord = self._source_coord_values(dim)
         if (
             coord.ndim != 1
@@ -3014,6 +3128,252 @@ class InterpolationDialog(DataTransformDialog):
             coord = np.arange(self._source_data.sizes[dim], dtype=np.float64)
         self.coord_widget.set_reference_coord(coord)
 
+    def _candidate_data(
+        self,
+        manager: ImageToolManager,
+        uid: str,
+        source_data: xr.DataArray,
+    ) -> xr.DataArray:
+        node = manager._tool_graph.nodes.get(uid)
+        if node is None or not node.is_imagetool:
+            raise ValueError("The selected target ImageTool is no longer available.")
+        if node.source_state != "fresh" or manager.dependency_status_for_uid(uid) in {
+            "changed",
+            "missing",
+        }:
+            raise ValueError("The selected target ImageTool is not current.")
+        target_data = node.data_for_role("displayed", owner_node=node)
+        matching = self._matching_dimensions(source_data, target_data)
+        if not matching:
+            raise ValueError("The ImageTools have no matching dimension coordinates.")
+        if all(
+            self._coordinate_error(source_data, target_data, dim) is not None
+            for dim in matching
+        ):
+            raise ValueError("The ImageTools have no usable matching coordinates.")
+        return target_data
+
+    @staticmethod
+    def _matching_dimensions(
+        data: xr.DataArray, target: xr.DataArray
+    ) -> tuple[Hashable, ...]:
+        return InterpolationFromInputOperation().target_dimensions(data, target)
+
+    @staticmethod
+    def _coordinate_error(
+        data: xr.DataArray, target: xr.DataArray, dim: Hashable
+    ) -> str | None:
+        try:
+            InterpolationFromInputOperation(dimensions=(dim,)).validate_inputs(
+                data, target
+            )
+        except (TypeError, ValueError) as exc:
+            return str(exc)
+        return None
+
+    def _target_candidate_error(self, node: _ManagedWindowNode) -> str | None:
+        manager, target = self._manager_target()
+        if manager is None or target is None or self.is_batch_mode:
+            return "Select a target from an individual ImageTool in Manager."
+        try:
+            if node.uid == manager._node_for_target(target).uid:
+                return "Select another ImageTool as the interpolation target."
+            self._candidate_data(manager, node.uid, self._source_data)
+        except (LookupError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            return str(exc)
+        return None
+
+    def _target_data(self) -> xr.DataArray:
+        uid = self.target_tool_selector.current_uid
+        if uid is None:
+            if self._recorded_target is not None:
+                return self._recorded_target
+            raise ValueError("Select a target ImageTool.")
+        manager, _target = self._manager_target()
+        if manager is None:
+            raise ValueError("The target ImageTool Manager is no longer available.")
+        return self._candidate_data(manager, uid, self._source_data)
+
+    @QtCore.Slot()
+    def _refresh_target(self) -> None:
+        uid = self.target_tool_selector.current_uid
+        if uid != self._target_uid:
+            self._target_dimensions = None
+            self._target_uid = uid
+            if uid is not None:
+                self._recorded_target = None
+        dimensions: tuple[Hashable, ...] = ()
+        target_data = None
+        error = ""
+        try:
+            target_data = self._target_data()
+            dimensions = self._matching_dimensions(self._source_data, target_data)
+        except (LookupError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            error = str(exc)
+        selected = self._target_dimensions
+        # Keep missing selected names visible until the user excludes them.
+        if selected is not None:
+            dimensions = tuple(dict.fromkeys((*dimensions, *selected)))
+        with QtCore.QSignalBlocker(self.target_coords_table):
+            self.target_coords_table.setRowCount(len(dimensions))
+            for row, dim in enumerate(dimensions):
+                item = QtWidgets.QTableWidgetItem(str(dim))
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, dim)
+                item.setFlags(
+                    QtCore.Qt.ItemFlag.ItemIsEnabled
+                    | QtCore.Qt.ItemFlag.ItemIsUserCheckable
+                )
+                item.setCheckState(
+                    QtCore.Qt.CheckState.Checked
+                    if selected is None or dim in selected
+                    else QtCore.Qt.CheckState.Unchecked
+                )
+                self.target_coords_table.setItem(row, 0, item)
+                reason = (
+                    self._coordinate_error(self._source_data, target_data, dim)
+                    if target_data is not None
+                    else error
+                )
+                points = ""
+                summary = reason or ""
+                if target_data is not None and dim in target_data.coords:
+                    coord = target_data.coords[dim]
+                    points = f"{self._source_data.sizes.get(dim, 0)} → {coord.size}"
+                    if reason is None:
+                        values = np.asarray(coord.values)
+                        unit = str(coord.attrs.get("units", ""))
+                        summary = (
+                            f"{values.min():.6g} … {values.max():.6g} {unit}".strip()
+                        )
+                self.target_coords_table.setItem(
+                    row, 1, QtWidgets.QTableWidgetItem(points)
+                )
+                self.target_coords_table.setItem(
+                    row, 2, QtWidgets.QTableWidgetItem(summary)
+                )
+                item.setToolTip(summary)
+        self.target_coords_table.resizeRowsToContents()
+        height = typing.cast(
+            "QtWidgets.QHeaderView", self.target_coords_table.horizontalHeader()
+        ).height()
+        height += sum(
+            self.target_coords_table.rowHeight(row)
+            for row in range(min(len(dimensions), 6))
+        )
+        self.target_coords_table.setFixedHeight(
+            height + 2 * self.target_coords_table.frameWidth() + 2
+        )
+        self.target_coords_table.setVisible(bool(dimensions))
+        self.all_coords_check.setVisible(bool(dimensions))
+        self._sync_target_controls()
+
+    @QtCore.Slot()
+    def _coordinate_checked(self) -> None:
+        self._target_dimensions = tuple(
+            typing.cast(
+                "QtWidgets.QTableWidgetItem", self.target_coords_table.item(row, 0)
+            ).data(QtCore.Qt.ItemDataRole.UserRole)
+            for row in range(self.target_coords_table.rowCount())
+            if typing.cast(
+                "QtWidgets.QTableWidgetItem", self.target_coords_table.item(row, 0)
+            ).checkState()
+            == QtCore.Qt.CheckState.Checked
+        )
+        if len(self._target_dimensions) == self.target_coords_table.rowCount():
+            with contextlib.suppress(
+                LookupError, OSError, RuntimeError, TypeError, ValueError
+            ):
+                matching = self._matching_dimensions(
+                    self._source_data, self._target_data()
+                )
+                if set(self._target_dimensions) == set(matching):
+                    self._target_dimensions = None
+        self._sync_target_controls()
+
+    @QtCore.Slot()
+    def _toggle_all_coordinates(self) -> None:
+        # Qt's partial state is a summary; clicks only select all or clear all.
+        self._target_dimensions = () if self._target_dimensions is None else None
+        self._refresh_target()
+
+    @QtCore.Slot(int)
+    def _target_tab_changed(self, index: int) -> None:
+        if index == 1 and hasattr(self, "launch_mode_combo"):
+            _set_combo_data(self.launch_mode_combo, "nest")
+        self._sync_target_controls()
+
+    def _replacement_is_safe(self) -> bool:
+        uid = self.target_tool_selector.current_uid
+        if not self.uses_manager_target or uid is None:
+            return True
+        manager, target = self._manager_target()
+        if manager is None or target is None:
+            return False
+        return not manager._dependency_tracker.transitively_depends_on(
+            uid, manager._node_for_target(target).uid
+        )
+
+    @QtCore.Slot()
+    def _sync_target_controls(self) -> None:
+        error = ""
+        if not self._manager_targets_available and self._recorded_target is None:
+            error = "Select a target from an individual ImageTool in Manager."
+        elif self._target_dimensions == ():
+            error = "Select at least one coordinate."
+        else:
+            try:
+                target = self._target_data()
+                InterpolationFromInputOperation(
+                    dimensions=self._target_dimensions
+                ).validate_inputs(self._source_data, target)
+            except (LookupError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                error = str(exc)
+        status = error or (
+            "Using recorded target coordinates. "
+            "Select another ImageTool to change the target."
+            if self._recorded_target is not None
+            else ""
+        )
+        safe = self._replacement_is_safe()
+        if self.uses_manager_target and not safe:
+            status = (status + "\n" if status else "") + (
+                "Replacement would create a dependency cycle. "
+                "Select a child or top-level result."
+            )
+        self.target_status.setText(status)
+        self.target_status.setVisible(bool(self.target_status.text()))
+        count = self.target_coords_table.rowCount()
+        checked = sum(
+            typing.cast(
+                "QtWidgets.QTableWidgetItem", self.target_coords_table.item(row, 0)
+            ).checkState()
+            == QtCore.Qt.CheckState.Checked
+            for row in range(count)
+        )
+        with QtCore.QSignalBlocker(self.all_coords_check):
+            self.all_coords_check.setCheckState(
+                QtCore.Qt.CheckState.Unchecked
+                if not checked
+                else QtCore.Qt.CheckState.Checked
+                if checked == count
+                else QtCore.Qt.CheckState.PartiallyChecked
+            )
+        valid = not self.uses_manager_target or not error
+        ok_button = self.buttonBox.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+        if ok_button is not None:
+            ok_button.setEnabled(valid)
+        self.copy_button.setEnabled(valid)
+        if hasattr(self, "launch_mode_combo"):
+            replace_index = self.launch_mode_combo.findData("replace")
+            model = typing.cast(
+                "QtGui.QStandardItemModel", self.launch_mode_combo.model()
+            )
+            typing.cast("QtGui.QStandardItem", model.item(replace_index)).setEnabled(
+                safe
+            )
+            if self.launch_mode == "replace" and not safe:
+                _set_combo_data(self.launch_mode_combo, "nest")
+
     def _target_values(self) -> npt.NDArray:
         values = np.asarray(self.coord_widget.new_coord, dtype=np.float64)
         if values.ndim != 1:
@@ -3022,9 +3382,38 @@ class InterpolationDialog(DataTransformDialog):
             raise ValueError("Target coordinates must be finite.")
         return values
 
+    def _custom_indexer(
+        self, dim: Hashable, values: npt.NDArray
+    ) -> npt.NDArray | xr.DataArray:
+        template = self._custom_coord_templates.get(dim)
+        return values if template is None else template.copy(data=values)
+
     def source_transform_operation(
         self,
-    ) -> InterpolationOperation:
+    ) -> InterpolationOperation | InterpolationFromInputOperation:
+        method = typing.cast(
+            "typing.Literal['linear', 'nearest']", self.method_combo.currentText()
+        )
+        if self.uses_manager_target:
+            if self._target_dimensions == ():
+                raise ValueError("Select at least one coordinate.")
+            operation = InterpolationFromInputOperation(
+                dimensions=self._target_dimensions, method=method
+            )
+            operation.validate_inputs(self._source_data, self._target_data())
+            return operation
+        if self._custom_grids:
+            for dim in self._custom_grids:
+                source_error = self._source_coord_error(dim)
+                if source_error is not None:
+                    raise ValueError(source_error)
+            return InterpolationOperation(
+                coords={
+                    dim: self._custom_indexer(dim, grid.new_coord)
+                    for dim, grid in self._custom_grids.items()
+                },
+                method=method,
+            )
         dim = self._selected_dim
         if dim is None:
             raise ValueError("No dimension selected")
@@ -3032,32 +3421,214 @@ class InterpolationDialog(DataTransformDialog):
         if source_error is not None:
             raise ValueError(source_error)
         return InterpolationOperation(
-            dim=dim,
-            values=self._target_values(),
-            method=typing.cast(
-                "typing.Literal['linear', 'nearest']",
-                self.method_combo.currentText(),
-            ),
+            coords={dim: self._custom_indexer(dim, self._target_values())},
+            method=method,
         )
 
     def restore_transform_operation(
         self,
         operation: ToolProvenanceOperation,
     ) -> None:
+        if isinstance(operation, InterpolationFromInputOperation):
+            self.target_tabs.setCurrentIndex(1)
+            self._target_dimensions = operation.dimensions
+            _set_combo_text(self.method_combo, operation.method)
+            self._refresh_target()
+            return
         if not isinstance(operation, InterpolationOperation):
             return
-        if not _set_combo_data(self.dim_combo, operation.dim):
-            raise ValueError(f"Dimension {operation.dim!r} is not available")
-        values = operation.decoded_values
-        self.coord_widget.count_spin.setValue(int(values.size))
-        self.coord_widget._set_table_values(values)
+        self.target_tabs.setCurrentIndex(0)
+        for grid in self._custom_grids.values():
+            self._grid_stack.removeWidget(grid)
+            grid.deleteLater()
+        self._custom_grids.clear()
+        self._grid_stack.setCurrentWidget(self._grid_widget)
+        with QtCore.QSignalBlocker(self.dim_combo):
+            self.dim_combo.clear()
+            for dim in self._source_data.dims:
+                self.dim_combo.addItem(str(dim), userData=dim)
+        self.custom_summary.hide()
+        coords = operation.decoded_coords
+        self._custom_coord_templates = {
+            dim: values.copy(deep=True)
+            for dim, values in coords.items()
+            if isinstance(values, xr.DataArray)
+        }
+        if len(coords) > 1:
+            with QtCore.QSignalBlocker(self.dim_combo):
+                self.dim_combo.clear()
+                for dim, values in coords.items():
+                    if dim not in self._source_data.dims:
+                        raise ValueError(f"Dimension {dim!r} is not available")
+                    grid = self._new_grid()
+                    grid.set_reference_coord(
+                        np.asarray(values)
+                        if isinstance(values, xr.DataArray)
+                        else self._source_coord_values(dim)
+                    )
+                    self._restore_grid_values(grid, values)
+                    self._custom_grids[dim] = grid
+                    self._grid_stack.addWidget(grid)
+                    self.dim_combo.addItem(str(dim), userData=dim)
+            self.custom_summary.setText(
+                "Interpolating coordinates: " + ", ".join(str(dim) for dim in coords)
+            )
+            self.custom_summary.show()
+            self._dimension_changed()
+        else:
+            ((dim, values),) = coords.items()
+            if not _set_combo_data(self.dim_combo, dim):
+                raise ValueError(f"Dimension {dim!r} is not available")
+            self._dimension_changed()
+            self._restore_grid_values(self.coord_widget, values)
         if not _set_combo_text(self.method_combo, operation.method):
             raise ValueError(
                 f"Interpolation method {operation.method!r} is not available"
             )
 
+    @staticmethod
+    def _restore_grid_values(
+        grid: CoordinateGridWidget, values: npt.NDArray | xr.DataArray
+    ) -> None:
+        labeled = isinstance(values, xr.DataArray)
+        grid._reset_table_to_reference = labeled
+        grid.count_spin.setDisabled(labeled)
+        grid.count_spin.setToolTip(
+            "The count is fixed to preserve the labeled target coordinates."
+            if labeled
+            else ""
+        )
+        values = np.asarray(values)
+        with (
+            QtCore.QSignalBlocker(grid.spin0),
+            QtCore.QSignalBlocker(grid.spin1),
+            QtCore.QSignalBlocker(grid.count_spin),
+        ):
+            grid.count_spin.setValue(int(values.size))
+            grid.spin0.setValue(float(values[0]))
+            if grid.mode_combo.currentText() == "Delta":
+                grid.spin1.setValue(
+                    float(values[1] - values[0]) if values.size > 1 else 1.0
+                )
+            else:
+                grid.spin1.setValue(float(values[-1]))
+        grid._set_table_values(values)
+
+    def restore_manager_target(
+        self,
+        operation: InterpolationFromInputOperation,
+        uid: str | None,
+        *,
+        recorded_data: xr.DataArray | None = None,
+    ) -> None:
+        self.target_tool_selector.set_current_uid(uid)
+        self._recorded_target = (
+            recorded_data if self.target_tool_selector.current_uid is None else None
+        )
+        self.restore_transform_operation(operation)
+
+    def _copy_code_for_operations(
+        self,
+        operations: Sequence[ToolProvenanceOperation],
+        input_name: str,
+    ) -> str:
+        if not self.uses_manager_target:
+            return super()._copy_code_for_operations(operations, input_name)
+        target_name = "target" if input_name != "target" else "reference"
+        manager, _target = self._manager_target()
+        uid = self.target_tool_selector.current_uid
+        if manager is not None and uid is not None:
+            node = manager._tool_graph.nodes[uid]
+            if node.imagetool is not None:
+                candidate = node.slicer_area.watched_data_name
+                if (
+                    candidate
+                    and candidate != input_name
+                    and erlab.utils.misc._is_valid_identifier(candidate)
+                ):
+                    target_name = candidate
+        return self.source_transform_operation().expression_code_with_inputs(
+            input_name, {"target": target_name}
+        )
+
+    def _accept_manager_target(self) -> None:
+        manager, target = self._manager_target()
+        if manager is None or target is None:
+            raise ValueError("Select a target from an individual ImageTool in Manager.")
+        current_node = manager._node_for_target(target)
+        uid = self.target_tool_selector.current_uid
+        if uid is None:
+            raise ValueError("Select a target ImageTool.")
+        data = current_node.data_for_role("displayed", owner_node=current_node)
+        target_data = self._candidate_data(manager, uid, data)
+        operation = typing.cast(
+            "InterpolationFromInputOperation", self.source_transform_operation()
+        )
+        if self.launch_mode == "replace" and not self._replacement_is_safe():
+            raise ValueError(
+                "Replacement would create a dependency cycle. Select a child or "
+                "top-level result."
+            )
+        processed = operation.apply_with_inputs(data, {"target": target_data}).rename(
+            data.name
+        )
+        provenance_spec = manager._multi_input_operation_provenance(
+            (target, uid),
+            operation=operation,
+            active_name="interpolated",
+            start_label="Interpolate ImageTool data",
+            detached_input_uid=(
+                current_node.uid if self.launch_mode == "replace" else None
+            ),
+            data_role="displayed",
+            input_names=("data", "target"),
+            primary_input="data",
+            input_bindings={"target": "target"},
+        )
+        if self.launch_mode == "replace":
+            current_node.replace_with_detached_data(
+                processed,
+                provenance_spec,
+                propagate_descendants=True,
+                preserve_filter=False,
+                replay_source_data=data,
+            )
+            manager.tree_view.refresh(current_node.uid)
+            manager._sigDataReplaced.emit()
+        else:
+            tool = typing.cast(
+                "erlab.interactive.imagetool.ImageTool | None",
+                erlab.interactive.itool(manager=False, **self._itool_kwargs(processed)),
+            )
+            if tool is None:
+                raise RuntimeError("Could not create the interpolated ImageTool.")
+            if self.launch_mode == "nest":
+                manager.add_imagetool_child(
+                    tool,
+                    target,
+                    activate=True,
+                    provenance_spec=provenance_spec,
+                    source_state="fresh",
+                )
+            else:
+                manager.add_imagetool(
+                    tool, activate=True, provenance_spec=provenance_spec
+                )
+
     @QtCore.Slot()
     def accept(self) -> None:
+        if self.uses_manager_target:
+            try:
+                self.source_transform_operation()
+                if self.is_provenance_edit_mode:
+                    super().accept()
+                    return
+                self._accept_manager_target()
+            except (LookupError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                QtWidgets.QMessageBox.warning(self, "Cannot Interpolate", str(exc))
+                return
+            QtWidgets.QDialog.accept(self)
+            return
         dim = self._selected_dim
         if dim is None:
             QtWidgets.QMessageBox.warning(

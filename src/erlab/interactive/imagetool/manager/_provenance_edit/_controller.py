@@ -52,6 +52,8 @@ from erlab.interactive.imagetool._provenance._operations import (
     DivideByCoordOperation,
     ExtensionRoutineOperation,
     GaussianFilterOperation,
+    InterpolationFromInputOperation,
+    InterpolationOperation,
     NormalizeOperation,
     ScriptCodeOperation,
     ShiftFromInputOperation,
@@ -1206,6 +1208,12 @@ class _ProvenanceEditController:
                 return False, "This bound shift step is not editable."
             if "shift" not in spec.steps[row.edit_ref.operation_index].input_bindings:
                 return False, "This bound shift step has no shift input."
+        bound_interpolation = isinstance(operation, InterpolationFromInputOperation)
+        if bound_interpolation:
+            if spec.kind != "script" or row.edit_ref.operation_index is None:
+                return False, "This bound interpolation step is not editable."
+            if "target" not in spec.steps[row.edit_ref.operation_index].input_bindings:
+                return False, "This interpolation step has no target input."
         script_operation = (
             operation
             if isinstance(
@@ -1256,7 +1264,7 @@ class _ProvenanceEditController:
                 )
             descriptor, reason = self._extension_routine_edit_descriptor(operation)
             return descriptor is not None, reason
-        if bound_shift:
+        if bound_shift or bound_interpolation:
             return True, ""
         if isinstance(operation, ConcatOperation):
             if self._operation_action_block(spec, row.edit_ref, action="edit") is None:
@@ -1518,6 +1526,15 @@ class _ProvenanceEditController:
                     )
                 ):
                     return False, "Edit one bound shift step at a time."
+                if (
+                    ref is not None
+                    and spec is not None
+                    and isinstance(
+                        spec._operation_for_ref(ref),
+                        InterpolationFromInputOperation,
+                    )
+                ):
+                    return False, "Edit one bound interpolation step at a time."
         if len(targets) > 1 and not self._matching_operation_rows(
             targets,
             action=action,
@@ -2729,6 +2746,11 @@ class _ProvenanceEditController:
         if isinstance(operation, ShiftFromInputOperation):
             self._edit_bound_shift_operation_row(node, row, spec, ref, operation)
             return
+        if isinstance(
+            operation, InterpolationOperation | InterpolationFromInputOperation
+        ):
+            self._edit_interpolation_operation_row(node, row, spec, ref, operation)
+            return
         if isinstance(operation, ConcatOperation):
             replacement = self._edited_concat_operation(operation)
             if replacement is None:
@@ -2799,6 +2821,224 @@ class _ProvenanceEditController:
             row.scope,
             root_candidate,
             where="validating the edited Python code",
+        )
+
+    def _edit_interpolation_operation_row(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        row: _ProvenanceDisplayRow,
+        spec: ToolProvenanceSpec,
+        ref: _ProvenanceStepRef,
+        operation: InterpolationOperation | InterpolationFromInputOperation,
+    ) -> None:
+        if ref.operation_index is None or node.imagetool is None:
+            raise RuntimeError("The interpolation target is not available")
+        target_name = (
+            spec.steps[ref.operation_index].input_bindings.get("target")
+            if isinstance(operation, InterpolationFromInputOperation)
+            else None
+        )
+        current_input = next(
+            (item for item in spec.replay_inputs if item.name == target_name), None
+        )
+        if (
+            isinstance(operation, InterpolationFromInputOperation)
+            and current_input is None
+        ):
+            raise RuntimeError("The interpolation step has no target input")
+        prefix_data = self._replay_candidate_result(
+            node, row.scope, spec._prefix_before_ref(ref)
+        ).data
+        temp_tool = erlab.interactive.imagetool.ImageTool(prefix_data)
+        temp_tool.hide()
+        dialog: dialogs.InterpolationDialog | None = None
+        selected_uid: str | None = None
+        try:
+            dialog = dialogs.InterpolationDialog(
+                temp_tool.slicer_area,
+                provenance_edit_mode=True,
+                dialog_parent=self._manager,
+                provenance_edit_manager_target=(self._manager, node.uid),
+            )
+            if isinstance(operation, InterpolationFromInputOperation):
+                if current_input is None:
+                    raise RuntimeError(
+                        "The interpolation target input is not available"
+                    )
+                lineage = self._manager._lineage_controller
+                recorded_data = lineage._rebuild_script_provenance(
+                    script(
+                        start_label="Use recorded interpolation target",
+                        active_name=current_input.name,
+                        root_input=current_input,
+                    ),
+                    target_node_uid=node.uid,
+                    prefer_recorded_revisions=True,
+                ).data
+                dialog.restore_manager_target(
+                    operation,
+                    current_input.node_uid,
+                    recorded_data=recorded_data,
+                )
+            else:
+                dialog.restore_transform_operation(operation)
+            if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
+                return
+            replacement = dialog.source_transform_operation().model_copy(
+                update={"group": operation.group}
+            )
+            if isinstance(replacement, InterpolationFromInputOperation):
+                selected_uid = dialog.target_tool_selector.current_uid
+                if selected_uid is None:
+                    if current_input is None:
+                        raise TypeError("Select a compatible target ImageTool")
+                else:
+                    dialog._candidate_data(self._manager, selected_uid, prefix_data)
+                    if self._manager._dependency_tracker.transitively_depends_on(
+                        selected_uid, node.uid
+                    ):
+                        raise RuntimeError(
+                            "The selected target ImageTool would create a "
+                            "dependency cycle"
+                        )
+        finally:
+            if dialog is not None:
+                dialog.close()
+                dialog.deleteLater()
+            temp_tool.close()
+            temp_tool.deleteLater()
+
+        if isinstance(replacement, InterpolationFromInputOperation):
+            candidate = self._interpolation_named_input_spec(node, row, spec)
+            shared_input = target_name is not None and any(
+                index != ref.operation_index
+                and (
+                    target_name in candidate._step_input_names(step)
+                    or target_name in step.context_names
+                )
+                for index, step in enumerate(candidate.steps)
+            )
+            if target_name is None or shared_input:
+                used_names = {item.name for item in candidate.replay_inputs}
+                target_name = "target"
+                suffix = 1
+                while target_name in used_names:
+                    target_name = f"target_{suffix}"
+                    suffix += 1
+            target_input = (
+                (
+                    None
+                    if current_input is None
+                    else current_input.model_copy(update={"name": target_name})
+                )
+                if selected_uid is None
+                else self._manager._lineage_controller._script_input_for_node(
+                    self._manager._tool_graph.nodes[selected_uid],
+                    name=target_name,
+                    data_role="displayed",
+                )
+            )
+            if target_input is None:
+                raise RuntimeError("The interpolation target input is not available")
+            inputs = [
+                item for item in candidate.replay_inputs if item.name != target_name
+            ]
+            inputs.append(target_input)
+            steps = list(candidate.steps)
+            previous_step = steps[ref.operation_index]
+            steps[ref.operation_index] = ReplayStep(
+                operation=replacement,
+                input_bindings={"target": target_name},
+                context_names=previous_step.context_names,
+            )
+            candidate = candidate.with_replay_inputs(inputs).model_copy(
+                update={"steps": tuple(steps)}
+            )
+        else:
+            candidate = spec._replace_operation_ref(ref, (replacement,))
+            if (
+                target_name is not None
+                and target_name != candidate.replay_primary_input
+                and not any(
+                    target_name in candidate._step_input_names(step)
+                    or target_name in step.context_names
+                    for step in candidate.steps
+                )
+            ):
+                candidate = candidate.with_replay_inputs(
+                    tuple(
+                        item
+                        for item in candidate.replay_inputs
+                        if item.name != target_name
+                    )
+                )
+        root_candidate = self._root_candidate_for_row(node, row, candidate)
+        self._validate_and_replace(
+            node,
+            row.scope,
+            root_candidate,
+            where="validating the edited interpolation",
+        )
+
+    def _interpolation_named_input_spec(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        row: _ProvenanceDisplayRow,
+        spec: ToolProvenanceSpec,
+    ) -> ToolProvenanceSpec:
+        if spec.replay_primary_input is not None:
+            return spec
+        replay = spec.to_replay_spec()
+        names = {item.name for item in replay.replay_inputs}
+        input_name = "data"
+        suffix = 1
+        while input_name in names:
+            input_name = f"data_{suffix}"
+            suffix += 1
+
+        start_ref = _ProvenanceStepRef("operation", operation_index=0)
+        seed_spec = spec._prefix_before_ref(start_ref)
+        seed_data = self._replay_candidate_result(node, row.scope, seed_spec).data
+        seed_replay = seed_spec.to_replay_spec()
+        external_names = script_replay_source_input_names(seed_replay)
+        if external_names:
+            if row.scope == "source" and node.parent_uid is not None:
+                source_node = self._manager._parent_node(node)
+                source_inputs = tuple(
+                    self._manager._lineage_controller._script_input_for_node(
+                        source_node, name=name, data_role="source"
+                    )
+                    for name in external_names
+                )
+            else:
+                source_data = node.resolved_replay_source_data()
+                if source_data is None:
+                    raise RuntimeError("The interpolation input source is unavailable")
+                revision_id = self._manager._provenance_revisions.add(source_data)
+                source_inputs = tuple(
+                    ScriptInput(
+                        name=name,
+                        revision_id=revision_id,
+                        follow_source=False,
+                        data_role="source",
+                    )
+                    for name in external_names
+                )
+            seed_replay = seed_replay.with_replay_inputs(
+                (*seed_replay.replay_inputs, *source_inputs)
+            )
+        revision_id = self._manager._provenance_revisions.add(seed_data, seed_replay)
+        primary = ScriptInput(
+            name=input_name,
+            revision_id=revision_id,
+            provenance_spec=seed_replay.model_dump(mode="json"),
+        )
+        return script(
+            start_label=replay.start_label or "Interpolate ImageTool data",
+            active_name=replay.active_name or "derived",
+            root_input=primary,
+            script_inputs=replay.script_inputs,
+            steps=replay.steps,
         )
 
     def _edit_bound_shift_operation_row(

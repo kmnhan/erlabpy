@@ -244,6 +244,37 @@ def test_manager_source_selector_without_manager(qtbot):
     assert not selector._popup.isVisible()
 
 
+def test_manager_source_selector_notifies_refresh_with_unchanged_selection(
+    qtbot, manager_context
+):
+    data = xr.DataArray([[0.0, 1.0], [2.0, 3.0]], dims=("x", "y"))
+    with manager_context() as manager:
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        selector = ManagerSourceSelector(manager, eligibility=lambda node: None)
+        qtbot.addWidget(selector)
+        uid = selector.candidate_uids[0]
+        selector.set_current_uid(uid)
+        refreshed_states = []
+        selection_changes = []
+        candidate_changes = []
+        selector.refreshed.connect(
+            lambda: refreshed_states.append(
+                (selector.current_uid, selector.candidate_uids)
+            )
+        )
+        selector.selectionChanged.connect(lambda: selection_changes.append(True))
+        selector.candidatesChanged.connect(lambda: candidate_changes.append(True))
+
+        with qtbot.waitSignal(selector.refreshed):
+            manager._sigDataReplaced.emit()
+
+        assert refreshed_states == [(uid, (uid,))]
+        assert not selection_changes
+        assert not candidate_changes
+
+
 def test_manager_source_tree_dismissal_preserves_container(qtbot):
     dialog = QtWidgets.QDialog()
     qtbot.addWidget(dialog)

@@ -43,6 +43,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     AverageOperation,
     DivideByCoordOperation,
     GaussianFilterOperation,
+    InterpolationFromInputOperation,
     IselOperation,
     KspaceConvertOperation,
     KspaceSetNormalOperation,
@@ -1846,6 +1847,142 @@ def test_manager_copy_paste_bound_shift_steps_keeps_live_dependency(
             erlab.analysis.transform.shift(target_data, -updated_shift, along="eV"),
         )
         assert manager.dependency_status_for_uid(target_node.uid) == "current"
+
+
+@pytest.mark.parametrize("dimensions", [None, ("eV",)])
+def test_manager_copy_paste_interpolation_keeps_target_dependency(
+    qtbot,
+    accept_dialog,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context,
+    dimensions: tuple[str, ...] | None,
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3.0), "eV": np.linspace(-0.2, 0.2, 5)},
+    )
+    grid = xr.DataArray(
+        np.zeros((4, 7)),
+        dims=("x", "eV"),
+        coords={
+            "x": np.linspace(0.0, 2.0, 4),
+            "eV": np.linspace(-0.15, 0.15, 7),
+            "hv": 21.2,
+        },
+    )
+    destination = data + 100.0
+    operation = InterpolationFromInputOperation(dimensions=dimensions)
+
+    with manager_context() as manager:
+        indices = [
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(value), show=False
+            )
+            for value in (data, grid, destination)
+        ]
+        target_node = manager._node_for_target(indices[1])
+        destination_node = manager._node_for_target(indices[2])
+        spec = manager._multi_input_operation_provenance(
+            indices[:2],
+            operation=operation,
+            active_name="interpolated",
+            start_label="Interpolate ImageTool data",
+            input_names=("data", "target"),
+            primary_input="data",
+            input_bindings={"target": "target"},
+        )
+        child_uid = manager.add_imagetool_child(
+            erlab.interactive.imagetool.ImageTool(
+                operation.apply_with_inputs(data, {"target": grid})
+            ),
+            indices[0],
+            show=False,
+            provenance_spec=spec,
+            source_state="fresh",
+        )
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info(uid=child_uid)
+        rows = [
+            index
+            for index in range(manager.metadata_derivation_list.conceptual_count())
+            if (
+                (item := manager.metadata_derivation_list.conceptual_item(index))
+                is not None
+                and isinstance(
+                    row := item.data(
+                        0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE
+                    ),
+                    _ProvenanceDisplayRow,
+                )
+                and row.edit_ref is not None
+                and isinstance(
+                    spec._operation_for_ref(row.edit_ref),
+                    InterpolationFromInputOperation,
+                )
+            )
+        ]
+        assert len(rows) == 1
+        select_metadata_rows(manager, rows)
+        qtbot.keyClick(
+            manager.metadata_derivation_list,
+            QtCore.Qt.Key.Key_C,
+            QtCore.Qt.KeyboardModifier.ControlModifier,
+        )
+        payload = manager_details_panel._provenance_step_clipboard_payload(
+            QtWidgets.QApplication.clipboard().mimeData()
+        )
+        assert payload is not None
+        assert payload.steps[0].operation == operation
+        assert payload.steps[0].input_bindings == {"target": "target"}
+        assert not payload.contains_script
+        expected = operation.apply_with_inputs(destination, {"target": grid})
+        copied = _exec_generated_code(
+            QtWidgets.QApplication.clipboard().text(),
+            {"data": destination, "target": grid},
+        )
+        xr.testing.assert_identical(copied["interpolated"], expected)
+
+        def fail_paste(_title, error, **_kwargs):
+            raise error
+
+        monkeypatch.setattr(
+            manager._provenance_edit_controller, "_show_failed", fail_paste
+        )
+        manager.tree_view.clearSelection()
+        select_tools(manager, [indices[2]])
+        manager._update_info()
+        manager._paste_provenance_steps_from_clipboard()
+        xr.testing.assert_identical(destination_node.current_source_data(), expected)
+        pasted = destination_node.provenance_spec
+        assert pasted is not None
+        assert isinstance(pasted.steps[0].operation, InterpolationFromInputOperation)
+        assert pasted.replay_inputs[-1].node_uid == target_node.uid
+
+        changed_grid = grid.assign_coords(eV=np.linspace(-0.1, 0.1, 7))
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(indices[1], changed_grid)
+        qtbot.wait_until(
+            lambda: (
+                manager.dependency_status_for_uid(destination_node.uid) == "changed"
+            ),
+            timeout=5000,
+        )
+        accept_dialog(
+            destination_node.reload_source_data,
+            accept_call=lambda dialog: next(
+                button
+                for button in dialog.buttons()
+                if dialog.buttonRole(button)
+                == QtWidgets.QMessageBox.ButtonRole.AcceptRole
+            ).click(),
+        )
+        xr.testing.assert_identical(
+            destination_node.current_source_data(),
+            operation.apply_with_inputs(destination, {"target": changed_grid}),
+        )
+        assert manager.dependency_status_for_uid(destination_node.uid) == "current"
 
 
 def test_manager_nested_copied_steps_keep_pinned_shift_after_source_closes(

@@ -12495,6 +12495,182 @@ def test_itool_interpolate_nearest(qtbot, accept_dialog) -> None:
     win.close()
 
 
+def test_interpolation_dialog_restores_multiple_custom_coordinates(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "eV"),
+        coords={"x": [0.0, 1.0, 2.0], "eV": [-0.3, -0.2, -0.1, 0.0]},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = InterpolationDialog(win.slicer_area, provenance_edit_mode=True)
+    qtbot.addWidget(dialog)
+    operation = imagetool_dialogs.InterpolationOperation(
+        coords={"x": [0.2, 0.5, 1.8], "eV": [-0.25, -0.15]}, method="nearest"
+    )
+    dialog.restore_transform_operation(operation)
+    assert dialog.source_transform_operation() == operation
+    dialog.dim_combo.setCurrentText("eV")
+    assert dialog.coord_widget.spin0.value() == -0.25
+    assert dialog.coord_widget.spin1.value() == -0.15
+    dialog.coord_widget.table.item(0, 0).setText("-0.22")
+    expected_coords = {"x": [0.2, 0.5, 1.8], "eV": [-0.22, -0.15]}
+    actual = dialog.source_transform_operation()
+    xr.testing.assert_identical(
+        actual.apply(data), data.interp(expected_coords, method="nearest")
+    )
+    dialog.target_tabs.setCurrentIndex(1)
+    assert not dialog.copy_button.isEnabled()
+    assert not dialog.target_tool_selector.isEnabled()
+    dialog.target_tabs.setCurrentIndex(0)
+    assert dialog.copy_button.isEnabled()
+    assert dialog.source_transform_operation() == actual
+    xr.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), actual.apply(data)
+    )
+    single = imagetool_dialogs.InterpolationOperation(coords={"x": [0.25, 1.75]})
+    dialog.restore_transform_operation(single)
+    assert dialog.source_transform_operation() == single
+    dialog.coord_widget.count_spin.setValue(4)
+    np.testing.assert_allclose(
+        dialog.coord_widget.new_coord, np.linspace(0.25, 1.75, 4)
+    )
+
+
+@pytest.mark.parametrize("paired", [False, True])
+def test_interpolation_dialog_preserves_labeled_custom_indexers(qtbot, paired) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "eV"),
+        coords={"x": [0.0, 1.0, 2.0], "eV": [-0.3, -0.2, -0.1, 0.0]},
+    )
+    indexer_coords = {
+        "path": xr.DataArray(
+            ["A", "B", "C"], dims="path", attrs={"description": "sample index"}
+        ),
+        "distance": xr.DataArray([0.0, 0.4, 1.0], dims="path", attrs={"units": "mm"}),
+        "temperature": xr.DataArray(25.0, attrs={"units": "K"}),
+    }
+    energy = xr.DataArray(
+        [-0.25, -0.18, -0.05],
+        dims="path",
+        coords=indexer_coords,
+        attrs={"units": "eV", "source": "calibration"},
+        name="target_energy",
+    )
+    targets = {"eV": energy}
+    if paired:
+        targets = {
+            "x": xr.DataArray(
+                [0.25, 0.9, 1.75],
+                dims="path",
+                coords=indexer_coords,
+                attrs={"units": "mm", "source": "calibration"},
+                name="target_position",
+            ),
+            **targets,
+        }
+    operation = InterpolationOperation(coords=targets, method="nearest")
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = InterpolationDialog(win.slicer_area, provenance_edit_mode=True)
+    qtbot.addWidget(dialog)
+    dialog.restore_transform_operation(operation)
+    if not paired:
+        dialog.dim_combo.setCurrentText("x")
+        assert dialog.coord_widget.count_spin.isEnabled()
+        dialog.dim_combo.setCurrentText("eV")
+    expected_targets = {}
+    for dim, target in targets.items():
+        dialog.dim_combo.setCurrentText(dim)
+        assert dialog.coord_widget.count_spin.value() == target.size
+        assert not dialog.coord_widget.count_spin.isEnabled()
+        assert dialog.coord_widget.count_spin.toolTip()
+        edited_values = target.values.copy()
+        edited_values[0] = 0.5 if dim == "x" else -0.22
+        dialog.coord_widget.table.item(0, 0).setText(str(edited_values[0]))
+        expected_targets[dim] = target.copy(data=edited_values)
+
+    edited = dialog.source_transform_operation()
+
+    for dim, expected in expected_targets.items():
+        assert isinstance(edited.decoded_coords[dim], xr.DataArray)
+        xr.testing.assert_identical(edited.decoded_coords[dim], expected)
+        xr.testing.assert_identical(operation.decoded_coords[dim], targets[dim])
+    expected_result = data.interp(expected_targets, method="nearest")
+    xr.testing.assert_identical(edited.apply(data), expected_result)
+    assert edited.apply(data).dims == (("path",) if paired else ("x", "path"))
+    xr.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected_result
+    )
+
+    dialog.dim_combo.setCurrentText("eV")
+    dialog.coord_widget.reset_btn.click()
+    assert dialog.coord_widget.count_spin.value() == energy.size
+    assert not dialog.coord_widget.count_spin.isEnabled()
+    reset = dialog.source_transform_operation()
+    xr.testing.assert_identical(reset.decoded_coords["eV"], energy)
+
+    plain = InterpolationOperation(coords={"x": [0.25, 1.75]})
+    dialog.restore_transform_operation(plain)
+    assert dialog.coord_widget.count_spin.isEnabled()
+    assert not dialog.coord_widget.count_spin.toolTip()
+    dialog.coord_widget.count_spin.setValue(5)
+    restored_plain = dialog.source_transform_operation()
+    assert isinstance(restored_plain.decoded_coords["x"], np.ndarray)
+    np.testing.assert_allclose(
+        restored_plain.decoded_coords["x"], np.linspace(0.25, 1.75, 5)
+    )
+    dialog.coord_widget.reset_btn.click()
+    np.testing.assert_allclose(dialog.coord_widget.new_coord, data.x.values)
+
+
+def test_interpolation_dialog_restores_recorded_target(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "eV"),
+        coords={"x": [0.0, 1.0, 2.0], "eV": [-0.3, -0.2, -0.1, 0.0]},
+    )
+    target = xr.DataArray(
+        np.zeros((2, 2)),
+        dims=("x", "eV"),
+        coords={"x": [0.2, 1.8], "eV": [-0.25, -0.15]},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = InterpolationDialog(win.slicer_area, provenance_edit_mode=True)
+    qtbot.addWidget(dialog)
+    operation = imagetool_dialogs.InterpolationFromInputOperation(dimensions=("eV",))
+    dialog.restore_manager_target(operation, None, recorded_data=target)
+    assert dialog.source_transform_operation() == operation
+    assert dialog.target_coords_table.rowCount() == 2
+    assert dialog._selected_target_dimensions == ("eV",)
+    assert dialog.copy_button.isEnabled()
+    namespace = _exec_generated_code(
+        "result = " + dialog.make_code(), {"data": data, "target": target}
+    )
+    xr.testing.assert_identical(
+        namespace["result"],
+        data.interp(eV=target.eV),
+    )
+    code = dialog._copy_code_for_operations([operation], "target")
+    namespace = _exec_generated_code(
+        "result = " + code, {"target": data, "reference": target}
+    )
+    xr.testing.assert_identical(namespace["result"], data.interp(eV=target.eV))
+    dialog.all_coords_check.click()
+    assert dialog._selected_target_dimensions is None
+    assert dialog.source_transform_operation().dimensions is None
+    dialog.all_coords_check.click()
+    assert dialog._selected_target_dimensions == ()
+    assert not dialog.copy_button.isEnabled()
+    with pytest.raises(ValueError, match="Select at least one coordinate"):
+        dialog.source_transform_operation()
+    dialog.all_coords_check.click()
+    assert dialog.copy_button.isEnabled()
+    assert dialog._selected_target_dimensions is None
+
+
 def test_itool_interpolate_exact_generated_coordinates(qtbot, accept_dialog) -> None:
     data = xr.DataArray(
         np.arange(6).reshape((3, 2)).astype(float),
