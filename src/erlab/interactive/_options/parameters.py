@@ -543,6 +543,87 @@ class DirectoryPathParameter(pyqtgraph.parametertree.parameterTypes.SimpleParame
         super().__init__(**opts)
 
 
+class DisabledLoadersWidget(QtWidgets.QWidget):
+    """Show enabled loader checkboxes while retaining disabled loader names."""
+
+    sigDisabledLoadersChanged = QtCore.Signal(list)
+
+    def __init__(
+        self,
+        disabled_loaders: list[str] | None = None,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._disabled_loaders: list[str] = []
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.list_widget = QtWidgets.QListWidget(self)
+        self.list_widget.setObjectName("enabledLoaderPluginsList")
+        layout.addWidget(self.list_widget)
+        for name in sorted(erlab.io.loaders, key=str.casefold):
+            item = QtWidgets.QListWidgetItem(name, self.list_widget)
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, name)
+            item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+            item.setToolTip(str(getattr(erlab.io.loaders[name], "description", "")))
+            item.setCheckState(QtCore.Qt.CheckState.Checked)
+        row_height = self.list_widget.sizeHintForRow(0)
+        if row_height <= 0:
+            row_height = self.list_widget.fontMetrics().height() + 6
+        self.list_widget.setFixedHeight(
+            row_height * max(1, min(8, self.list_widget.count()))
+            + 2 * self.list_widget.frameWidth()
+        )
+        self.set_disabled_loaders(disabled_loaders or [])
+        self.list_widget.itemChanged.connect(self._item_changed)
+
+    def get_disabled_loaders(self) -> list[str]:
+        """Return disabled names, including plugins absent from this version."""
+        return self._disabled_loaders.copy()
+
+    def set_disabled_loaders(self, names: list[str]) -> None:
+        """Set disabled names without emitting an edit signal."""
+        self._disabled_loaders = list(dict.fromkeys(names))
+        with QtCore.QSignalBlocker(self.list_widget):
+            for row in range(self.list_widget.count()):
+                item = self.list_widget.item(row)
+                if item is not None:
+                    item.setCheckState(
+                        QtCore.Qt.CheckState.Unchecked
+                        if item.data(QtCore.Qt.ItemDataRole.UserRole)
+                        in self._disabled_loaders
+                        else QtCore.Qt.CheckState.Checked
+                    )
+
+    def _item_changed(self, item: QtWidgets.QListWidgetItem) -> None:
+        name = str(item.data(QtCore.Qt.ItemDataRole.UserRole))
+        if item.checkState() == QtCore.Qt.CheckState.Checked:
+            if name in self._disabled_loaders:
+                self._disabled_loaders.remove(name)
+        elif name not in self._disabled_loaders:
+            self._disabled_loaders.append(name)
+        self.sigDisabledLoadersChanged.emit(self.get_disabled_loaders())
+
+
+class DisabledLoadersParameterItem(
+    pyqtgraph.parametertree.parameterTypes.WidgetParameterItem
+):
+    def makeWidget(self) -> DisabledLoadersWidget:
+        widget = DisabledLoadersWidget()
+        widget.sigChanged = widget.sigDisabledLoadersChanged  # type: ignore[attr-defined]
+        widget.value = widget.get_disabled_loaders  # type: ignore[attr-defined]
+        widget.setValue = widget.set_disabled_loaders  # type: ignore[attr-defined]
+        self.hideWidget = False
+        return widget
+
+
+class DisabledLoadersParameter(pyqtgraph.parametertree.parameterTypes.SimpleParameter):
+    itemClass = DisabledLoadersParameterItem
+
+    def __init__(self, **opts):
+        opts.setdefault("type", "disabled_loaders")
+        super().__init__(**opts)
+
+
 class TrustedFoldersWidget(QtWidgets.QWidget):
     """Editor for recursively trusted executable-document folders."""
 

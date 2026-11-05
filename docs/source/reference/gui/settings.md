@@ -37,6 +37,15 @@ When Settings is opened from ImageTool Manager, a {guilabel}`Workspace` scope is
 available. Workspace settings are local overrides saved inside the manager's `.itws`
 workspace file. Turn on the checkbox to store a value.
 
+## I/O
+
+In the {guilabel}`User` scope, {guilabel}`Enabled plugins` lists the registered loader
+plugins with a checkbox for each plugin. Clear a checkbox to hide that plugin from file
+dialogs and Data Explorer. Select it again to restore the plugin.
+
+This setting does not affect {func}`erlab.io.load` or reloading data with its recorded
+loader.
+
 ## Security
 
 The {guilabel}`Security` page is available in the {guilabel}`User` scope.

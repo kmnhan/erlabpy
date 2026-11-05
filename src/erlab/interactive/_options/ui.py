@@ -18,6 +18,7 @@ from erlab.interactive._options.core import (
 from erlab.interactive._options.parameters import (
     ColorListWidget,
     DirectoryPathWidget,
+    DisabledLoadersWidget,
     FigureDpiOverrideWidget,
     SavefigDpiWidget,
     SavefigNumberWidget,
@@ -344,7 +345,7 @@ class _SettingsRow(QtWidgets.QFrame):
         self.setObjectName(f"settingsRow_{scope}_{object_path}")
         self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         multiline_control = isinstance(
-            control, StylesheetListWidget | TrustedFoldersWidget
+            control, StylesheetListWidget | TrustedFoldersWidget | DisabledLoadersWidget
         )
 
         layout = QtWidgets.QGridLayout(self)
@@ -398,6 +399,8 @@ class _SettingsRow(QtWidgets.QFrame):
 class OptionDialog(QtWidgets.QDialog):
     """Native settings dialog with immediate save and session revert."""
 
+    sigDisabledLoadersChanged = QtCore.Signal()
+
     def sizeHint(self) -> QtCore.QSize:
         return QtCore.QSize(780, 560)
 
@@ -411,6 +414,7 @@ class OptionDialog(QtWidgets.QDialog):
 
         self._workspace_manager = self._find_workspace_manager(parent)
         self._baseline_user = erlab.interactive.options.model
+        self._disabled_loaders = set(self._baseline_user.io.disabled_loaders)
         self._baseline_workspace = self._workspace_overrides()
         self._rows: dict[tuple[_Scope, str], _SettingsRow] = {}
         self._page_indexes: dict[tuple[_Scope, str], int] = {}
@@ -650,6 +654,8 @@ class OptionDialog(QtWidgets.QDialog):
             return DirectoryPathWidget(parent=self)
         if ui_type == "trusted_folders":
             return TrustedFoldersWidget(parent=self)
+        if ui_type == "disabled_loaders":
+            return DisabledLoadersWidget(parent=self)
         if ui_type == "choice_slider":
             return _ChoiceSlider(extra.get("ui_choices", ()), self)
         if ui_type == "list" or "ui_limits" in extra:
@@ -757,6 +763,10 @@ class OptionDialog(QtWidgets.QDialog):
             control.sigFoldersChanged.connect(
                 lambda _folders, row=row: self._control_changed(row)
             )
+        elif isinstance(control, DisabledLoadersWidget):
+            control.sigDisabledLoadersChanged.connect(
+                lambda _names, row=row: self._control_changed(row)
+            )
         elif isinstance(control, QtWidgets.QLineEdit):
             control.editingFinished.connect(lambda row=row: self._control_changed(row))
 
@@ -856,6 +866,8 @@ class OptionDialog(QtWidgets.QDialog):
             return control.get_path()
         if isinstance(control, TrustedFoldersWidget):
             return control.get_folders()
+        if isinstance(control, DisabledLoadersWidget):
+            return control.get_disabled_loaders()
         if isinstance(control, QtWidgets.QLineEdit):
             text = control.text()
             default_value = option_value(AppOptions(), path)
@@ -884,6 +896,19 @@ class OptionDialog(QtWidgets.QDialog):
             control.setCurrentData(value)
             return
         if isinstance(control, QtWidgets.QComboBox):
+            if path == "io/default_loader":
+                disabled = erlab.interactive.options.model.io.disabled_loaders
+                model = typing.cast("QtGui.QStandardItemModel", control.model())
+                for row in range(control.count()):
+                    name = control.itemData(row)
+                    if name in erlab.io.loaders:
+                        enabled = name not in disabled
+                        control.setItemText(
+                            row, str(name) if enabled else f"{name} (disabled)"
+                        )
+                        item = model.item(row)
+                        if item is not None:
+                            item.setEnabled(enabled)
             index = control.findData(value)
             if index < 0:
                 index = control.findText(str(value))
@@ -909,6 +934,9 @@ class OptionDialog(QtWidgets.QDialog):
             return
         if isinstance(control, TrustedFoldersWidget):
             control.set_folders(list(value or []))
+            return
+        if isinstance(control, DisabledLoadersWidget):
+            control.set_disabled_loaders(list(value or []))
             return
         if isinstance(control, QtWidgets.QLineEdit):
             if isinstance(value, list):
@@ -945,6 +973,10 @@ class OptionDialog(QtWidgets.QDialog):
             self._updating = False
         self._update_status()
         self._update_visible_page()
+        disabled_loaders = set(erlab.interactive.options.model.io.disabled_loaders)
+        if self._disabled_loaders != disabled_loaders:
+            self._disabled_loaders = disabled_loaders
+            self.sigDisabledLoadersChanged.emit()
 
     def _control_changed(self, row: _SettingsRow) -> None:
         if self._updating:

@@ -1,4 +1,5 @@
 import pathlib
+import types
 import warnings
 
 import pytest
@@ -13,6 +14,8 @@ from erlab.interactive._options.parameters import (
     ColorListWidget,
     DirectoryPathParameter,
     DirectoryPathWidget,
+    DisabledLoadersParameter,
+    DisabledLoadersWidget,
     FigureDpiOverrideParameter,
     FigureDpiOverrideWidget,
     SavefigDpiParameter,
@@ -283,6 +286,117 @@ def test_directory_path_parameter_item_widget(qtbot) -> None:
     assert isinstance(widget, DirectoryPathWidget)
     assert not item.hideWidget
     assert widget.value() == "~/data"
+
+
+def test_disabled_loaders_widget_lists_registered_names(qtbot, monkeypatch) -> None:
+    monkeypatch.setattr(
+        erlab.io,
+        "loaders",
+        {
+            "zeta": types.SimpleNamespace(description="Zeta loader"),
+            "alpha": types.SimpleNamespace(),
+        },
+    )
+    widget = DisabledLoadersWidget(["alpha", "removed"])
+    qtbot.addWidget(widget)
+    items = [widget.list_widget.item(row) for row in range(widget.list_widget.count())]
+
+    assert [item.data(QtCore.Qt.ItemDataRole.UserRole) for item in items] == [
+        "alpha",
+        "zeta",
+    ]
+    assert all(item.flags() & QtCore.Qt.ItemFlag.ItemIsUserCheckable for item in items)
+    assert [item.checkState() for item in items] == [
+        QtCore.Qt.CheckState.Unchecked,
+        QtCore.Qt.CheckState.Checked,
+    ]
+    assert widget.get_disabled_loaders() == ["alpha", "removed"]
+
+
+def test_disabled_loaders_widget_edits_preserve_absent_names(
+    qtbot, monkeypatch
+) -> None:
+    monkeypatch.setattr(erlab.io, "loaders", {"lab": types.SimpleNamespace()})
+    widget = DisabledLoadersWidget()
+    qtbot.addWidget(widget)
+    changes: list[list[str]] = []
+    widget.sigDisabledLoadersChanged.connect(changes.append)
+    disabled = ["removed", "lab", "removed"]
+
+    widget.set_disabled_loaders(disabled)
+    disabled.append("other")
+    returned = widget.get_disabled_loaders()
+    returned.clear()
+
+    assert changes == []
+    assert widget.get_disabled_loaders() == ["removed", "lab"]
+    item = widget.list_widget.item(0)
+    assert item.checkState() == QtCore.Qt.CheckState.Unchecked
+
+    item.setCheckState(QtCore.Qt.CheckState.Checked)
+    assert changes == [["removed"]]
+    assert widget.get_disabled_loaders() == ["removed"]
+
+    item.setCheckState(QtCore.Qt.CheckState.Unchecked)
+    assert changes == [["removed"], ["removed", "lab"]]
+    assert widget.get_disabled_loaders() == ["removed", "lab"]
+
+
+def test_disabled_loaders_widget_preserves_choices_across_registry_changes(
+    qtbot, monkeypatch
+) -> None:
+    registry = {"lab": types.SimpleNamespace()}
+    monkeypatch.setattr(erlab.io, "loaders", registry)
+    widget = DisabledLoadersWidget(["lab", "returning"])
+    qtbot.addWidget(widget)
+    saved_names = widget.get_disabled_loaders()
+    registry.pop("lab")
+    registry.update(
+        {"new": types.SimpleNamespace(), "returning": types.SimpleNamespace()}
+    )
+
+    updated_widget = DisabledLoadersWidget(saved_names)
+    qtbot.addWidget(updated_widget)
+    states = {
+        item.data(QtCore.Qt.ItemDataRole.UserRole): item.checkState()
+        for row in range(updated_widget.list_widget.count())
+        if (item := updated_widget.list_widget.item(row)) is not None
+    }
+
+    assert states == {
+        "new": QtCore.Qt.CheckState.Checked,
+        "returning": QtCore.Qt.CheckState.Unchecked,
+    }
+    assert updated_widget.get_disabled_loaders() == ["lab", "returning"]
+
+
+def test_disabled_loaders_widget_accepts_empty_registry(qtbot, monkeypatch) -> None:
+    monkeypatch.setattr(erlab.io, "loaders", {})
+    widget = DisabledLoadersWidget(["removed"])
+    qtbot.addWidget(widget)
+
+    assert widget.list_widget.count() == 0
+    assert widget.list_widget.height() > 0
+    assert widget.get_disabled_loaders() == ["removed"]
+
+
+def test_disabled_loaders_parameter_item_widget(qtbot, monkeypatch) -> None:
+    monkeypatch.setattr(erlab.io, "loaders", {"lab": types.SimpleNamespace()})
+    param = DisabledLoadersParameter(name="plugins", value=["removed", "lab"])
+    item = param.makeTreeItem(0)
+    widget = item.widget
+    qtbot.addWidget(item.layoutWidget)
+
+    assert isinstance(widget, DisabledLoadersWidget)
+    assert not item.hideWidget
+    assert widget.value() == ["removed", "lab"]
+
+    widget.list_widget.item(0).setCheckState(QtCore.Qt.CheckState.Checked)
+    assert param.value() == ["removed"]
+
+    param.setValue(["removed", "lab"])
+    assert widget.get_disabled_loaders() == ["removed", "lab"]
+    assert widget.list_widget.item(0).checkState() == QtCore.Qt.CheckState.Unchecked
 
 
 def test_trusted_folders_widget_browse_accepts_and_cancel_keeps_value(

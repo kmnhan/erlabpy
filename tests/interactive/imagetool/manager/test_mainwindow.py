@@ -1028,6 +1028,7 @@ def test_manager_open_settings_reuses_live_dialog(
             raise AssertionError("Settings dialog was not registered")
         assert isinstance(dialog, erlab.interactive._options.OptionDialog)
         assert dialog.isVisible()
+        dialog.sigDisabledLoadersChanged.emit()
 
         manager.open_settings()
 
@@ -1035,6 +1036,44 @@ def test_manager_open_settings_reuses_live_dialog(
 
         dialog.deleteLater()
         qtbot.wait_until(lambda: "settings" not in manager._additional_windows)
+
+
+def test_manager_settings_refresh_disabled_loader_choices(
+    qtbot,
+    example_loader,
+    example_data_dir: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    erlab.interactive.options["io/default_loader"] = "example"
+    name_filter = next(iter(erlab.io.loaders["example"].file_dialog_methods))
+
+    with manager_context() as manager:
+        manager._recent_directory = str(example_data_dir)
+        manager._recent_name_filter = name_filter
+        manager.ensure_explorer_initialized()
+        explorer = manager.explorer.current_explorer
+        assert explorer is not None
+        assert explorer.loader_name == "example"
+        dialog = manager.open_settings()
+
+        erlab.interactive.options["io/disabled_loaders"] = ["example"]
+        dialog.update()
+
+        assert "example" not in explorer._loader_names()
+        assert explorer.loader_name != "example"
+        assert name_filter not in manager._available_file_loaders()
+        assert manager._recent_loader_name is None
+        assert manager._preferred_name_filter(manager._available_file_loaders()) is None
+
+        dialog.revert_changes()
+
+        assert "example" in explorer._loader_names()
+        assert name_filter in manager._available_file_loaders()
+        assert manager._preferred_name_filter(manager._available_file_loaders()) == (
+            name_filter
+        )
 
 
 def test_manager_layout_events_wait_for_tracking_enabled(

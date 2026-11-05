@@ -35,6 +35,7 @@ from erlab.interactive.imagetool.manager._server import _ManagerServer, _Watcher
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
+    from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
     from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
     from erlab.interactive.imagetool.manager import ImageToolManager
@@ -2003,6 +2004,7 @@ class _WidgetsController:
         ) or not erlab.interactive.utils.qt_is_valid(dialog):
             dialog = erlab.interactive._options.OptionDialog(self._manager)
             self._manager._additional_windows["settings"] = dialog
+            dialog.sigDisabledLoadersChanged.connect(self._refresh_explorer_loaders)
 
             def cleanup(_obj: QtCore.QObject | None = None) -> None:
                 if self._manager._additional_windows.get("settings") is dialog:
@@ -2011,6 +2013,11 @@ class _WidgetsController:
             dialog.destroyed.connect(cleanup)
         erlab.interactive.utils.activate_window(dialog)
         return dialog
+
+    def _refresh_explorer_loaders(self) -> None:
+        explorer = self._manager._standalone_app_windows.get("explorer")
+        if explorer is not None and erlab.interactive.utils.qt_is_valid(explorer):
+            typing.cast("_TabbedExplorer", explorer).refresh_loader_choices()
 
     def open_keyboard_shortcuts(self) -> KeyboardShortcutsDialog:
         """Open the keyboard shortcut reference."""

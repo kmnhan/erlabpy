@@ -6194,6 +6194,43 @@ def test_builtin_and_extension_loader_filter_conflict_is_rejected(
         )
 
 
+def test_disabled_plugin_and_extension_loader_filter_conflict_is_rejected(
+    manager_context,
+    example_loader,
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "conflicting_loader.py"
+    _loader_script(script_path, name="Example Raw Data", extensions=(".h5",))
+    name_filter = next(iter(erlab.io.loaders["example"].file_dialog_methods))
+    erlab.interactive.options["io/disabled_loaders"] = ["example"]
+
+    with manager_context() as manager:
+        assert name_filter not in manager._available_file_loaders()
+        catalog, _source_hash = manager._extensions.catalog.store.register_script(
+            script_path
+        )
+
+        with pytest.raises(
+            _ExtensionCatalogConflictError,
+            match="conflicts with built-in file dialog filters",
+        ):
+            _validate_and_enable(
+                manager._extensions.catalog.store,
+                script_path.name,
+                expected_record_generation=(
+                    catalog.extensions[script_path.name].record_generation
+                ),
+            )
+        manager._extensions.catalog.refresh()
+
+        assert not manager._extensions.catalog.model.extensions[
+            script_path.name
+        ].enabled
+        erlab.interactive.options["io/disabled_loaders"] = []
+
+        assert name_filter in manager._available_file_loaders()
+
+
 def test_loader_shares_routine_queue_and_rechecks_enablement(
     manager_context,
     qtbot: pytest.QtBot,

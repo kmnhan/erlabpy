@@ -104,6 +104,24 @@ def test_make_parameter_round_trips_default_directory() -> None:
     assert parameter_to_options(param).io.default_directory == "~/other-data"
 
 
+def test_make_parameter_round_trips_disabled_loader_names() -> None:
+    options = AppOptions.model_validate(
+        {"io": {"disabled_loaders": ["da30", "removed-plugin"]}}
+    )
+    param = make_parameter(options)
+    disabled_param = param.child("io").child("disabled_loaders")
+
+    assert disabled_param.opts["type"] == "disabled_loaders"
+    assert disabled_param.value() == ["da30", "removed-plugin"]
+    assert (
+        parameter_to_options(param).io.disabled_loaders == options.io.disabled_loaders
+    )
+
+    disabled_param.setValue(["removed-plugin"])
+
+    assert parameter_to_options(param).io.disabled_loaders == ["removed-plugin"]
+
+
 def test_make_parameter_round_trips_builtin_default_loader() -> None:
     loader_id = BUILTIN_FILE_LOADER_SPECS[0].id
     options = AppOptions.model_validate({"io": {"default_loader": loader_id}})

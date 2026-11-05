@@ -326,6 +326,82 @@ def test_file_loaders_resolve_da30_filter_to_da30() -> None:
     assert func.__self__ is da30_loader
 
 
+def test_file_loaders_hide_disabled_plugins() -> None:
+    da30_loader = erlab.io.loaders["da30"]
+    name_filter = next(iter(da30_loader.file_dialog_methods))
+    erlab.interactive.options["io/disabled_loaders"] = ["da30", "missing-plugin"]
+
+    valid_loaders = erlab.interactive.utils.file_loaders()
+
+    assert name_filter not in valid_loaders
+    assert erlab.io.loaders["da30"] is da30_loader
+    assert (
+        erlab.interactive.utils.file_loaders(include_disabled=True)[name_filter][
+            0
+        ].__self__
+        is da30_loader
+    )
+    for spec in BUILTIN_FILE_LOADER_SPECS:
+        if spec.file_dialog:
+            assert spec.name_filter in valid_loaders
+    assert all(
+        getattr(getattr(func, "__self__", None), "name", None) != "da30"
+        for func, _ in valid_loaders.values()
+    )
+
+    erlab.interactive.options["io/disabled_loaders"] = []
+
+    assert erlab.interactive.utils.file_loaders()[name_filter][0].__self__ is (
+        da30_loader
+    )
+
+
+def test_file_loaders_keep_enabled_child_filters(monkeypatch) -> None:
+    shared_filter = "Shared (*.test)"
+
+    class BaseLoader:
+        @property
+        def file_dialog_methods(self):
+            return {shared_filter: (self.load, {})}
+
+        def load(self) -> None:
+            pass
+
+    class FirstLoader(BaseLoader):
+        @property
+        def file_dialog_methods(self):
+            return super().file_dialog_methods | {"First (*.first)": (self.load, {})}
+
+    class SecondLoader(BaseLoader):
+        @property
+        def file_dialog_methods(self):
+            return super().file_dialog_methods | {"Second (*.second)": (self.load, {})}
+
+    loaders = {
+        "base": BaseLoader(),
+        "first": FirstLoader(),
+        "second": SecondLoader(),
+    }
+    monkeypatch.setattr(erlab.io, "loaders", loaders)
+    erlab.interactive.options["io/disabled_loaders"] = ["base"]
+
+    valid_loaders = erlab.interactive.utils.file_loaders()
+
+    assert shared_filter not in valid_loaders
+    assert valid_loaders["First (*.first)"][0].__self__ is loaders["first"]
+    assert valid_loaders["Second (*.second)"][0].__self__ is loaders["second"]
+
+    monkeypatch.setattr(
+        erlab.io, "loaders", {"first": loaders["first"], "second": loaders["second"]}
+    )
+    erlab.interactive.options["io/disabled_loaders"] = ["first"]
+
+    valid_loaders = erlab.interactive.utils.file_loaders()
+
+    assert valid_loaders[shared_filter][0].__self__ is loaders["second"]
+    assert "First (*.first)" not in valid_loaders
+
+
 def test_file_loaders_match_mixed_extensions() -> None:
     da30_filter = next(iter(erlab.io.loaders["da30"].file_dialog_methods))
 
