@@ -56,6 +56,23 @@ def allow_foreground_activation(pid: int) -> None:
         )
 
 
+def _flush_windows_paint(window: QtWidgets.QWidget) -> None:
+    """Paint a visible Windows window without pumping application events."""
+    if (
+        sys.platform != "win32"
+        or QtWidgets.QApplication.platformName() != "windows"
+        or not window.isVisible()
+    ):
+        return
+
+    from ctypes import wintypes
+
+    update_window = typing.cast("typing.Any", ctypes).windll.user32.UpdateWindow
+    update_window.argtypes = [wintypes.HWND]
+    update_window.restype = wintypes.BOOL
+    update_window(int(window.winId()))
+
+
 def record_recent_workspace(fname: str | os.PathLike[str]) -> None:
     """Record a workspace with the platform's shell recent-document list."""
     path = pathlib.Path(fname).expanduser().resolve()
