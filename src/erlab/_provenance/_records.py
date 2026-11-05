@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import keyword
 import typing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import xarray as xr
 
@@ -77,13 +78,76 @@ def _check_slots(operation: ToolProvenanceOperation, names: tuple[str, ...]) -> 
         raise ValueError("Bindings must match the ordered operation input slots")
 
 
+_T = typing.TypeVar("_T")
+
+
+@dataclass
+class _Settings(typing.Generic[_T]):
+    """Share a captured value until this owner hands out a writable reference."""
+
+    value: _T
+    exposed: bool = field(default=False, compare=False, repr=False)
+
+    def editable(self) -> _T:
+        if not self.exposed:
+            self.value = copy.deepcopy(self.value)
+            self.exposed = True
+        return self.value
+
+    def __deepcopy__(self, memo: dict[int, typing.Any]) -> _Settings[_T]:
+        return _Settings(
+            copy.deepcopy(self.value, memo) if self.exposed else self.value
+        )
+
+
 @dataclass(frozen=True)
-class Recipe:
+class _RecipeData:
     operation: ToolProvenanceOperation
     inputs: tuple[tuple[str, Binding], ...]
 
-    def __post_init__(self) -> None:
-        _check_slots(self.operation, tuple(slot for slot, _ in self.inputs))
+
+@dataclass(frozen=True, init=False)
+class Recipe:
+    _settings: _Settings[_RecipeData]
+
+    def __init__(
+        self,
+        operation: ToolProvenanceOperation,
+        inputs: tuple[tuple[str, Binding], ...],
+    ) -> None:
+        _check_slots(operation, tuple(slot for slot, _ in inputs))
+        object.__setattr__(
+            self, "_settings", _Settings(copy.deepcopy(_RecipeData(operation, inputs)))
+        )
+
+    @property
+    def _captured(self) -> _RecipeData:
+        return self._settings.value
+
+    @property
+    def operation(self) -> ToolProvenanceOperation:
+        """Return this recipe's editable operation, isolated from other snapshots."""
+        return self._settings.editable().operation
+
+    @property
+    def inputs(self) -> tuple[tuple[str, Binding], ...]:
+        bindings = self._captured.inputs
+        if any(
+            isinstance(b, EarlierStep) and b.pending is not None for _, b in bindings
+        ):
+            # Detach nested editable recipes before exposing their settings.
+            return self._settings.editable().inputs
+        return bindings
+
+    def _with_inputs(self, inputs: tuple[tuple[str, Binding], ...]) -> Recipe:
+        # Both callers use graph-owned operations and bindings.
+        operation = self._captured.operation
+        _check_slots(operation, tuple(slot for slot, _ in inputs))
+        result = copy.copy(self)
+        object.__setattr__(
+            result, "_settings", _Settings(_RecipeData(operation, inputs))
+        )
+        return result
 
     @classmethod
     def bind(
@@ -135,12 +199,25 @@ class FileSource:
     path: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class FileLoad:
     """The file is a node. Loader settings and selection belong to the edge."""
 
     source: FileSource
-    call: FileReplayCall
+    _settings: _Settings[FileReplayCall]
+
+    def __init__(self, source: FileSource, call: FileReplayCall) -> None:
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "_settings", _Settings(copy.deepcopy(call)))
+
+    @property
+    def _captured(self) -> FileReplayCall:
+        return self._settings.value
+
+    @property
+    def call(self) -> FileReplayCall:
+        """Return this load's editable call, isolated from other snapshots."""
+        return self._settings.editable()
 
     @property
     def inputs(self) -> tuple[tuple[str, str], ...]:
