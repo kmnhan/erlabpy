@@ -1,12 +1,14 @@
 import gc
 import typing
 
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 import xarray as xr
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab.interactive._completion as completion_widgets
 import erlab.interactive._figurecomposer._code as figurecomposer_code
 import erlab.interactive._figurecomposer._line_style as figurecomposer_line_style
 import erlab.interactive._figurecomposer._line_transform as _line_transform
@@ -14,6 +16,7 @@ import erlab.interactive._figurecomposer._model._axes as figurecomposer_axes
 import erlab.interactive._figurecomposer._model._gridspec as figurecomposer_gridspec
 import erlab.interactive._figurecomposer._norms as figurecomposer_norms
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
+import erlab.interactive._figurecomposer._ui._color_widgets as color_widgets
 import erlab.interactive._figurecomposer._ui._editor_controls as _editor_controls
 import erlab.interactive._figurecomposer._ui._line_style as figurecomposer_line_style_ui
 import erlab.interactive._stylesheets
@@ -39,6 +42,101 @@ from ._common import (
     _figure_composer_line_slice_source,
     _operation_section_button,
 )
+
+
+def test_figure_composer_color_completion_commits_named_and_custom_colors(qtbot):
+    color_edit = color_widgets._ColorLineEditWidget("red")
+    qtbot.addWidget(color_edit)
+    edit = color_edit.line_edit
+    assert isinstance(edit, completion_widgets.CompletingLineEdit)
+    for color in ("r", "tab:orange", "rebeccapurple", "C9", "none"):
+        assert color in edit.completion_model.stringList()
+
+    committed = []
+    color_edit.editingFinished.connect(lambda: committed.append(color_edit.text()))
+    edit.completion_completer.activated[str].emit("tab:orange")
+    assert color_edit.text() == "tab:orange"
+    assert color_edit.isModified()
+    assert committed == ["tab:orange"]
+    assert (
+        color_edit.color_button.color().getRgb()
+        == QtGui.QColor.fromRgbF(*mcolors.to_rgba("tab:orange")).getRgb()
+    )
+
+    for text, rgba in (
+        ("#01020304", (1, 2, 3, 4)),
+        ("(1, 0, 0, 0.5)", (255, 0, 0, 128)),
+        ("0.5", (128, 128, 128, 255)),
+    ):
+        edit.selectAll()
+        qtbot.keyClicks(edit, text)
+        edit.editingFinished.emit()
+        assert committed[-1] == text
+        assert color_edit.color_button.color().getRgb() == rgba
+
+
+@pytest.mark.parametrize("accept_with_mouse", [False, True])
+def test_figure_composer_color_completion_accepts_popup(qtbot, accept_with_mouse):
+    window = QtWidgets.QWidget()
+    qtbot.addWidget(window)
+    layout = QtWidgets.QVBoxLayout(window)
+    color_edit = color_widgets._ColorLineEditWidget()
+    other_edit = QtWidgets.QLineEdit(window)
+    layout.addWidget(color_edit)
+    layout.addWidget(other_edit)
+    committed = []
+    color_edit.editingFinished.connect(
+        lambda: committed.append(
+            (
+                color_edit.text(),
+                color_edit.isModified(),
+                color_edit.color_button.color().getRgb(),
+            )
+        )
+    )
+    window.show()
+    window.activateWindow()
+    edit = color_edit.line_edit
+    edit.setFocus()
+    qtbot.keyClicks(edit, "tab:or")
+    popup = edit.completer_popup
+    qtbot.waitUntil(popup.isVisible)
+
+    if accept_with_mouse:
+        index = edit.completion_completer.completionModel().index(0, 0)
+        qtbot.mouseClick(
+            popup.viewport(),
+            QtCore.Qt.MouseButton.LeftButton,
+            pos=popup.visualRect(index).center(),
+        )
+    else:
+        qtbot.keyClick(popup, QtCore.Qt.Key.Key_Return)
+
+    assert color_edit.text() == "tab:orange"
+    assert committed == [
+        (
+            "tab:orange",
+            True,
+            QtGui.QColor.fromRgbF(*mcolors.to_rgba("tab:orange")).getRgb(),
+        )
+    ]
+    assert not popup.isVisible()
+
+
+def test_figure_composer_color_list_row_completion_preserves_other_colors(qtbot):
+    color_list = color_widgets._ColorListEditorWidget(("red", "blue"))
+    qtbot.addWidget(color_list)
+    first, second = color_list._row_editors()
+    committed = []
+    color_list.colorsChanged.connect(committed.append)
+
+    first.line_edit.completion_completer.activated[str].emit("rebeccapurple")
+
+    assert committed == [("rebeccapurple", "blue")]
+    assert color_list.colors() == ("rebeccapurple", "blue")
+    assert color_list.main_edit.isModified()
+    assert second.text() == "blue"
+    assert color_list.main_edit.completer() is None
 
 
 def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:

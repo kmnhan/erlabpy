@@ -11,6 +11,14 @@ from erlab.interactive import _shortcut_sequences
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
+_POPUP_KEYS = {
+    QtCore.Qt.Key.Key_Enter,
+    QtCore.Qt.Key.Key_Return,
+    QtCore.Qt.Key.Key_Escape,
+    QtCore.Qt.Key.Key_Tab,
+    QtCore.Qt.Key.Key_Backtab,
+}
+
 
 def _create_completer(
     widget: QtWidgets.QWidget,
@@ -32,7 +40,7 @@ def _create_completion_shortcut(
     callback: Callable[[], None],
 ) -> QtGui.QShortcut:
     shortcut = QtGui.QShortcut(
-        QtGui.QKeySequence(_shortcut_sequences.FIGURE_COMPOSER_COMPLETION), widget
+        QtGui.QKeySequence(_shortcut_sequences.TEXT_COMPLETION), widget
     )
     shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetShortcut)
     shortcut.activated.connect(callback)
@@ -74,16 +82,38 @@ class CompletingLineEdit(QtWidgets.QLineEdit):
             self.completion_completer,
             self.completer_popup,
         ) = _create_completer(self, completion_values)
-        self.setCompleter(self.completion_completer)
+        # Native QLineEdit completion can finish editing before inserting the value.
+        # Keep insertion and commit together for controls that check isModified().
         self.completion_completer.activated[str].connect(self._insert_completion)
         self.completion_shortcut = _create_completion_shortcut(
             self, self.show_all_completions
         )
+        self.textEdited.connect(self._update_completions)
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent | None) -> None:
+        if event is None:  # pragma: no cover - Qt always supplies a key event.
+            return
+        if self.completer_popup.isVisible() and event.key() in _POPUP_KEYS:
+            event.ignore()
+            return
+        super().keyPressEvent(event)
 
     @QtCore.Slot()
     def show_all_completions(self) -> None:
         """Show all configured completions."""
-        if _prepare_completions(self.completion_completer, self.completer_popup, ""):
+        self._show_completions("")
+
+    @QtCore.Slot(str)
+    def _update_completions(self, text: str) -> None:
+        if not text or text in self.completion_model.stringList():
+            self.completer_popup.hide()
+            return
+        self._show_completions(text)
+
+    def _show_completions(self, prefix: str) -> None:
+        if _prepare_completions(
+            self.completion_completer, self.completer_popup, prefix
+        ):
             self.completion_completer.complete()
 
     @QtCore.Slot(str)
@@ -93,6 +123,7 @@ class CompletingLineEdit(QtWidgets.QLineEdit):
             self.insert(completion)
         self.setModified(True)
         self.completer_popup.hide()
+        self.editingFinished.emit()
 
 
 class CompletingPlainTextEdit(QtWidgets.QPlainTextEdit):
@@ -125,13 +156,7 @@ class CompletingPlainTextEdit(QtWidgets.QPlainTextEdit):
     def keyPressEvent(self, event: QtGui.QKeyEvent | None) -> None:
         if event is None:  # pragma: no cover - Qt always supplies a key event.
             return
-        if self.completer_popup.isVisible() and event.key() in {
-            QtCore.Qt.Key.Key_Enter,
-            QtCore.Qt.Key.Key_Return,
-            QtCore.Qt.Key.Key_Escape,
-            QtCore.Qt.Key.Key_Tab,
-            QtCore.Qt.Key.Key_Backtab,
-        }:
+        if self.completer_popup.isVisible() and event.key() in _POPUP_KEYS:
             event.ignore()
             return
         super().keyPressEvent(event)

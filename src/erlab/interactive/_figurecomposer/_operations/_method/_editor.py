@@ -8,6 +8,7 @@ import typing
 
 from qtpy import QtCore, QtGui, QtWidgets
 
+from erlab.interactive._completion import CompletingPlainTextEdit
 from erlab.interactive._figurecomposer._completion_values import (
     _completion_literal_from_text,
     _format_completion_literal,
@@ -98,7 +99,6 @@ from erlab.interactive._figurecomposer._text import (
     _text_tuple_from_text,
 )
 from erlab.interactive._figurecomposer._ui._color_widgets import _ColorLineEditWidget
-from erlab.interactive._figurecomposer._ui._completion import CompletingPlainTextEdit
 from erlab.interactive._figurecomposer._ui._operation_editor import StepSection
 from erlab.interactive._figurecomposer._ui._tick_params import TickParamsEditorWidget
 

@@ -12,10 +12,10 @@ import xarray as xr
 from matplotlib.text import Text
 from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab.interactive._completion as completion_widgets
 import erlab.interactive._figurecomposer._completion_values as completion_values
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
 import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
-import erlab.interactive._figurecomposer._ui._completion as completion_widgets
 import erlab.interactive._figurecomposer._ui._tick_params as figurecomposer_tick_params
 import erlab.interactive._stylesheets
 import erlab.plotting as eplt
@@ -1653,13 +1653,18 @@ def test_figure_composer_line_edit_completion_accepts_font_size_name(
     qtbot.addWidget(edit)
     edit.show()
     edit.setFocus()
+    committed = []
+    edit.editingFinished.connect(
+        lambda: committed.append((edit.text(), edit.isModified()))
+    )
 
     qtbot.keyClicks(edit, "l")
     qtbot.waitUntil(edit.completer_popup.isVisible)
-    edit.completion_completer.activated[str].emit("large")
+    qtbot.keyClick(edit.completer_popup, QtCore.Qt.Key.Key_Return)
 
     assert edit.text() == "large"
     assert edit.isModified()
+    assert committed == [("large", True)]
     assert edit.isUndoAvailable()
     assert not edit.completer_popup.isVisible()
 
@@ -1684,6 +1689,40 @@ def test_figure_composer_line_edit_completion_accepts_font_size_name(
     qtbot.addWidget(empty_edit)
     empty_edit.show_all_completions()
     assert not empty_edit.completer_popup.isVisible()
+
+
+def test_figure_composer_aspect_method_offers_completion(qtbot) -> None:
+    tool = FigureComposerTool(
+        xr.DataArray(np.arange(3.0), dims="x"),
+        recipe=FigureRecipeState(
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_aspect",
+                    args=("auto",),
+                ),
+            ),
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.show()
+    tool.operation_editor.select_section("method")
+    edit = tool.operation_editor.current_page.findChild(
+        completion_widgets.CompletingLineEdit, "figureComposerAxesMethodAspectEdit"
+    )
+    assert edit is not None
+    edit.setFocus()
+    edit.selectAll()
+    qtbot.keyClicks(edit, "eq")
+    qtbot.waitUntil(edit.completer_popup.isVisible)
+    qtbot.keyClick(edit.completer_popup, QtCore.Qt.Key.Key_Return)
+    assert tool.tool_status.operations[0].method_args == ("equal",)
+
+    edit.setFocus()
+    edit.selectAll()
+    qtbot.keyClicks(edit, "1.5")
+    edit.editingFinished.emit()
+    assert tool.tool_status.operations[0].method_args == (1.5,)
 
 
 def test_figure_composer_completion_literal_values() -> None:

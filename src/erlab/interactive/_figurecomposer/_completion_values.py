@@ -39,6 +39,8 @@ FONT_SIZE_COMPLETIONS: tuple[str, ...] = (
     "larger",
 )
 
+ASPECT_COMPLETIONS: tuple[str, ...] = ("auto", "equal")
+
 
 def _format_completion_literal(value: typing.Any, *, completions: Sequence[str]) -> str:
     """Format a literal while showing curated string values without quotes."""

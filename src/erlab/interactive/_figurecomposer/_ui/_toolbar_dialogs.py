@@ -13,6 +13,11 @@ import numpy as np
 from qtpy import QtCore, QtWidgets
 
 import erlab
+from erlab.interactive._completion import CompletingLineEdit, CompletingPlainTextEdit
+from erlab.interactive._figurecomposer._completion_values import (
+    ASPECT_COMPLETIONS,
+    LABEL_COMPLETIONS,
+)
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._line_colormap import (
     LINE_COLOR_CMAP_TRIM_MAX,
@@ -429,16 +434,16 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
 
     title_edit = _axis_plain_text_edit(axes_page, "figureComposerToolbarAxesTitleEdit")
     xlabel_edit = _axis_plain_text_edit(
-        axes_page, "figureComposerToolbarAxesXLabelEdit"
+        axes_page, "figureComposerToolbarAxesXLabelEdit", completions=LABEL_COMPLETIONS
     )
     ylabel_edit = _axis_plain_text_edit(
-        axes_page, "figureComposerToolbarAxesYLabelEdit"
+        axes_page, "figureComposerToolbarAxesYLabelEdit", completions=LABEL_COMPLETIONS
     )
     xlim_edit = QtWidgets.QLineEdit(axes_page)
     xlim_edit.setObjectName("figureComposerToolbarAxesXLimEdit")
     ylim_edit = QtWidgets.QLineEdit(axes_page)
     ylim_edit.setObjectName("figureComposerToolbarAxesYLimEdit")
-    aspect_edit = QtWidgets.QLineEdit(axes_page)
+    aspect_edit = CompletingLineEdit(parent=axes_page, completions=ASPECT_COMPLETIONS)
     aspect_edit.setObjectName("figureComposerToolbarAxesAspectEdit")
 
     xscale_combo = QtWidgets.QComboBox(axes_page)
@@ -2317,9 +2322,16 @@ def _apply_axis_line_edit_state(
 
 
 def _axis_plain_text_edit(
-    parent: QtWidgets.QWidget, object_name: str
+    parent: QtWidgets.QWidget,
+    object_name: str,
+    *,
+    completions: Sequence[str] = (),
 ) -> QtWidgets.QPlainTextEdit:
-    edit = QtWidgets.QPlainTextEdit(parent)
+    edit = (
+        CompletingPlainTextEdit(parent=parent, completions=completions)
+        if completions
+        else QtWidgets.QPlainTextEdit(parent)
+    )
     edit.setObjectName(object_name)
     edit.setMaximumHeight(70)
     edit.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
