@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       native_debug:
-        description: Run the full GUI suite under GDB with Python 3.11 and PySide6
+        description: Run the GUI suite under GDB with Python 3.11 and 3.14 and PySide6
         type: boolean
         default: false
+      gui_tests:
+        description: Space-separated GUI test paths (empty runs the full GUI suite)
+        type: string
+        default: ""
   schedule:
     # Every friday at 22:00 UTC (Every saturday at 07:00 KST/JST)
     - cron: "0 22 * * FRI"
@@ -95,7 +99,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ${{ fromJSON(inputs.native_debug && '["3.11"]' || '["3.11", "3.12", "3.13", "3.14"]') }}
+        python-version: ${{ fromJSON(inputs.native_debug && '["3.11", "3.14"]' || '["3.11", "3.12", "3.13", "3.14"]') }}
         qt-api: ${{ fromJSON(inputs.native_debug && '["pyside6"]' || '["pyqt6", "pyside6"]') }}
     steps:
       - uses: actions/checkout@v7
@@ -173,6 +177,21 @@ jobs:
           sudo apt-get install --no-install-recommends --yes gdb
           gdb --version > "$ERLAB_CI_DIAGNOSTICS_DIR/gdb-version.txt"
 
+      - name: Verify native traceback capture
+        if: inputs.native_debug
+        shell: bash
+        run: |
+          set -euo pipefail
+          ulimit -c 0
+          status=0
+          uv run --no-sync gdb --batch --nx -x scripts/ci_gdb.gdb \
+            --args .venv/bin/python -X faulthandler \
+            -c 'import ctypes; ctypes.string_at(0)' \
+            > "$ERLAB_CI_DIAGNOSTICS_DIR/gdb-smoke.log" 2>&1 || status=$?
+          test "$status" -eq 1
+          grep -q 'received signal SIGSEGV' "$ERLAB_CI_DIAGNOSTICS_DIR/gdb-smoke.log"
+          grep -q 'Fatal Python error: Segmentation fault' "$ERLAB_CI_DIAGNOSTICS_DIR/gdb-smoke.log"
+
       - name: Restore test data cache
         uses: actions/cache/restore@v6
         with:
@@ -192,8 +211,38 @@ jobs:
         shell: bash
         env:
           NATIVE_DEBUG: ${{ inputs.native_debug }}
+          GUI_TESTS: ${{ inputs.gui_tests }}
         run: |
           set -euo pipefail
+          ulimit -c 0
+          (
+            while true; do
+              printf '\nMemory sample: %s\n' "$(date -u +%FT%TZ)"
+              free -m || true
+              ps -eo pid,ppid,rss,comm --sort=-rss | sed -n '1,11p' || true
+              cat /proc/pressure/memory || true
+              awk '$1 == "oom_kill" { print }' /proc/vmstat || true
+              memory_cgroup="/sys/fs/cgroup$(awk -F: '$1 == "0" { print $3 }' /proc/self/cgroup)"
+              memory_cgroup="${memory_cgroup%/}"
+              while [[ "$memory_cgroup" == /sys/fs/cgroup* ]]; do
+                for memory_metric in memory.current memory.peak memory.max memory.events memory.swap.current memory.swap.max memory.swap.events; do
+                  memory_metric_path="$memory_cgroup/$memory_metric"
+                  if [[ -r "$memory_metric_path" ]]; then
+                    printf '%s: ' "$memory_metric_path"
+                    tr '\n' ' ' < "$memory_metric_path" || true
+                    printf '\n'
+                  fi
+                done
+                if [[ "$memory_cgroup" == /sys/fs/cgroup ]]; then
+                  break
+                fi
+                memory_cgroup="$(dirname "$memory_cgroup")"
+              done
+              sleep 10
+            done
+          ) > >(tee "$ERLAB_CI_DIAGNOSTICS_DIR/memory-samples.log") 2>&1 &
+          memory_monitor_pid=$!
+          trap 'kill "$memory_monitor_pid" 2>/dev/null || true; wait "$memory_monitor_pid" 2>/dev/null || true' EXIT
           common_args=(
             -v
             -o faulthandler_timeout=300
@@ -206,18 +255,24 @@ jobs:
             --max-worker-restart=0
           )
           pytest_command=(uv run --no-sync python -X faulthandler -m pytest)
-          /usr/bin/time -v -o "$ERLAB_CI_DIAGNOSTICS_DIR/non-gui-resources.txt" \
-            "${pytest_command[@]}" \
-            "${common_args[@]}" \
-            "${xdist_args[@]}" \
-            -m "not gui" \
-            --junitxml "junit-${{ matrix.python-version }}-${{ matrix.qt-api }}-non-gui.xml" \
-            2>&1 | tee "$ERLAB_CI_DIAGNOSTICS_DIR/non-gui.log"
+          if [[ "$NATIVE_DEBUG" != "true" ]]; then
+            /usr/bin/time -v -o "$ERLAB_CI_DIAGNOSTICS_DIR/non-gui-resources.txt" \
+              "${pytest_command[@]}" \
+              "${common_args[@]}" \
+              "${xdist_args[@]}" \
+              -m "not gui" \
+              --junitxml "junit-${{ matrix.python-version }}-${{ matrix.qt-api }}-non-gui.xml" \
+              2>&1 | tee "$ERLAB_CI_DIAGNOSTICS_DIR/non-gui.log"
+          fi
           if [[ "$NATIVE_DEBUG" == "true" ]]; then
             pytest_command=(
               uv run --no-sync gdb --batch --nx -x scripts/ci_gdb.gdb
               --args .venv/bin/python -X faulthandler -m pytest
             )
+          fi
+          gui_test_paths=()
+          if [[ -n "$GUI_TESTS" ]]; then
+            read -r -a gui_test_paths <<< "$GUI_TESTS"
           fi
           /usr/bin/time -v -o "$ERLAB_CI_DIAGNOSTICS_DIR/gui-resources.txt" \
             "${pytest_command[@]}" \
@@ -225,6 +280,7 @@ jobs:
             --capture=tee-sys \
             --no-qt-log \
             -m gui \
+            "${gui_test_paths[@]}" \
             --junitxml "junit-${{ matrix.python-version }}-${{ matrix.qt-api }}-gui.xml" \
             2>&1 | tee "$ERLAB_CI_DIAGNOSTICS_DIR/gui.log"
 

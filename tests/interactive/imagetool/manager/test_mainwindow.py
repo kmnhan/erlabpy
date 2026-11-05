@@ -396,18 +396,20 @@ def test_managed_window_actions_reveal_tree_and_figure_rows(
 
 
 def test_manager_destroys_sidebar_buttons_on_gui_thread(manager_context, qtbot) -> None:
-    existing_widgets = set(QtWidgets.QApplication.allWidgets())
     destruction_threads: list[int] = []
     gui_thread = threading.get_ident()
 
-    with manager_context():
+    with manager_context() as manager:
+        # PySide can collect Python-owned widgets while converting allWidgets()'s
+        # pointer snapshot. Keep this test local to the sidebar that it checks.
         buttons = [
-            widget
-            for widget in QtWidgets.QApplication.allWidgets()
-            if isinstance(widget, erlab.interactive.utils.IconActionButton)
-            and widget not in existing_widgets
+            manager.open_button,
+            manager.remove_button,
+            manager.rename_button,
+            manager.batch_button,
+            manager.link_button,
+            manager.unlink_button,
         ]
-        assert buttons
         for button in buttons:
             qtbot.addWidget(button)
             button.destroyed.connect(
