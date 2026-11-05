@@ -623,19 +623,47 @@ def test_manager_duplicate_figure_assigns_unique_display_name_and_keeps_state(
             lambda: len(manager._tool_graph.figure_uids) == 2, timeout=5000
         )
 
-        auto_copy_uid = uid_for_name(manager, "Figure 2")
+        auto_copy_uid = uid_for_name(manager, "Figure 1 copy")
         assert manager._selected_figure_uids() == [auto_copy_uid]
         auto_copy_tool = manager._child_node(auto_copy_uid).tool_window
         assert isinstance(auto_copy_tool, FigureComposerTool)
         assert auto_copy_tool.tool_status == original_status
         assert auto_copy_tool.tool_data.identical(original_tool.tool_data)
 
+        manager._figure_collection.select_uid(first_uid)
+        manager.duplicate_selected()
+        qtbot.wait_until(
+            lambda: len(manager._tool_graph.figure_uids) == 3, timeout=5000
+        )
+
+        second_auto_copy_uid = uid_for_name(manager, "Figure 1 copy 2")
+        assert manager._selected_figure_uids() == [second_auto_copy_uid]
+        assert manager._child_node(first_uid).display_text == "Figure 1"
+
+        manager.duplicate_selected()
+        third_auto_copy_uid = uid_for_name(manager, "Figure 1 copy 3")
+        assert manager._selected_figure_uids() == [third_auto_copy_uid]
+
+        manager._figure_collection.select_uid(auto_copy_uid)
+        manager.duplicate_selected()
+        fourth_auto_copy_uid = uid_for_name(manager, "Figure 1 copy 4")
+        assert manager._selected_figure_uids() == [fourth_auto_copy_uid]
+
+        manager._child_node(fourth_auto_copy_uid).name = "Figure 1 copy 9"
+        manager.duplicate_selected()
+        higher_auto_copy_uid = uid_for_name(manager, "Figure 1 copy 10")
+        assert manager._selected_figure_uids() == [higher_auto_copy_uid]
+
+        new_figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert new_figure_uid is not None
+        assert manager._child_node(new_figure_uid).display_text == "Figure 2"
+
         manager._child_node(first_uid).name = "Band map"
 
         manager._figure_collection.select_uid(first_uid)
         manager.duplicate_selected()
         qtbot.wait_until(
-            lambda: len(manager._tool_graph.figure_uids) == 3, timeout=5000
+            lambda: len(manager._tool_graph.figure_uids) == 8, timeout=5000
         )
 
         first_custom_copy_uid = uid_for_name(manager, "Band map copy")
@@ -644,7 +672,7 @@ def test_manager_duplicate_figure_assigns_unique_display_name_and_keeps_state(
         manager._figure_collection.select_uid(first_uid)
         manager.duplicate_selected()
         qtbot.wait_until(
-            lambda: len(manager._tool_graph.figure_uids) == 4, timeout=5000
+            lambda: len(manager._tool_graph.figure_uids) == 9, timeout=5000
         )
 
         second_custom_copy_uid = uid_for_name(manager, "Band map copy 2")
