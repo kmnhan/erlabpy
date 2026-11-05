@@ -1,165 +1,305 @@
-"""Build complete recipes from explicit sources and operations.
-
-These builders use the existing saved model. They do not inspect Manager windows,
-capture array data, or publish results. Source policies are supplied by the caller.
-"""
+"""Construct explicit source-to-result graphs without Manager or Python bindings."""
 
 from __future__ import annotations
 
+import hashlib
+import json
 import typing
+import uuid
 
-from erlab.interactive.imagetool._provenance._graph import (
-    ReplayGraphError,
-    _validate_script_provenance,
-)
 from erlab.interactive.imagetool._provenance._model import (
+    CodeNode,
+    FileLoadSource,
+    FileSourceNode,
+    InputNode,
+    MemorySourceNode,
+    OperationNode,
+    ProvenanceGraphNode,
     ReplayStep,
     ScriptInput,
+    SnapshotSourceNode,
+    ToolProvenanceOperation,
     ToolProvenanceSpec,
-    recipe,
+    ValueRef,
+    _normalize_legacy_script_input,
+    _SourceViewOperation,
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Mapping
 
 
-def _check_producer(producer: ToolProvenanceSpec) -> None:
-    if producer.kind not in {"file", "script"}:
-        raise ValueError("A producer must contain a durable source recipe")
-    for source in producer.replay_inputs:
-        _check_input(source)
-    if producer.kind == "script":
-        try:
-            _validate_script_provenance(
-                producer.as_bound_script(), strict_replay_code=False
-            )
-        except ReplayGraphError as exc:
-            raise ValueError(
-                f"A producer must contain a complete recipe: {exc}"
-            ) from exc
+def _identity(node: ProvenanceGraphNode) -> str:
+    payload = node.model_dump(mode="json", exclude={"id", "label"})
+    if isinstance(node, FileSourceNode):
+        payload["source"] = {
+            "path": node.source.path,
+            "replay_call": node.source.replay_call.model_dump(mode="json")
+            if node.source.replay_call is not None
+            else None,
+        }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
-def _check_input(source: ScriptInput) -> None:
-    has_revision = (
-        source.revision_id is not None or source.resolved_revision_id is not None
-    )
-    if not source.follow_source:
-        if not has_revision:
-            raise ValueError("A fixed input must identify its recorded revision")
-        return
-    producer = source.parsed_provenance_spec()
-    if producer is not None:
-        _check_producer(producer)
-    elif not has_revision:
-        raise ValueError("A recipe input must contain a producer or recorded data")
-
-
-def producer_input(
-    producer: ToolProvenanceSpec,
-    *,
-    name: str = "data",
-    label: str | None = None,
-) -> ScriptInput:
-    """Follow a producer recipe without binding it to a displaying window."""
-    _check_producer(producer)
-    return ScriptInput(
-        name=name,
-        label=name if label is None else label,
-        data_role="source",
-        provenance_spec=producer.model_dump(mode="json"),
+def _identified(node: ProvenanceGraphNode) -> ProvenanceGraphNode:
+    encoded = _identity(node)
+    return node.model_copy(
+        update={"id": "value-" + hashlib.sha256(encoded.encode()).hexdigest()}
     )
 
 
-def snapshot_input(
-    revision_id: str,
+def _graph(
+    nodes: tuple[ProvenanceGraphNode, ...],
+    output: ValueRef,
     *,
-    name: str = "data",
-    label: str | None = None,
-    producer: ToolProvenanceSpec | None = None,
-) -> ScriptInput:
-    """Use an exact recorded value, with optional producer history.
-
-    Replay needs a revision resolver to supply the recorded value. The producer
-    explains its history; it does not select the value of the fixed input.
-    """
-    if producer is not None:
-        _check_producer(producer)
-    return ScriptInput(
-        name=name,
-        label=name if label is None else label,
-        revision_id=revision_id,
-        follow_source=False,
-        data_role="source",
-        provenance_spec=(
-            None if producer is None else producer.model_dump(mode="json")
-        ),
-    )
-
-
-def append_recipe(
-    source: ScriptInput,
-    steps: Sequence[ReplayStep],
-    *,
-    inputs: Sequence[ScriptInput] = (),
-    start_label: str,
-    active_name: str,
+    input_ref: ValueRef | None = None,
 ) -> ToolProvenanceSpec:
-    """Apply typed steps to an explicit primary input and its named dependencies.
-
-    Input policies, transforms, and recorded revisions are supplied by the caller.
-    Construction does not infer them from window ownership or the number of inputs.
-    The returned recipe owns its nested values independently of the arguments.
-    """
-    sources = (source, *inputs)
-    for item in sources:
-        _check_input(item)
-    return recipe(
-        *steps,
-        start_label=start_label,
-        active_name=active_name,
-        script_inputs=sources,
-        primary_input=source.name,
+    return ToolProvenanceSpec(
+        schema_version=4, kind="graph", nodes=nodes, output=output, input_ref=input_ref
     ).model_copy(deep=True)
 
 
-def graft_recipe(
-    fragment: ToolProvenanceSpec,
-    source: ScriptInput,
-) -> ToolProvenanceSpec:
-    """Attach a typed fragment's unbound primary input to a complete source.
+def _require_graph(spec: ToolProvenanceSpec) -> None:
+    if spec.kind != "graph":
+        raise TypeError("Import a legacy recipe before combining graph values")
+    spec.topological_nodes()
 
-    A fragment contains the selected steps and a bare primary-input placeholder.
-    Auxiliary inputs retain their producer recipes and source policies. A fragment
-    that still owns its original primary producer must first be extracted from that
-    producer; grafting never silently removes an existing dependency or transform.
-    """
-    if (
-        fragment.kind != "script"
-        or fragment.replay_primary_input is None
-        or fragment.active_name is None
-        or fragment.seed_code is not None
-        or fragment.file_load_source is not None
-    ):
-        raise ValueError("A recipe fragment must declare an unbound primary input")
-    primary_name = fragment.replay_primary_input
-    primary = next(item for item in fragment.replay_inputs if item.name == primary_name)
-    if (
-        primary.node_uid is not None
-        or primary.node_snapshot_token is not None
-        or primary.revision_id is not None
-        or primary.resolved_revision_id is not None
-        or primary.provenance_spec is not None
-        or primary.source_spec is not None
-        or not primary.follow_source
-        or primary.fallback_role != "raw"
-    ):
-        raise ValueError("A recipe fragment's primary input must be a bare placeholder")
-    return append_recipe(
-        source.model_copy(update={"name": primary_name}),
-        fragment.steps,
-        inputs=tuple(
-            item for item in fragment.replay_inputs if item.name != primary_name
-        ),
-        start_label=typing.cast("str", fragment.start_label),
-        active_name=fragment.active_name,
+
+def _merge_nodes(*graphs: ToolProvenanceSpec) -> dict[str, ProvenanceGraphNode]:
+    nodes: dict[str, ProvenanceGraphNode] = {}
+    for graph in graphs:
+        _require_graph(graph)
+        for node in graph.nodes:
+            previous = nodes.get(node.id)
+            if previous is not None and _identity(previous) != _identity(node):
+                raise ValueError("A node ID cannot identify different graph values")
+            nodes.setdefault(node.id, node)
+    return nodes
+
+
+def file_recipe(
+    source: FileLoadSource, *, label: str | None = None
+) -> ToolProvenanceSpec:
+    """Start a graph from a typed file load, independent of copied load code."""
+    node = _identified(FileSourceNode(id="source", source=source, label=label))
+    return _graph((node,), ValueRef(node_id=node.id))
+
+
+def memory_recipe(source_id: str, *, label: str | None = None) -> ToolProvenanceSpec:
+    """Start a graph from a durable memory source identity, without a window ID."""
+    node = _identified(MemorySourceNode(id="source", source_id=source_id, label=label))
+    return _graph((node,), ValueRef(node_id=node.id))
+
+
+def snapshot_recipe(
+    revision_id: str, *, label: str | None = None
+) -> ToolProvenanceSpec:
+    """Start a graph at one fixed revision, without a producer fallback."""
+    node = _identified(
+        SnapshotSourceNode(id="source", revision_id=revision_id, label=label)
     )
+    return _graph((node,), ValueRef(node_id=node.id))
+
+
+def input_recipe(*, label: str | None = None) -> ToolProvenanceSpec:
+    """Start a fragment at an explicit input value that grafting must replace."""
+    node = InputNode(id="input-" + uuid.uuid4().hex, label=label)
+    ref = ValueRef(node_id=node.id)
+    return _graph((node,), ref, input_ref=ref)
+
+
+def append_recipe(
+    source: ToolProvenanceSpec,
+    operation: ToolProvenanceOperation,
+    *,
+    inputs: Mapping[str, ToolProvenanceSpec] | None = None,
+    label: str | None = None,
+) -> ToolProvenanceSpec:
+    """Connect an operation directly to its primary value and semantic input slots."""
+    _require_graph(source)
+    inputs = dict(inputs or {})
+    if any(value.input_ref is not None for value in inputs.values()):
+        raise ValueError("Auxiliary graph inputs must be complete recipes")
+    nodes = _merge_nodes(source, *inputs.values())
+    node = _identified(
+        OperationNode(
+            id="operation",
+            operation=operation,
+            data=typing.cast("ValueRef", source.output),
+            inputs={
+                slot: typing.cast("ValueRef", value.output)
+                for slot, value in inputs.items()
+            },
+            label=label,
+        )
+    )
+    nodes[node.id] = node
+    return _graph(
+        tuple(nodes.values()), ValueRef(node_id=node.id), input_ref=source.input_ref
+    )
+
+
+def code_recipe(
+    code: str,
+    *,
+    inputs: Mapping[str, ToolProvenanceSpec] | None = None,
+    output_name: str,
+    uses_implicit_framework_imports: bool = False,
+    label: str | None = None,
+) -> ToolProvenanceSpec:
+    """Run a Python block in its own scope with explicit graph inputs and output."""
+    inputs = dict(inputs or {})
+    if any(value.input_ref is not None for value in inputs.values()):
+        raise ValueError("Python graph inputs must be complete recipes")
+    nodes = _merge_nodes(*inputs.values())
+    node = CodeNode(
+        id="code-" + uuid.uuid4().hex,
+        code=code,
+        inputs={
+            name: typing.cast("ValueRef", value.output)
+            for name, value in inputs.items()
+        },
+        output_name=output_name,
+        uses_implicit_framework_imports=uses_implicit_framework_imports,
+        label=label,
+    )
+    nodes[node.id] = node
+    return _graph(tuple(nodes.values()), ValueRef(node_id=node.id))
+
+
+def graft_recipe(
+    fragment: ToolProvenanceSpec, source: ToolProvenanceSpec
+) -> ToolProvenanceSpec:
+    """Replace a fragment's input reference while preserving its other graph edges."""
+    _require_graph(fragment)
+    _require_graph(source)
+    if fragment.input_ref is None:
+        raise ValueError("Only a fragment with an explicit input can be attached")
+    nodes = _merge_nodes(source)
+    refs = {fragment.input_ref.node_id: typing.cast("ValueRef", source.output)}
+    for node in fragment.topological_nodes():
+        if isinstance(node, InputNode):
+            continue
+        if isinstance(node, OperationNode):
+            attached = _identified(
+                node.model_copy(
+                    update={
+                        "data": refs[node.data.node_id],
+                        "inputs": {
+                            slot: refs[ref.node_id] for slot, ref in node.inputs.items()
+                        },
+                    }
+                )
+            )
+        elif isinstance(node, CodeNode):
+            inputs = {name: refs[ref.node_id] for name, ref in node.inputs.items()}
+            attached = node.model_copy(update={"inputs": inputs})
+            if inputs != node.inputs:
+                payload = {
+                    "origin": node.id,
+                    "inputs": {name: ref.node_id for name, ref in inputs.items()},
+                }
+                encoded = json.dumps(payload, sort_keys=True).encode()
+                attached = attached.model_copy(
+                    update={"id": "code-" + hashlib.sha256(encoded).hexdigest()}
+                )
+        else:
+            attached = node
+        previous = nodes.get(attached.id)
+        if previous is not None and _identity(previous) != _identity(attached):
+            raise ValueError("A node ID cannot identify different graph values")
+        nodes.setdefault(attached.id, attached)
+        refs[node.id] = ValueRef(node_id=attached.id)
+    return _graph(
+        tuple(nodes.values()),
+        refs[typing.cast("ValueRef", fragment.output).node_id],
+        input_ref=source.input_ref,
+    )
+
+
+def _append_legacy_steps(
+    current: ToolProvenanceSpec,
+    steps: tuple[ReplayStep, ...],
+    inputs: Mapping[str, ToolProvenanceSpec],
+) -> ToolProvenanceSpec:
+    previous_policy: str | None = None
+    for step in steps:
+        if step.legacy_context is not None or step.context_names:
+            raise ValueError("Legacy replay contexts require explicit graph conversion")
+        if step.input_policy is not None and step.input_policy != previous_policy:
+            current = append_recipe(
+                current,
+                _SourceViewOperation(
+                    source_kind="full_data"
+                    if step.input_policy == "current"
+                    else "public_data"
+                ),
+            )
+        current = append_recipe(
+            current,
+            step.operation,
+            inputs={slot: inputs[name] for slot, name in step.input_bindings.items()},
+        )
+        previous_policy = step.input_policy
+    return current
+
+
+def from_legacy_recipe(
+    spec: ToolProvenanceSpec,
+    *,
+    parent: ToolProvenanceSpec | None = None,
+    input_resolver: Callable[[ScriptInput], ToolProvenanceSpec | None] | None = None,
+) -> ToolProvenanceSpec:
+    """Explicitly import a legacy recipe without changing its saved representation.
+
+    A caller must supply owned memory-source recipes for inputs without a durable
+    producer. Existing fixed captures stay fixed. Arbitrary mixed Python and typed
+    replay contexts need explicit conversion and are rejected rather than guessed.
+    """
+    if spec.kind == "graph":
+        return spec.model_copy(deep=True)
+
+    def resolve(item: ScriptInput) -> ToolProvenanceSpec:
+        item = _normalize_legacy_script_input(item)
+        resolved = False
+        if not item.follow_source:
+            revision_id = item.resolved_revision_id or item.revision_id
+            if revision_id is None:
+                raise ValueError("A fixed legacy input has no recorded revision")
+            value = snapshot_recipe(revision_id, label=item.label)
+            resolved = item.resolved_revision_id is not None
+        else:
+            value = None if input_resolver is None else input_resolver(item)
+            if value is None:
+                producer = item.parsed_provenance_spec()
+                if producer is None:
+                    raise ValueError("A legacy input needs an explicit source recipe")
+                value = from_legacy_recipe(producer, input_resolver=input_resolver)
+                resolved = item.fallback_role == "resolved"
+            _require_graph(value)
+        source = item.parsed_source_spec()
+        if source is not None and not resolved:
+            value = from_legacy_recipe(
+                source, parent=value, input_resolver=input_resolver
+            )
+        return value
+
+    if spec.is_live_source:
+        if parent is None:
+            raise ValueError("A relative source requires an explicit parent recipe")
+        return _append_legacy_steps(parent, ReplayStep.from_source_spec(spec), {})
+    if spec.kind == "file":
+        if spec.file_load_source is None:
+            raise ValueError("A file recipe must record its source")
+        return _append_legacy_steps(file_recipe(spec.file_load_source), spec.steps, {})
+    if spec.kind != "script":
+        raise ValueError("Unsupported legacy provenance source")
+    inputs = {item.name: resolve(item) for item in spec.replay_inputs}
+    if spec.seed_code is not None or any(
+        getattr(step.operation, "op", None) == "script_code" for step in spec.steps
+    ):
+        raise ValueError("Python recipes require explicit CodeNode inputs and output")
+    primary = spec.replay_primary_input
+    if primary is None:
+        raise ValueError("A legacy recipe must identify its primary input")
+    return _append_legacy_steps(inputs[primary], spec.steps, inputs)

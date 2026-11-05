@@ -44,8 +44,14 @@ from erlab.interactive.imagetool._provenance._code import (
     _validate_script_replay_code,
 )
 from erlab.interactive.imagetool._provenance._model import (
+    CodeNode,
+    FileSourceNode,
+    InputNode,
+    MemorySourceNode,
+    OperationNode,
     ReplayStep,
     ScriptInput,
+    SnapshotSourceNode,
     ToolProvenanceSpec,
     _assignment_code,
     _normalize_legacy_script_input,
@@ -226,6 +232,7 @@ class ResolvedReplayInput(typing.NamedTuple):
 
 
 LiveInputResolver = Callable[[ScriptInput], ResolvedReplayInput | None]
+GraphSourceResolver = Callable[[MemorySourceNode | SnapshotSourceNode], "xr.DataArray"]
 _REPLAY_ALIASES = {
     "era": "erlab.analysis",
     "eri": "erlab.interactive",
@@ -1597,6 +1604,273 @@ def _compile_spec(
     raise ReplayGraphError(f"{parsed.kind!r} provenance is not self-contained")
 
 
+def _graph_code_name(label: str | None, default: str) -> str:
+    """Choose a code hint without using the label as a data binding."""
+    name = re.sub(r"\W", "_", label or "").strip("_")
+    if not name:
+        return default
+    if not name.isidentifier() or keyword.iskeyword(name):
+        name = f"{default}_{name}"
+    return name if name.isidentifier() else default
+
+
+def _graph_file_load_parts(
+    source: FileSourceNode,
+) -> tuple[str | None, str | None]:
+    """Generate file code from the typed call instead of saved Python hints."""
+    from erlab.interactive.imagetool._load_source import (
+        _deserialize_loader_kwargs,
+        _import_for_callable,
+        _registered_local_callable_loader,
+        _ResolvedLoadFunc,
+    )
+
+    call = source.source.replay_call
+    if call is None:
+        raise ReplayGraphError("A graph file source must define its loader call")
+    if call.kind == "extension_loader":
+        return None, None
+    if call.kind == "erlab_loader":
+        loader_expression = "erlab.io.load"
+        imports: tuple[str, ...] = ()
+        setup_lines: tuple[str, ...] = (f"erlab.io.set_loader({call.target!r})",)
+        loader_name: str | None = call.target
+    else:
+        loader = _registered_local_callable_loader(call.target)
+        if loader is None:
+            raise ReplayGraphError(
+                f"Callable file loader {call.target!r} is not registered locally"
+            )
+        loader_expression = call.target.replace(":", ".")
+        imports = (_import_for_callable(loader, loader_expression),)
+        setup_lines = ()
+        loader_name = None
+    resolved = _ResolvedLoadFunc(
+        kind=call.kind,
+        target=call.target,
+        loader_label=source.source.loader_label,
+        loader_text=source.source.loader_text,
+        loader_expr=loader_expression,
+        imports=imports,
+        setup_lines=setup_lines,
+        loader_name=loader_name,
+        kwargs=_deserialize_loader_kwargs(call.kwargs),
+        selection=call.selection,
+        cast_float64=call.cast_float64,
+    )
+    code = resolved.load_code(pathlib.Path(source.source.path), assign="data")
+    if code is None:
+        raise ReplayGraphError("The graph file source cannot emit direct load code")
+    return _file_seed_code_parts(code, "data")
+
+
+def _validate_graph_code_node(
+    node: CodeNode,
+    *,
+    trusted_user_code: bool,
+) -> None:
+    """Check one isolated code namespace without deriving recipe edges from it."""
+    if not trusted_user_code:
+        try:
+            _validate_script_replay_code(node.code)
+        except (TypeError, ValueError) as exc:
+            raise ReplayGraphError(str(exc)) from exc
+    available_names = set(_SCRIPT_REPLAY_ALLOWED_BUILTINS)
+    if trusted_user_code:
+        available_names.update(vars(builtins))
+    available_names.update(node.inputs)
+    if node.uses_implicit_framework_imports:
+        available_names.update(_REPLAY_FRAMEWORK_IMPORTS)
+    _validate_script_code_names(
+        node.code,
+        available_names,
+        {},
+        external_name_candidates=(),
+        analysis=_parse_replay_code(node.code),
+    )
+    if node.output_name not in node.inputs and not _code_stores_name(
+        node.code, node.output_name
+    ):
+        raise ReplayGraphError("A graph code node does not assign its declared output")
+
+
+def _compile_concrete_graph(
+    spec: ToolProvenanceSpec,
+    *,
+    display: bool,
+    trusted_user_code: bool,
+    source_resolver: GraphSourceResolver | None,
+    allow_unresolved_inputs: bool,
+) -> ReplayGraph:
+    """Compile explicit value references without the legacy name-binding layer."""
+    import xarray as xr
+
+    graph = ReplayGraph(display=display, trusted_user_code=trusted_user_code)
+    code_analyzer = _CodeAnalyzer()
+    keys: dict[str, str] = {}
+    source_keys: dict[tuple[str, str], str] = {}
+    volatile_keys: set[str] = set()
+    for node in spec.topological_nodes():
+        if isinstance(node, FileSourceNode):
+            setup_code, load_code = (
+                _graph_file_load_parts(node) if display else (None, None)
+            )
+            setup_key = (
+                None
+                if setup_code is None
+                else graph.add_node(
+                    _canonical_key("setup", {"code": setup_code}),
+                    "setup",
+                    payload={"code": setup_code},
+                )
+            )
+            call = node.source.replay_call
+            if call is None:
+                raise ReplayGraphError(
+                    "A graph file source must define its loader call"
+                )
+            key = graph.add_node(
+                _canonical_key(
+                    "graph_file_source",
+                    {
+                        "path": node.source.path,
+                        "call": call.model_dump(mode="json"),
+                    },
+                ),
+                "file_load",
+                parents=() if setup_key is None else (setup_key,),
+                payload={
+                    "active_name": "data",
+                    "load_source": node.source,
+                    "load_code": load_code,
+                },
+            )
+        elif isinstance(node, MemorySourceNode | SnapshotSourceNode):
+            identity = (
+                ("memory", node.source_id)
+                if isinstance(node, MemorySourceNode)
+                else ("snapshot", node.revision_id)
+            )
+            key = source_keys.get(identity, "")
+            if not key:
+                payload: dict[str, typing.Any] = {
+                    "name": _graph_code_name(node.label, identity[0]),
+                    "source_kind": identity[0],
+                    "recipe_node_id": node.id,
+                    "source_id"
+                    if isinstance(node, MemorySourceNode)
+                    else "revision_id": (identity[1]),
+                }
+                if display or (allow_unresolved_inputs and source_resolver is None):
+                    key = graph.add_node(
+                        _canonical_key("graph_source", {"identity": identity}),
+                        "external_input",
+                        payload=payload,
+                    )
+                else:
+                    if source_resolver is None:
+                        raise ReplayGraphError(
+                            f"The {identity[0]} source {identity[1]!r} needs a resolver"
+                        )
+                    data = source_resolver(node)
+                    if not isinstance(data, xr.DataArray):
+                        raise ReplayGraphError(
+                            "A graph source resolver must return an xarray.DataArray"
+                        )
+                    payload["data"] = data
+                    key = graph.add_node(
+                        f"graph_source:{uuid.uuid4().hex}",
+                        "live_input",
+                        cacheable=False,
+                        payload=payload,
+                    )
+                source_keys[identity] = key
+        elif isinstance(node, InputNode):
+            if not display and not allow_unresolved_inputs:
+                raise ReplayGraphError(
+                    "A graph fragment input must be bound before replay"
+                )
+            key = graph.add_node(
+                _canonical_key("graph_input", {"node_id": node.id}),
+                "external_input",
+                payload={
+                    "name": _graph_code_name(node.label, "data"),
+                    "source_kind": "input",
+                    "recipe_node_id": node.id,
+                },
+            )
+        elif isinstance(node, OperationNode):
+            primary = keys[node.data.node_id]
+            bindings = tuple(
+                (slot, keys[node.inputs[slot].node_id])
+                for slot in node.operation.input_slots()
+            )
+            volatile = primary in volatile_keys or any(
+                value in volatile_keys for _slot, value in bindings
+            )
+            key = graph.add_node(
+                _canonical_key(
+                    "graph_operation",
+                    {
+                        "operation": node.operation.model_dump(mode="json"),
+                        "primary": primary,
+                        "inputs": bindings,
+                    },
+                ),
+                "operation",
+                parents=(primary, primary, *(value for _slot, value in bindings)),
+                cacheable=not volatile,
+                payload={
+                    "operation": node.operation,
+                    "input_bindings": bindings,
+                    "legacy_parent_context": False,
+                },
+            )
+            if volatile:
+                volatile_keys.add(key)
+        elif isinstance(node, CodeNode):
+            _validate_graph_code_node(node, trusted_user_code=trusted_user_code)
+            bindings = tuple(
+                (name, keys[value.node_id]) for name, value in node.inputs.items()
+            )
+            graph.source_module_futures.append(
+                _module_future_imports(node.code, code_analyzer=code_analyzer)
+            )
+            key = graph.add_node(
+                _canonical_key(
+                    "graph_code",
+                    {"node_id": node.id, "code": node.code, "inputs": bindings},
+                ),
+                "script",
+                parents=tuple(value for _name, value in bindings),
+                cacheable=False,
+                payload={
+                    "active_name": node.output_name,
+                    "bindings": bindings,
+                    "codes": (node.code,),
+                    "external_names": ((),),
+                    "uses_implicit_framework_imports": (
+                        node.uses_implicit_framework_imports,
+                    ),
+                    "document_codes": (node.code,),
+                    "hoist_imports": (False,),
+                    "isolate_inputs": True,
+                },
+            )
+            volatile_keys.add(key)
+        else:
+            raise ReplayGraphError(
+                f"Unsupported recipe graph node {type(node).__name__}"
+            )
+        keys[node.id] = key
+        if node.label is not None:
+            graph.add_alias(_graph_code_name(node.label, "result"), key)
+    if spec.output is None:
+        raise ReplayGraphError("A recipe graph must define its output")
+    graph.output_key = keys[spec.output.node_id]
+    return graph
+
+
 def compile_replay_graph(
     spec: typing.Any,
     *,
@@ -1606,6 +1880,7 @@ def compile_replay_graph(
     external_inputs: Mapping[str, xr.DataArray] | None = None,
     live_input_resolver: LiveInputResolver | None = None,
     allow_unresolved_inputs: bool = False,
+    source_resolver: GraphSourceResolver | None = None,
 ) -> ReplayGraph:
     """Compile provenance for code output or structured runtime execution.
 
@@ -1615,6 +1890,16 @@ def compile_replay_graph(
     parsed = parse_tool_provenance_spec(spec)
     if parsed is None:
         raise ReplayGraphError("Expected provenance spec")
+    if parsed.kind == "graph":
+        if external_inputs is not None or live_input_resolver is not None:
+            raise ReplayGraphError("Recipe graphs use an explicit source resolver")
+        return _compile_concrete_graph(
+            parsed,
+            display=display,
+            trusted_user_code=trusted_user_code,
+            source_resolver=source_resolver,
+            allow_unresolved_inputs=allow_unresolved_inputs,
+        )
     resolve_input_provenance = _memoized_input_provenance_resolver()
     resolve_live = (
         None
@@ -1907,6 +2192,7 @@ def _copied_script_bindings(graph: ReplayGraph) -> set[tuple[str, str, str]]:
     value-producing graph ancestor. Setup nodes are excluded because sharing
     import/setup code does not imply sharing an array. Display code uses notebook
     inputs directly; only arrays produced by the graph need independent bindings.
+    Explicit code nodes retain their isolated input values in both forms.
     """
     node_by_key = {node.key: node for node in graph.nodes}
     direct_input_kinds = {"caller_input"}
@@ -1919,7 +2205,8 @@ def _copied_script_bindings(graph: ReplayGraph) -> set[tuple[str, str, str]]:
         for input_name, input_key in typing.cast(
             "tuple[tuple[str, str], ...]", node.payload["bindings"]
         )
-        if node_by_key[_emitted_node_key(graph, node_by_key, input_key)].kind
+        if node.payload.get("isolate_inputs", False)
+        or node_by_key[_emitted_node_key(graph, node_by_key, input_key)].kind
         not in direct_input_kinds
     ]
     ancestors_by_key: dict[str, frozenset[str]] = {}
@@ -1934,7 +2221,11 @@ def _copied_script_bindings(graph: ReplayGraph) -> set[tuple[str, str, str]]:
         return ancestors_by_key[key]
 
     binding_counts = Counter(input_key for _node_key, _name, input_key in bindings)
-    copied: set[tuple[str, str, str]] = set()
+    copied = {
+        binding
+        for binding in bindings
+        if node_by_key[binding[0]].payload.get("isolate_inputs", False)
+    }
     for binding in bindings:
         _node_key, _input_name, input_key = binding
         if binding_counts[input_key] > 1 or any(
