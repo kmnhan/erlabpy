@@ -6,7 +6,7 @@ accessor method :meth:`xarray.DataArray.kspace.convert`.
 For more front-end utilities related to momentum conversion, see the documentation of
 the :attr:`xarray.DataArray.kspace` accessor.
 
-Angle conventions and function forms are based on Ref. :cite:p:`ishida2018kconv`.
+Angle conventions and function forms are based on Ref. :cite:`ishida2018kconv`.
 
 """
 
@@ -401,7 +401,7 @@ def get_kconv_func(
         Angle parameters to override. Each parameter is in degrees, and omitted values
         default to zero. If the configuration has a deflector, the available parameters
         are `delta`, `chi`, `chi0`, `xi`, and `xi0`. Otherwise, they are `delta`, `xi`,
-        `xi0`, and `beta0`, following the notation in Ref. :cite:p:`ishida2018kconv`.
+        `xi0`, and `beta0`, following the notation in Ref. :cite:`ishida2018kconv`.
 
     Returns
     -------
@@ -577,7 +577,7 @@ def exact_cut_alpha(
     This function exposes the exact one-dimensional cut inverse used by
     :meth:`xarray.DataArray.kspace.convert` when the dataset has no ``beta`` dimension.
 
-    For slit analyzers (`Type1` / `Type2`), Appendix A of :cite:t:`ishida2018kconv`
+    For slit analyzers (`Type1` / `Type2`), Appendix A of Ref. :cite:`ishida2018kconv`
     reduces the slit-axis momentum to
 
     .. math::

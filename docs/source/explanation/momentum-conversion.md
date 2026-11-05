@@ -106,7 +106,7 @@ See also {ref}`how-to-python-convert-common-grid` and {ref}`how-to-python-conver
 ## Jacobian correction
 
 Jacobian correction rescales intensity to account for the change from angular to
-momentum coordinates. See {cite:t}`Gauthier2021` and {cite:t}`Miao2026` for the physical
+momentum coordinates. See Refs. {cite}`Gauthier2021,Miao2026` for the physical
 background.
 
 With `jacobian=True`, ERLabPy divides each measured intensity value by the absolute

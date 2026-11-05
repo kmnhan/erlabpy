@@ -3,7 +3,7 @@
 # dntool
 
 `dntool` denoises a two-dimensional angle-energy image with
-{func}`erlab.analysis.image.ml.denoise`, which uses the neural network described in
+{func}`erlab.analysis.image.ml.denoise`, which uses the pretrained model from
 {cite:t}`kim2021denoise`.
 
 ```python

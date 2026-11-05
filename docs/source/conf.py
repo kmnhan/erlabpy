@@ -678,7 +678,7 @@ pybtex.plugin.register_plugin("pybtex.style.formatting", "apsstyle", APSStyle)
 
 bibtex_bibfiles = ["refs.bib"]
 bibtex_default_style = "apsstyle"
-bibtex_reference_style = "author_year"
+bibtex_reference_style = "label"
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output

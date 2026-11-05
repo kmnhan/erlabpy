@@ -95,7 +95,7 @@ to expose the sample work function and two optional controls in new windows:
 
 The correction assumes zero applied bias, a uniform field between parallel sample and
 analyzer planes, and a *position-limit* lens response, where the reported angle depends
-on the electron's entry position {cite:p}`Gauthier2021,Miao2026`. Use it when these
+on the electron's entry position {cite}`Gauthier2021,Miao2026`. Use it when these
 assumptions seem appropriate.
 
 The sample normal must align with the analyzer axis. Azimuth rotation and deflector

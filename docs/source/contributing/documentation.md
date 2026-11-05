@@ -61,6 +61,17 @@ Type annotations that follow {pep}`484` are recommended. Sphinx includes these
 annotations in the documentation. You can omit type information from a docstring when
 the function has complete annotations.
 
+## Citations
+
+Add literature references to `docs/source/refs.bib`. Use `{cite}` in Markdown and
+`:cite:` in docstrings for most citations. These roles render reference numbers in
+square brackets, such as [1]. Separate multiple keys with commas in a single role.
+Use `Ref.` or `Refs.` when referring to a paper directly, as in “See Ref. [1].”
+
+Use `{cite:t}` or `:cite:t:` when the sentence names the authors to credit their work,
+such as “the pretrained model from Kim *et al.* [2].” The `cite:p` role renders the
+same output as `cite`; prefer the shorter `cite` form.
+
 (building-the-documentation-locally)=
 
 ## Building the documentation locally
