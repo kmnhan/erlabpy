@@ -8,7 +8,7 @@ from collections.abc import Callable
 import numpy as np
 import pytest
 import xarray as xr
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager._io as manager_io
@@ -1103,6 +1103,98 @@ def test_manager_progressbar_alert(
         assert pbar.value() == 6
 
         pbar.close()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Requires Windows native painting")
+def test_manager_progressbar_paints_without_processing_application_events(
+    qapp, qtbot, manager_context
+) -> None:
+    if qapp.platformName() != "windows":
+        pytest.skip("Requires the Windows window system")
+
+    painted_values: list[int] = []
+    callbacks: list[str] = []
+
+    class _PaintObserver(QtCore.QObject):
+        def eventFilter(self, obj, event) -> bool:
+            if (
+                event.type() == QtCore.QEvent.Type.Paint
+                and isinstance(obj, QtWidgets.QProgressBar)
+                and isinstance(obj.window(), QtWidgets.QProgressDialog)
+            ):
+                painted_values.append(obj.value())
+            return False
+
+    class _PendingEvents(QtWidgets.QWidget):
+        queued = QtCore.Signal()
+
+        @QtCore.Slot()
+        def record_signal(self) -> None:
+            callbacks.append("signal")
+
+        def event(self, event) -> bool:
+            if event.type() == QtCore.QEvent.Type.User:
+                callbacks.append("posted")
+                return True
+            if event.type() == QtCore.QEvent.Type.KeyPress:
+                callbacks.append("input")
+                return True
+            return super().event(event)
+
+    pending = _PendingEvents()
+    qtbot.addWidget(pending)
+    pending.queued.connect(
+        pending.record_signal, QtCore.Qt.ConnectionType.QueuedConnection
+    )
+
+    with manager_context() as manager:
+        # Finish Manager setup before queuing events that must wait for reload.
+        QtWidgets.QApplication.processEvents()
+        observer = _PaintObserver(manager)
+        qapp.installEventFilter(observer)
+        timer = QtCore.QTimer(pending)
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: callbacks.append("timer"))
+        timer.start(0)
+        pending.queued.emit()
+        QtCore.QCoreApplication.postEvent(
+            pending, QtCore.QEvent(QtCore.QEvent.Type.User)
+        )
+        QtCore.QCoreApplication.postEvent(
+            pending,
+            QtGui.QKeyEvent(
+                QtCore.QEvent.Type.KeyPress,
+                QtCore.Qt.Key.Key_A,
+                QtCore.Qt.KeyboardModifier.NoModifier,
+            ),
+        )
+
+        try:
+            for current in (0, 6, 9):
+                manager._warning_handler.handle(
+                    logging.makeLogRecord(
+                        {
+                            "levelno": logging.ERROR,
+                            "msg": (
+                                f"Loading: {current * 100 // 12}%|##########| "
+                                f"{current}/12 [00:00<00:07, 1.54it/s]"
+                            ),
+                        }
+                    )
+                )
+                assert current in painted_values
+                assert manager._progress_bars[12].value() == current
+                assert callbacks == []
+            manager._parse_progressbar(
+                "Loading: 100%|##########| 12/12 [00:07<00:00, 1.54it/s]"
+            )
+            assert not manager._progress_bars[12].isVisible()
+            assert callbacks == []
+        finally:
+            qapp.removeEventFilter(observer)
+
+        QtWidgets.QApplication.processEvents()
+        assert set(callbacks) == {"signal", "posted", "input", "timer"}
 
 
 def test_manager_alert_icons(

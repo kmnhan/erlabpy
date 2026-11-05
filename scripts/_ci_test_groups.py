@@ -98,6 +98,7 @@ PLATFORM_SPECIFIC_TARGETS: tuple[str, ...] = (
     "tests/interactive/imagetool/manager/test_app.py::test_manager_runtime_icon_is_sanitized",
     "tests/interactive/imagetool/manager/test_app.py::test_manager_keyboard_shortcuts_match_manager_actions",
     "tests/interactive/imagetool/manager/test_app.py::test_keyboard_shortcut_keycaps_use_uniform_ui_font",
+    "tests/interactive/imagetool/manager/test_warnings.py::test_manager_progressbar_paints_without_processing_application_events",
 )
 
 

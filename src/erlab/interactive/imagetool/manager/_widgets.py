@@ -23,6 +23,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.colors
+import erlab.interactive.imagetool.manager._desktop as manager_desktop
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.slicer
 from erlab.interactive.imagetool.manager import _server as _manager_server
@@ -1811,6 +1812,9 @@ class _WidgetsController:
             erlab.interactive.utils.activate_window(pbar)
 
         pbar.setValue(current)
+        # A synchronous reload can block the first native paint on Windows.
+        # Flush this window only; processing Qt events can re-enter the reload.
+        manager_desktop._flush_windows_paint(pbar)
 
     def _show_alert(
         self, levelname: str, levelno: int, message: str, formatted_traceback: str

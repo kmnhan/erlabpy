@@ -134,6 +134,86 @@ def test_desktop_foreground_permission_failure_is_nonfatal(monkeypatch) -> None:
     manager_desktop.allow_foreground_activation(123)
 
 
+def test_desktop_flushes_visible_windows_paint(monkeypatch) -> None:
+    from ctypes import wintypes
+
+    hwnd = 0x123456789
+    calls: list[int] = []
+
+    class _UpdateWindow:
+        argtypes: list[object] | None = None
+        restype: object | None = None
+
+        def __call__(self, handle: int) -> int:
+            assert self.argtypes == [wintypes.HWND]
+            assert self.restype is wintypes.BOOL
+            calls.append(handle)
+            return 1
+
+    update_window = _UpdateWindow()
+    window = types.SimpleNamespace(isVisible=lambda: True, winId=lambda: hwnd)
+    monkeypatch.setattr(manager_desktop.sys, "platform", "win32")
+    monkeypatch.setattr(
+        manager_desktop.QtWidgets.QApplication, "platformName", lambda: "windows"
+    )
+    monkeypatch.setattr(
+        manager_desktop.ctypes,
+        "windll",
+        types.SimpleNamespace(user32=types.SimpleNamespace(UpdateWindow=update_window)),
+        raising=False,
+    )
+
+    manager_desktop._flush_windows_paint(window)
+
+    assert calls == [hwnd]
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_desktop_skips_windows_paint_on_other_platforms(monkeypatch, platform) -> None:
+    monkeypatch.setattr(manager_desktop.sys, "platform", platform)
+    monkeypatch.setattr(
+        manager_desktop.ctypes, "windll", types.SimpleNamespace(), raising=False
+    )
+    window = types.SimpleNamespace(
+        isVisible=lambda: pytest.fail("Window visibility must not be checked"),
+        winId=lambda: pytest.fail("A native window must not be created"),
+    )
+
+    manager_desktop._flush_windows_paint(window)
+
+
+def test_desktop_skips_windows_paint_for_hidden_windows(monkeypatch) -> None:
+    monkeypatch.setattr(manager_desktop.sys, "platform", "win32")
+    monkeypatch.setattr(
+        manager_desktop.QtWidgets.QApplication, "platformName", lambda: "windows"
+    )
+    monkeypatch.setattr(
+        manager_desktop.ctypes, "windll", types.SimpleNamespace(), raising=False
+    )
+    window = types.SimpleNamespace(
+        isVisible=lambda: False,
+        winId=lambda: pytest.fail("A native window must not be created"),
+    )
+
+    manager_desktop._flush_windows_paint(window)
+
+
+def test_desktop_skips_windows_paint_on_offscreen_platform(monkeypatch) -> None:
+    monkeypatch.setattr(manager_desktop.sys, "platform", "win32")
+    monkeypatch.setattr(
+        manager_desktop.QtWidgets.QApplication, "platformName", lambda: "offscreen"
+    )
+    monkeypatch.setattr(
+        manager_desktop.ctypes, "windll", types.SimpleNamespace(), raising=False
+    )
+    window = types.SimpleNamespace(
+        isVisible=lambda: pytest.fail("Window visibility must not be checked"),
+        winId=lambda: pytest.fail("A native window must not be created"),
+    )
+
+    manager_desktop._flush_windows_paint(window)
+
+
 def test_manager_rejects_unavailable_named_loader(
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
