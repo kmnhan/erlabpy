@@ -134,6 +134,7 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
         "tests/interactive/imagetool/test_manager_warnings.py",
         "tests/interactive/imagetool/test_module_split.py",
         "tests/interactive/imagetool/test_provenance.py",
+        "tests/interactive/imagetool/test_recipe_builders.py",
         "tests/interactive/imagetool/test_replay_graph.py",
         "tests/interactive/imagetool/test_server_multipart.py",
         "tests/interactive/imagetool/test_slicer.py",
