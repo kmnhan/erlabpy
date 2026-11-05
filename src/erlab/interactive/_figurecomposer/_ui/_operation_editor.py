@@ -10,8 +10,8 @@ import weakref
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive._completion import CompletingLineEdit
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
-from erlab.interactive._figurecomposer._ui._completion import CompletingLineEdit
 from erlab.interactive._figurecomposer._ui._editor_controls import (
     MIXED_VALUE,
     MIXED_VALUES_TEXT,

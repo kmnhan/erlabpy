@@ -67,6 +67,7 @@ import matplotlib
 import matplotlib.scale
 
 from erlab.interactive._figurecomposer._completion_values import (
+    ASPECT_COMPLETIONS,
     FONT_SIZE_COMPLETIONS,
     LABEL_COMPLETIONS,
 )
@@ -403,6 +404,7 @@ def _aspect_arg(
         object_name=object_name,
         tooltip=tooltip,
         default=default,
+        completions=ASPECT_COMPLETIONS,
     )
 
 

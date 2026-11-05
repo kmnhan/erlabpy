@@ -536,7 +536,7 @@ def _shortcut_tabs() -> tuple[_ShortcutTabSpec, ...]:
                         _ShortcutEntrySpec(
                             "figure-composer-completion",
                             "Show available completions",
-                            (_shortcut_sequences.FIGURE_COMPOSER_COMPLETION,),
+                            (_shortcut_sequences.TEXT_COMPLETION,),
                             detail="A supported text editor must have keyboard focus.",
                         ),
                     ),

@@ -9,7 +9,18 @@ import matplotlib.colors
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.interactive.utils
+from erlab.interactive._completion import CompletingLineEdit
 from erlab.interactive._figurecomposer._defaults import _figure_style_context
+
+_COLOR_COMPLETIONS = (
+    "none",
+    *(f"C{index}" for index in range(10)),
+    *sorted(
+        matplotlib.colors.BASE_COLORS.keys()
+        | matplotlib.colors.TABLEAU_COLORS.keys()
+        | matplotlib.colors.CSS4_COLORS.keys()
+    ),
+)
 
 
 def _qcolor_to_mpl_color_text(color: QtGui.QColor) -> str:
@@ -139,7 +150,7 @@ class _ColorLineEditWidget(QtWidgets.QWidget):
             inherited_color,
             default_index=inherited_color_index,
         )
-        self.line_edit = QtWidgets.QLineEdit(text, self)
+        self.line_edit = CompletingLineEdit(text, self, completions=_COLOR_COMPLETIONS)
         self.color_button = _ColorPickerButton(self, color=self._button_color())
         self.color_button.setToolTip("Choose a color.")
         layout = QtWidgets.QHBoxLayout(self)

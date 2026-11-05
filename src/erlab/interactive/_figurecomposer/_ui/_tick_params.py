@@ -6,6 +6,7 @@ import typing
 
 from qtpy import QtCore, QtWidgets
 
+from erlab.interactive._completion import CompletingLineEdit
 from erlab.interactive._figurecomposer._completion_values import (
     FONT_SIZE_COMPLETIONS,
     _completion_literal_from_text,
@@ -20,7 +21,6 @@ from erlab.interactive._figurecomposer._operations._method._catalog import (
     TICK_PARAMS_DEFAULT_KWARGS,
 )
 from erlab.interactive._figurecomposer._ui._color_widgets import _ColorLineEditWidget
-from erlab.interactive._figurecomposer._ui._completion import CompletingLineEdit
 from erlab.interactive._figurecomposer._ui._line_style import (
     configure_style_combo,
     style_combo_value,

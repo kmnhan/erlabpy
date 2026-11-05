@@ -18,6 +18,7 @@ from matplotlib.figure import Figure
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.interactive._figurecomposer._code as figurecomposer_code
+import erlab.interactive._figurecomposer._completion_values as completion_values
 import erlab.interactive._figurecomposer._defaults as figurecomposer_defaults
 import erlab.interactive._figurecomposer._model._gridspec as figurecomposer_gridspec
 import erlab.interactive._figurecomposer._provenance as figurecomposer_provenance
@@ -30,6 +31,7 @@ import erlab.interactive._figurecomposer._ui._editor_controls as _editor_control
 import erlab.interactive._figurecomposer._ui._figure_window as figure_window_ui
 import erlab.interactive._figurecomposer._ui._tick_params as figurecomposer_tick_params
 import erlab.interactive._stylesheets
+from erlab.interactive._completion import CompletingLineEdit, CompletingPlainTextEdit
 from erlab.interactive._figurecomposer import (
     FigureAxesSelectionState,
     FigureComposerTool,
@@ -8362,6 +8364,79 @@ def test_figure_composer_toolbar_axes_dialog_scrolls_on_small_screens(qtbot) -> 
     axes_scroll_area.ensureWidgetVisible(tick_editor.advanced_disclosure)
     QtWidgets.QApplication.processEvents()
     assert vertical_scrollbar.value() > 0
+
+
+@pytest.mark.parametrize("name", ["xlabel", "ylabel"])
+def test_figure_composer_toolbar_axes_labels_offer_completion(qtbot, name) -> None:
+    tool = FigureComposerTool(
+        _figure_composer_image_source("data"),
+        recipe=FigureRecipeState(setup=FigureSubplotsState(ncols=2)),
+    )
+    qtbot.addWidget(tool)
+    tool.axes_selector.set_selected_axes(((0, 0), (0, 1)), emit=False)
+    tool.show_figure_window(activate=False)
+    for index, axis in enumerate(tool.figure.axes):
+        getattr(axis, f"set_{name}")(f"Label {index}")
+    tool._show_axes_customize_dialog()
+    dialog = tool._axes_customize_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    edit = dialog.findChild(
+        CompletingPlainTextEdit, f"figureComposerToolbarAxes{name[0].upper()}LabelEdit"
+    )
+    assert edit is not None
+    assert edit.property("batch_mixed")
+    assert not edit.document().isModified()
+    assert _method_operations(tool, FigureMethodFamily.AXES, f"set_{name}") == ()
+
+    edit.setFocus()
+    edit.completion_shortcut.activated.emit()
+    assert edit.completion_completer.completionCount() == len(
+        completion_values.LABEL_COMPLETIONS
+    )
+    qtbot.keyClick(edit.completer_popup, QtCore.Qt.Key.Key_Escape)
+    qtbot.keyClicks(edit, "first")
+    qtbot.keyClick(edit, QtCore.Qt.Key.Key_Return)
+    qtbot.keyClicks(edit, "$E-E")
+    qtbot.waitUntil(edit.completer_popup.isVisible)
+    qtbot.keyClick(edit.completer_popup, QtCore.Qt.Key.Key_Return)
+    expected = f"first\n{completion_values.LABEL_COMPLETIONS[0]}"
+    assert edit.toPlainText() == expected
+    (operation,) = _method_operations(tool, FigureMethodFamily.AXES, f"set_{name}")
+    assert operation.method_args == (expected,)
+    assert operation.axes.axes == ((0, 0), (0, 1))
+
+    edit.undo()
+    assert edit.toPlainText() == "first\n$E-E"
+    edit.selectAll()
+    qtbot.keyClicks(edit, "Custom label")
+    (operation,) = _method_operations(tool, FigureMethodFamily.AXES, f"set_{name}")
+    assert operation.method_args == ("Custom label",)
+
+
+def test_figure_composer_toolbar_axes_aspect_offers_completion(qtbot) -> None:
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+    tool._show_axes_customize_dialog()
+    dialog = tool._axes_customize_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    edit = dialog.findChild(CompletingLineEdit, "figureComposerToolbarAxesAspectEdit")
+    assert edit is not None
+    edit.setFocus()
+    edit.selectAll()
+    qtbot.keyClicks(edit, "eq")
+    qtbot.waitUntil(edit.completer_popup.isVisible)
+    qtbot.keyClick(edit.completer_popup, QtCore.Qt.Key.Key_Return)
+    assert edit.text() == "equal"
+    (operation,) = _method_operations(tool, FigureMethodFamily.AXES, "set_aspect")
+    assert operation.method_args == ("equal",)
+
+    edit.setFocus()
+    edit.selectAll()
+    qtbot.keyClicks(edit, "1.5")
+    edit.editingFinished.emit()
+    (operation,) = _method_operations(tool, FigureMethodFamily.AXES, "set_aspect")
+    assert operation.method_args == (1.5,)
 
 
 def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
