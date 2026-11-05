@@ -257,16 +257,19 @@ class _FigureCollectionController(QtCore.QObject):
         return f"Figure {highest + 1}"
 
     def duplicated_display_name(self, display_name: str) -> str:
-        if re.fullmatch(r"Figure \d+", display_name):
-            return self.next_display_name()
         existing_names = {
             self._host._child_node(uid).display_text
             for uid in self._host._figure_uids()
         }
-        base_name = f"{display_name} copy"
-        if base_name not in existing_names:
-            return base_name
-        suffix = 2
+        match = re.fullmatch(r"(.* copy)(?: (0*[1-9][0-9]*))?", display_name)
+        if match is not None:
+            base_name = match.group(1)
+            suffix = int(match.group(2) or "1") + 1
+        else:
+            base_name = f"{display_name} copy"
+            if base_name not in existing_names:
+                return base_name
+            suffix = 2
         while f"{base_name} {suffix}" in existing_names:
             suffix += 1
         return f"{base_name} {suffix}"
