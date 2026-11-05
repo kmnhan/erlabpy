@@ -126,6 +126,7 @@ import json
 import keyword
 import typing
 import uuid
+from collections import deque
 from collections.abc import Callable, Collection, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 
@@ -2916,8 +2917,142 @@ class _ScriptContextBinding(pydantic.BaseModel):
         return tuple(names)
 
 
+_NodeId: typing.TypeAlias = typing.Annotated[
+    str, pydantic.Field(strict=True, min_length=1)
+]
+
+
+class ValueRef(pydantic.BaseModel):
+    """Reference one graph value by node identity, independently of its label."""
+
+    node_id: _NodeId
+
+    model_config = pydantic.ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
+
+
+class _ProvenanceNode(pydantic.BaseModel):
+    id: _NodeId
+    label: str | None = pydantic.Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+    model_config = pydantic.ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, typing.Any] | None = None,
+        deep: bool = False,
+    ) -> typing.Self:
+        """Validate changed node fields as well as newly constructed nodes."""
+        copied = super().model_copy(deep=deep)
+        return type(self).model_validate(
+            {**copied.model_dump(mode="python"), **dict(update or {})}
+        )
+
+
+class FileSourceNode(_ProvenanceNode):
+    """Load one array through a recorded, typed file loader."""
+
+    kind: typing.Literal["file"] = "file"
+    source: FileLoadSource
+
+    @pydantic.model_validator(mode="after")
+    def _check_source(self) -> typing.Self:
+        if self.source.replay_call is None:
+            raise ValueError("A graph file source must define a typed replay call")
+        return self
+
+
+class MemorySourceNode(_ProvenanceNode):
+    """Read a memory source owned independently of its displaying window."""
+
+    kind: typing.Literal["memory"] = "memory"
+    source_id: _NodeId
+
+
+class SnapshotSourceNode(_ProvenanceNode):
+    """Read one explicitly fixed data revision."""
+
+    kind: typing.Literal["snapshot"] = "snapshot"
+    revision_id: _NodeId
+
+
+class InputNode(_ProvenanceNode):
+    """Mark the primary input of a graph fragment before attachment."""
+
+    kind: typing.Literal["input"] = "input"
+
+
+class OperationNode(_ProvenanceNode):
+    """Apply one typed operation to explicit primary and auxiliary values."""
+
+    kind: typing.Literal["operation"] = "operation"
+    operation: pydantic.SerializeAsAny[ToolProvenanceOperation]
+    data: ValueRef
+    inputs: dict[str, ValueRef] = pydantic.Field(default_factory=dict)
+
+    @pydantic.field_validator("operation", mode="before")
+    @classmethod
+    def _parse_operation(cls, value: typing.Any) -> ToolProvenanceOperation:
+        return parse_tool_provenance_operation(value)
+
+    def _check_input_fields(self) -> None:
+        if _operation_is(self.operation, "script_code"):
+            raise TypeError("Graph Python code requires an explicit CodeNode")
+        slots = self.operation.input_slots()
+        if len(set(slots)) != len(slots) or set(self.inputs) != set(slots):
+            raise ValueError("Graph inputs must match the operation's input slots")
+
+    @pydantic.model_validator(mode="after")
+    def _validate_node(self) -> typing.Self:
+        self._check_input_fields()
+        return self
+
+
+class CodeNode(_ProvenanceNode):
+    """Run Python in a local scope with declared input values and one output."""
+
+    kind: typing.Literal["code"] = "code"
+    code: str = pydantic.Field(min_length=1)
+    inputs: dict[str, ValueRef] = pydantic.Field(default_factory=dict)
+    output_name: str
+    uses_implicit_framework_imports: bool = False
+
+    @pydantic.model_validator(mode="after")
+    def _check_names(self) -> typing.Self:
+        for name in (*self.inputs, self.output_name):
+            if _validate_active_name(name) is None:
+                raise ValueError("Code inputs and output must be Python identifiers")
+        try:
+            ast.parse(self.code)
+        except SyntaxError as exc:
+            raise ValueError("Graph code must be valid Python") from exc
+        return self
+
+
+ProvenanceGraphNode: typing.TypeAlias = typing.Annotated[
+    FileSourceNode
+    | MemorySourceNode
+    | SnapshotSourceNode
+    | InputNode
+    | OperationNode
+    | CodeNode,
+    pydantic.Field(discriminator="kind"),
+]
+
+
 class ToolProvenanceSpec(pydantic.BaseModel):
     """Saved provenance recipe for ImageTool data.
+
+    Schema 4 uses ``kind='graph'`` with explicit source and operation nodes. Every
+    data edge is a :class:`ValueRef`, and ``output`` selects the result by node ID.
+    Node labels and preferred Python names do not identify graph dependencies.
+    ``input_ref`` marks the unbound input of a fragment before it is attached.
 
     Live child-tool refresh uses single-parent specs from :func:`full_data`,
     :func:`public_data`, or :func:`selection`. Durable reload and copied code use replay
@@ -2936,10 +3071,25 @@ class ToolProvenanceSpec(pydantic.BaseModel):
 
     Treat a spec as a value snapshot. Manager caches use the owning node's provenance
     revision. They do not inspect or wrap nested operation values.
+
+    .. versionchanged:: 3.30.0
+       Adds schema-4 graph recipes. Existing schema-3 authoring and runtime paths
+       retain their format and behavior during the graph integration.
     """
 
-    schema_version: typing.Literal[3] = 3
-    kind: typing.Literal["full_data", "public_data", "selection", "script", "file"]
+    schema_version: typing.Literal[3, 4] = 3
+    kind: typing.Literal[
+        "full_data", "public_data", "selection", "script", "file", "graph"
+    ]
+    nodes: tuple[ProvenanceGraphNode, ...] = pydantic.Field(
+        default=(), exclude_if=lambda value: not value
+    )
+    output: ValueRef | None = pydantic.Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    input_ref: ValueRef | None = pydantic.Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     start_label: str | None = None
     seed_code: str | None = None
     active_name: str | None = None
@@ -3158,6 +3308,11 @@ class ToolProvenanceSpec(pydantic.BaseModel):
 
     def _check_kind_fields(self) -> None:
         """Check invariants that depend on the provenance kind."""
+        if self.kind == "graph":
+            self._check_graph_fields()
+            return
+        if self.schema_version != 3 or self.nodes or self.output or self.input_ref:
+            raise ValueError("Explicit graph fields require schema 4 and kind='graph'")
         for step in self.steps:
             step._check_step_fields()
         if self.kind == "script":
@@ -3243,6 +3398,102 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         self._check_kind_fields()
         return self
 
+    def _serialization_options(
+        self, options: dict[str, typing.Any]
+    ) -> dict[str, typing.Any]:
+        if self.kind == "graph":
+            fields = {"schema_version", "kind", "nodes", "output", "input_ref"}
+            excluded = options.get("exclude")
+            exclusions = (
+                dict(excluded)
+                if isinstance(excluded, Mapping)
+                else dict.fromkeys(excluded or (), True)
+            )
+            exclusions.update(
+                dict.fromkeys(type(self).model_fields.keys() - fields, True)
+            )
+            options["exclude"] = exclusions
+        return options
+
+    def model_dump(self, **kwargs: typing.Any) -> dict[str, typing.Any]:
+        """Serialize graph fields while preserving the schema-3 serializer."""
+        return super().model_dump(**self._serialization_options(kwargs))
+
+    def model_dump_json(self, **kwargs: typing.Any) -> str:
+        """Write a graph without adding empty legacy recipe fields."""
+        return super().model_dump_json(**self._serialization_options(kwargs))
+
+    def _check_graph_fields(self) -> tuple[ProvenanceGraphNode, ...]:
+        if self.schema_version != 4:
+            raise ValueError("Graph provenance requires schema version 4")
+        if (
+            self.start_label is not None
+            or self.seed_code is not None
+            or self.active_name is not None
+            or self.source_operations
+            or self.steps
+            or self.file_load_source is not None
+            or self.script_inputs
+            or self.root_input is not None
+            or self.primary_input is not None
+        ):
+            raise ValueError("Graph provenance cannot also contain a legacy recipe")
+        if not self.nodes or self.output is None:
+            raise ValueError("A graph must contain nodes and an output reference")
+        by_id = {node.id: node for node in self.nodes}
+        if len(by_id) != len(self.nodes):
+            raise ValueError("Graph node IDs must be unique")
+        placeholders = {node.id for node in self.nodes if isinstance(node, InputNode)}
+        expected = set() if self.input_ref is None else {self.input_ref.node_id}
+        if placeholders != expected:
+            raise ValueError("A graph fragment must identify its single input node")
+        if self.output.node_id not in by_id:
+            raise ValueError("Graph output references an unknown node")
+        dependencies: dict[str, set[str]] = {}
+        for node in self.nodes:
+            if isinstance(node, OperationNode):
+                node._check_input_fields()
+                refs = (node.data, *node.inputs.values())
+            elif isinstance(node, CodeNode):
+                refs = tuple(node.inputs.values())
+            else:
+                refs = ()
+            dependencies[node.id] = {ref.node_id for ref in refs}
+            if dependencies[node.id] - by_id.keys():
+                raise ValueError(f"Graph node {node.id!r} references an unknown node")
+        children: dict[str, list[str]] = {node_id: [] for node_id in by_id}
+        counts = {node_id: len(refs) for node_id, refs in dependencies.items()}
+        for node_id, refs in dependencies.items():
+            for parent_id in refs:
+                children[parent_id].append(node_id)
+        ready = deque(node_id for node_id, count in counts.items() if not count)
+        ordered: list[ProvenanceGraphNode] = []
+        while ready:
+            node_id = ready.popleft()
+            ordered.append(by_id[node_id])
+            for child_id in children[node_id]:
+                counts[child_id] -= 1
+                if not counts[child_id]:
+                    ready.append(child_id)
+        if len(ordered) != len(by_id):
+            raise ValueError("Provenance graph contains a dependency cycle")
+        reachable: set[str] = set()
+        pending_ids = [self.output.node_id]
+        while pending_ids:
+            node_id = pending_ids.pop()
+            if node_id not in reachable:
+                reachable.add(node_id)
+                pending_ids.extend(dependencies[node_id])
+        if reachable != by_id.keys():
+            raise ValueError("Provenance graph contains nodes outside its output")
+        return tuple(ordered)
+
+    def topological_nodes(self) -> tuple[ProvenanceGraphNode, ...]:
+        """Return explicit graph nodes with each dependency before its consumers."""
+        if self.kind != "graph":
+            raise TypeError("Only graph provenance has explicit graph nodes")
+        return self._check_graph_fields()
+
     @property
     def replay_inputs(self) -> tuple[ScriptInput, ...]:
         return (
@@ -3280,6 +3531,8 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     @property
     def operations(self) -> tuple[ToolProvenanceOperation, ...]:
         """Return the ordered operations for this live source or durable recipe."""
+        if self.kind == "graph":
+            raise TypeError("Graph operations are stored on their explicit nodes")
         if self.kind in {"script", "file"}:
             return tuple(step.operation for step in self.steps)
         return self.source_operations
@@ -3316,6 +3569,14 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         New runtime code updates ``source_operations`` or ``steps`` explicitly.
         """
         normalized = dict(update or {})
+        if (
+            self.kind == "graph"
+            or {"kind", "schema_version", "nodes", "output", "input_ref"}
+            & normalized.keys()
+        ):
+            return type(self).model_validate(
+                {**self.model_dump(mode="python"), **normalized}
+            )
         if "replay_stages" in normalized:
             raw_stages = normalized.pop("replay_stages")
             top_steps = tuple(
@@ -4002,7 +4263,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         Live ImageTool refresh uses the original single-parent spec via
         :func:`require_live_source_spec`.
         """
-        if self.kind in {"script", "file"}:
+        if self.kind in {"script", "file", "graph"}:
             return self
 
         return ToolProvenanceSpec(
@@ -4077,6 +4338,8 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         )
 
         try:
+            if self.kind == "graph":
+                return compile_replay_graph(self, display=True), "result"
             source = self
             if self.kind not in {"script", "file"}:
                 if not self.is_live_source:

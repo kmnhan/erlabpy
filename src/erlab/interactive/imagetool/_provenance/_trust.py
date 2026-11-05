@@ -20,6 +20,8 @@ from erlab.interactive._fit_code_trust import (
 )
 from erlab.interactive.imagetool._provenance._code import _FIT_DATASET_MARKER
 from erlab.interactive.imagetool._provenance._model import (
+    CodeNode,
+    OperationNode,
     ToolProvenanceSpec,
     _direct_replay_source_name,
     parse_tool_provenance_spec,
@@ -290,6 +292,30 @@ def _stored_spec_code_trust_entries(
     parsed = parse_tool_provenance_spec(spec)
     if parsed is None:
         return ()
+    if parsed.kind == "graph":
+        graph_entries = []
+        for index, node in enumerate(parsed.nodes):
+            node_location = f"{location_prefix}/nodes/{index}"
+            if isinstance(node, OperationNode):
+                graph_entries.extend(
+                    provenance_operation_code_trust_entries(
+                        node.operation,
+                        location_prefix=node_location,
+                    )
+                )
+            elif isinstance(node, CodeNode) and node.code.strip():
+                graph_entries.append(
+                    create_entry(
+                        feature="erlab.provenance.script-code",
+                        location=f"{node_location}/0",
+                        code=node.code,
+                        context={
+                            "active_name": node.output_name,
+                            "binding_names": sorted(node.inputs),
+                        },
+                    )
+                )
+        return tuple(graph_entries)
     context = {
         "active_name": parsed.active_name if parsed.kind == "script" else "derived",
         "binding_names": (
