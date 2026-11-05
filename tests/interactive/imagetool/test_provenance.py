@@ -2568,6 +2568,35 @@ def test_interpolation_from_input_validates_changed_coordinates() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "malformed_input", ["source", "target", "missing_target_coord"]
+)
+def test_interpolation_from_input_rejects_invalid_dimension_coordinates(
+    malformed_input,
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("eV", "alpha"),
+        coords={"eV": [0.0, 1.0, 2.0], "alpha": [-1.0, 1.0]},
+    )
+    target = data.copy(deep=True)
+    if malformed_input == "source":
+        data = data.assign_coords(eV=(("eV", "alpha"), data.values))
+        expected_error = "source coordinate 'eV' must be one-dimensional"
+    elif malformed_input == "target":
+        target = target.assign_coords(eV=(("eV", "alpha"), target.values))
+        expected_error = "target coordinate 'eV' must be one-dimensional"
+    else:
+        target = target.drop_vars("eV")
+        assert "eV" in target.dims
+        assert "eV" not in target.coords
+        expected_error = "target dimension coordinate 'eV' is not available"
+
+    operation = InterpolationFromInputOperation(dimensions=("eV",))
+    with pytest.raises(ValueError, match=expected_error):
+        operation.apply_with_inputs(data, {"target": target})
+
+
 @pytest.mark.parametrize("dimensions", [None, ("eV",)])
 def test_interpolation_expression_preserves_input_grouping(dimensions) -> None:
     data = xr.DataArray([0.0, 1.0, 2.0], dims="eV", coords={"eV": [0.0, 1.0, 2.0]})

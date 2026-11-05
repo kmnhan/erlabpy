@@ -2861,23 +2861,20 @@ class _ProvenanceEditController:
                 provenance_edit_manager_target=(self._manager, node.uid),
             )
             if isinstance(operation, InterpolationFromInputOperation):
-                if current_input is None:
-                    raise RuntimeError(
-                        "The interpolation target input is not available"
-                    )
+                bound_input = typing.cast("ScriptInput", current_input)
                 lineage = self._manager._lineage_controller
                 recorded_data = lineage._rebuild_script_provenance(
                     script(
                         start_label="Use recorded interpolation target",
-                        active_name=current_input.name,
-                        root_input=current_input,
+                        active_name=bound_input.name,
+                        root_input=bound_input,
                     ),
                     target_node_uid=node.uid,
                     prefer_recorded_revisions=True,
                 ).data
                 dialog.restore_manager_target(
                     operation,
-                    current_input.node_uid,
+                    bound_input.node_uid,
                     recorded_data=recorded_data,
                 )
             else:
@@ -2926,10 +2923,8 @@ class _ProvenanceEditController:
                     target_name = f"target_{suffix}"
                     suffix += 1
             target_input = (
-                (
-                    None
-                    if current_input is None
-                    else current_input.model_copy(update={"name": target_name})
+                typing.cast("ScriptInput", current_input).model_copy(
+                    update={"name": target_name}
                 )
                 if selected_uid is None
                 else self._manager._lineage_controller._script_input_for_node(
@@ -2938,8 +2933,6 @@ class _ProvenanceEditController:
                     data_role="displayed",
                 )
             )
-            if target_input is None:
-                raise RuntimeError("The interpolation target input is not available")
             inputs = [
                 item for item in candidate.replay_inputs if item.name != target_name
             ]
@@ -2973,9 +2966,12 @@ class _ProvenanceEditController:
                     )
                 )
         root_candidate = self._root_candidate_for_row(node, row, candidate)
+        scope = row.scope
+        if scope == "source" and not root_candidate.is_live_source:
+            scope = "display"
         self._validate_and_replace(
             node,
-            row.scope,
+            scope,
             root_candidate,
             where="validating the edited interpolation",
         )

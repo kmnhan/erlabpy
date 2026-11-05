@@ -12671,6 +12671,117 @@ def test_interpolation_dialog_restores_recorded_target(qtbot) -> None:
     assert dialog._selected_target_dimensions is None
 
 
+@pytest.mark.parametrize("accept", [False, True])
+def test_interpolation_dialog_edits_recorded_target_without_manager(
+    qtbot, accept_dialog, accept
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "eV"),
+        coords={"x": [0.0, 1.0, 2.0], "eV": [-0.3, -0.2, -0.1, 0.0]},
+    )
+    target = data.isel(x=[0, 2], eV=[0, 2])
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = InterpolationDialog(win.slicer_area, provenance_edit_mode=True)
+    qtbot.addWidget(dialog)
+    operation = imagetool_dialogs.InterpolationFromInputOperation(dimensions=("eV",))
+    dialog.restore_manager_target(operation, None, recorded_data=target)
+
+    accept_dialog(
+        dialog.exec,
+        accept_call=(lambda current: current.accept() if accept else current.reject()),
+    )
+
+    assert dialog.result() == (
+        QtWidgets.QDialog.DialogCode.Accepted
+        if accept
+        else QtWidgets.QDialog.DialogCode.Rejected
+    )
+    assert dialog.source_transform_operation() == operation
+    xr.testing.assert_identical(win.slicer_area.displayed_data, data)
+
+
+@pytest.mark.parametrize("values", [[0.25], [0.25, 0.5, 0.75]])
+def test_interpolation_dialog_restores_delta_grid(qtbot, values) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0, 2.0], "y": [10.0, 20.0]},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = InterpolationDialog(win.slicer_area, provenance_edit_mode=True)
+    qtbot.addWidget(dialog)
+    dialog.coord_widget.mode_combo.setCurrentText("Delta")
+    operation = InterpolationOperation(coords={"x": values})
+
+    dialog.restore_transform_operation(operation)
+
+    assert dialog.coord_widget.count_spin.value() == len(values)
+    assert dialog.coord_widget.spin1.value() == pytest.approx(
+        values[1] - values[0] if len(values) > 1 else 1.0
+    )
+    np.testing.assert_array_equal(dialog.coord_widget.new_coord, values)
+    xr.testing.assert_identical(
+        dialog.source_transform_operation().apply(data), operation.apply(data)
+    )
+    xr.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), operation.apply(data)
+    )
+
+
+@pytest.mark.parametrize(
+    "coords",
+    [
+        {"unavailable": [0.0, 1.0]},
+        {"x": [0.25, 1.75], "unavailable": [0.0, 1.0]},
+    ],
+)
+def test_interpolation_dialog_rejects_unavailable_restored_dimensions(
+    qtbot, coords
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0, 2.0], "y": [10.0, 20.0]},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = InterpolationDialog(win.slicer_area, provenance_edit_mode=True)
+    qtbot.addWidget(dialog)
+
+    with pytest.raises(ValueError, match="Dimension 'unavailable' is not available"):
+        dialog.restore_transform_operation(InterpolationOperation(coords=coords))
+
+    xr.testing.assert_identical(win.slicer_area.displayed_data, data)
+    valid = InterpolationOperation(coords={"x": [0.25, 1.75], "y": [12.0, 18.0]})
+    dialog.restore_transform_operation(valid)
+    assert dialog.source_transform_operation() == valid
+
+
+def test_interpolation_dialog_rejects_invalid_source_in_multiple_grids(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.0, 1.0], "y": [10.0, 20.0]},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = InterpolationDialog(win.slicer_area, provenance_edit_mode=True)
+    qtbot.addWidget(dialog)
+    dialog.restore_transform_operation(
+        InterpolationOperation(coords={"x": [0.25, 0.75], "y": [12.0, 18.0]})
+    )
+    dialog.dim_combo.setCurrentText("y")
+
+    with pytest.raises(ValueError, match="coordinate values must be unique"):
+        dialog.source_transform_operation()
+
+    assert not dialog.make_code()
+    xr.testing.assert_identical(win.slicer_area.displayed_data, data)
+
+
 def test_itool_interpolate_exact_generated_coordinates(qtbot, accept_dialog) -> None:
     data = xr.DataArray(
         np.arange(6).reshape((3, 2)).astype(float),

@@ -3359,9 +3359,11 @@ class InterpolationDialog(DataTransformDialog):
                 else QtCore.Qt.CheckState.PartiallyChecked
             )
         valid = not self.uses_manager_target or not error
-        ok_button = self.buttonBox.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
-        if ok_button is not None:
-            ok_button.setEnabled(valid)
+        ok_button = typing.cast(
+            "QtWidgets.QPushButton",
+            self.buttonBox.button(QtWidgets.QDialogButtonBox.StandardButton.Ok),
+        )
+        ok_button.setEnabled(valid)
         self.copy_button.setEnabled(valid)
         if hasattr(self, "launch_mode_combo"):
             replace_index = self.launch_mode_combo.findData("replace")
