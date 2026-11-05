@@ -16,6 +16,7 @@ from erlab.interactive._options.parameters import (
     FigureDpiOverrideParameter,
     SavefigDpiParameter,
     SavefigPaddingParameter,
+    StringListParameter,
     StylesheetListParameter,
     TrustedFoldersParameter,
     _CustomColorMapParameter,
@@ -31,6 +32,10 @@ pyqtgraph.parametertree.registerParameterType(
 
 pyqtgraph.parametertree.registerParameterType(
     "matplotlib_stylesheets", StylesheetListParameter, override=True
+)
+
+pyqtgraph.parametertree.registerParameterType(
+    "string_list", StringListParameter, override=True
 )
 
 pyqtgraph.parametertree.registerParameterType(

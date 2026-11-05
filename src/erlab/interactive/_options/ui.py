@@ -23,6 +23,7 @@ from erlab.interactive._options.parameters import (
     SavefigDpiWidget,
     SavefigNumberWidget,
     SavefigPaddingWidget,
+    StringListWidget,
     StylesheetListWidget,
     TrustedFoldersWidget,
 )
@@ -345,7 +346,11 @@ class _SettingsRow(QtWidgets.QFrame):
         self.setObjectName(f"settingsRow_{scope}_{object_path}")
         self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         multiline_control = isinstance(
-            control, StylesheetListWidget | TrustedFoldersWidget | DisabledLoadersWidget
+            control,
+            DisabledLoadersWidget
+            | StringListWidget
+            | StylesheetListWidget
+            | TrustedFoldersWidget,
         )
 
         layout = QtWidgets.QGridLayout(self)
@@ -644,6 +649,8 @@ class OptionDialog(QtWidgets.QDialog):
             return ColorListWidget(parent=self)
         if ui_type == "matplotlib_stylesheets":
             return StylesheetListWidget(parent=self)
+        if ui_type == "string_list":
+            return StringListWidget(parent=self)
         if ui_type == "figure_dpi_override":
             return FigureDpiOverrideWidget(parent=self)
         if ui_type == "savefig_dpi":
@@ -755,6 +762,10 @@ class OptionDialog(QtWidgets.QDialog):
             control.sigStylesheetsChanged.connect(
                 lambda _stylesheets, row=row: self._control_changed(row)
             )
+        elif isinstance(control, StringListWidget):
+            control.sigValuesChanged.connect(
+                lambda _values, row=row: self._control_changed(row)
+            )
         elif isinstance(control, DirectoryPathWidget):
             control.sigPathChanged.connect(
                 lambda _path, row=row: self._control_changed(row)
@@ -858,6 +869,8 @@ class OptionDialog(QtWidgets.QDialog):
             return control.get_colors()
         if isinstance(control, StylesheetListWidget):
             return control.get_stylesheets()
+        if isinstance(control, StringListWidget):
+            return control.get_values()
         if isinstance(control, FigureDpiOverrideWidget):
             return control.get_dpi()
         if isinstance(control, SavefigNumberWidget):
@@ -922,6 +935,9 @@ class OptionDialog(QtWidgets.QDialog):
             return
         if isinstance(control, StylesheetListWidget):
             control.set_stylesheets(_stylesheet_names(value))
+            return
+        if isinstance(control, StringListWidget):
+            control.set_values(list(value or []))
             return
         if isinstance(control, FigureDpiOverrideWidget):
             control.set_dpi(value)

@@ -137,10 +137,14 @@ class CompletingPlainTextEdit(QtWidgets.QPlainTextEdit):
         parent: QtWidgets.QWidget | None = None,
         *,
         completions: Sequence[str] | None = None,
+        completion_provider: Callable[[], Sequence[str]] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setPlainText(text)
+        self._completion_provider = completion_provider
         completion_values = self.COMPLETIONS if completions is None else completions
+        if completion_provider is not None:
+            completion_values = completion_provider()
         (
             self.completion_model,
             self.completion_completer,
@@ -164,12 +168,14 @@ class CompletingPlainTextEdit(QtWidgets.QPlainTextEdit):
     @QtCore.Slot()
     def show_all_completions(self) -> None:
         """Show all configured completions for the current line."""
+        self._refresh_completions()
         self._show_completions("")
 
     @QtCore.Slot()
     def _update_completions(self) -> None:
         if self._inserting_completion:
             return
+        self._refresh_completions()
         prefix = self._current_line_prefix()
         if not prefix or prefix in self.completion_model.stringList():
             self.completer_popup.hide()
@@ -197,6 +203,12 @@ class CompletingPlainTextEdit(QtWidgets.QPlainTextEdit):
             self.completer_popup.sizeHintForColumn(0) + scrollbar.sizeHint().width()
         )
         self.completion_completer.complete(popup_rect)
+
+    def _refresh_completions(self) -> None:
+        if self._completion_provider is not None:
+            values = list(self._completion_provider())
+            if values != self.completion_model.stringList():
+                self.completion_model.setStringList(values)
 
     @QtCore.Slot(str)
     def _insert_completion(self, completion: str) -> None:

@@ -48,6 +48,8 @@ from erlab.interactive._figurecomposer._operations._method import (
     _plot_editor as method_plot_editor,
 )
 from erlab.interactive._figurecomposer._operations._method import _state as method_state
+from erlab.interactive._options import options
+from erlab.interactive._options.core import model_with_workspace_overrides
 
 from ._common import (
     _activate_combo_index,
@@ -2250,6 +2252,115 @@ def test_figure_composer_plural_label_methods_offer_completion(qtbot, name) -> N
 
     assert label_input.toPlainText() == f"first\n{selected_label}"
     assert tool.tool_status.operations[0].text_values == ("first", selected_label)
+
+
+@pytest.mark.parametrize(
+    ("family", "name"),
+    [
+        (FigureMethodFamily.AXES, "set_xlabel"),
+        (FigureMethodFamily.AXES, "set_ylabel"),
+        (FigureMethodFamily.FIGURE, "supxlabel"),
+        (FigureMethodFamily.FIGURE, "supylabel"),
+        (FigureMethodFamily.ERLAB, "set_xlabels"),
+        (FigureMethodFamily.ERLAB, "set_ylabels"),
+    ],
+)
+def test_figure_composer_label_methods_use_custom_completions(
+    qtbot, family, name
+) -> None:
+    custom_label = r"$I(E, k)$ (arb. units)"
+    options["figure/label_completions"] = [
+        custom_label,
+        completion_values.LABEL_COMPLETIONS[0],
+        custom_label,
+    ]
+    data = xr.DataArray(np.arange(3.0), dims="x", name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(FigureOperationState.method(family=family, name=name),),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_editor.select_section("method")
+    edit = tool.operation_editor.current_page.findChild(
+        completion_widgets.CompletingPlainTextEdit
+    )
+    assert edit is not None
+    assert edit.completion_model.stringList() == [
+        *completion_values.LABEL_COMPLETIONS,
+        custom_label,
+    ]
+
+    edit.selectAll()
+    qtbot.keyClicks(edit, "$I(")
+    assert edit.completion_completer.completionCount() == 1
+    edit.completion_completer.activated[str].emit(custom_label)
+    operation = tool.tool_status.operations[0]
+    if family == FigureMethodFamily.ERLAB:
+        assert operation.text_values == (custom_label,)
+    else:
+        assert operation.method_args == (custom_label,)
+
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    assert any(
+        text.get_text() == custom_label for text in namespace["fig"].findobj(Text)
+    )
+
+    options["figure/label_completions"] = ["Updated label"]
+    edit.show_all_completions()
+    assert edit.completion_model.stringList() == [
+        *completion_values.LABEL_COMPLETIONS,
+        "Updated label",
+    ]
+    options["figure/label_completions"] = []
+    edit.show_all_completions()
+    assert edit.completion_model.stringList() == list(
+        completion_values.LABEL_COMPLETIONS
+    )
+    assert edit.toPlainText() == custom_label
+
+
+def test_figure_composer_method_completions_follow_workspace_options(qtbot) -> None:
+    options["figure/label_completions"] = ["User label"]
+    effective_options = model_with_workspace_overrides(
+        options.model, {"figure/label_completions": ["Workspace label"]}
+    )
+    data = xr.DataArray(np.arange(3.0), dims="x", name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES, name="set_xlabel"
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.set_options_getter(lambda: effective_options)
+    tool.operation_editor.select_section("method")
+    edit = tool.operation_editor.current_page.findChild(
+        completion_widgets.CompletingPlainTextEdit
+    )
+    assert edit is not None
+    edit.show_all_completions()
+    assert edit.completion_model.stringList() == [
+        *completion_values.LABEL_COMPLETIONS,
+        "Workspace label",
+    ]
+
+    effective_options = model_with_workspace_overrides(options.model, {})
+    edit.show_all_completions()
+    assert edit.completion_model.stringList() == [
+        *completion_values.LABEL_COMPLETIONS,
+        "User label",
+    ]
 
 
 @pytest.mark.parametrize(

@@ -55,6 +55,7 @@ def test_make_parameter_round_trips_figure_options() -> None:
         {
             "figure": {
                 "stylesheets": ["classic", "missing-style"],
+                "label_completions": [r"$I(k_x, E)$", "Counts, normalized"],
                 "dpi": 150.0,
                 "export": {
                     "dpi": 300.0,
@@ -70,6 +71,9 @@ def test_make_parameter_round_trips_figure_options() -> None:
     stylesheet_param = param.child("figure").child("stylesheets")
     assert stylesheet_param.opts["type"] == "matplotlib_stylesheets"
     assert stylesheet_param.value() == ["classic", "missing-style"]
+    labels_param = param.child("figure").child("label_completions")
+    assert labels_param.opts["type"] == "string_list"
+    assert labels_param.value() == options.figure.label_completions
     dpi_param = param.child("figure").child("dpi")
     assert dpi_param.opts["type"] == "figure_dpi_override"
     assert dpi_param.value() == 150.0
@@ -87,6 +91,7 @@ def test_make_parameter_round_trips_figure_options() -> None:
 
     opts = parameter_to_options(param)
     assert opts.figure.stylesheets == ["classic", "missing-style"]
+    assert opts.figure.label_completions == options.figure.label_completions
     assert opts.figure.dpi == 150.0
     assert opts.figure.export == options.figure.export
 

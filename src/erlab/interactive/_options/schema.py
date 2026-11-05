@@ -116,11 +116,11 @@ def _unique_seq(seq: list[str]) -> list[str]:
     return out
 
 
-def _str_list(value: typing.Any) -> list[str]:
+def _str_list(value: typing.Any, *, separator: str | None = ",") -> list[str]:
     if value is None:
         return []
     if isinstance(value, str):
-        value = value.split(",")
+        value = value.splitlines() if separator is None else value.split(separator)
     if not isinstance(value, list | tuple):
         value = [value]
     return _unique_seq([str(item).strip() for item in value if str(item).strip()])
@@ -605,6 +605,15 @@ class FigureOptions(BaseModel):
         ),
         json_schema_extra=_workspace_extra(ui_type="matplotlib_stylesheets"),
     )
+    label_completions: list[str] = Field(
+        default_factory=list,
+        title="Custom label completions",
+        description=(
+            "Additional Figure Composer label suggestions. Enter one label per line. "
+            "These labels are added after the built-in suggestions."
+        ),
+        json_schema_extra=_workspace_extra(ui_type="string_list"),
+    )
     dpi: float | None = Field(
         default=None,
         title="DPI",
@@ -629,6 +638,11 @@ class FigureOptions(BaseModel):
     @classmethod
     def split_stylesheets(cls, v: typing.Any) -> list[str]:
         return _str_list(v)
+
+    @field_validator("label_completions", mode="before")
+    @classmethod
+    def split_label_completions(cls, value: typing.Any) -> list[str]:
+        return _str_list(value, separator=None)
 
 
 class SecurityOptions(BaseModel):

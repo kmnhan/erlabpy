@@ -11,8 +11,10 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 from erlab.interactive._completion import CompletingPlainTextEdit
 from erlab.interactive._figurecomposer._completion_values import (
+    LABEL_COMPLETIONS,
     _completion_literal_from_text,
     _format_completion_literal,
+    _label_completions,
 )
 from erlab.interactive._figurecomposer._line_style import (
     color_kw_value_from_text,
@@ -194,9 +196,20 @@ def _method_plain_text_edit(
     parent: QtWidgets.QWidget | None,
     completions: Sequence[str] = (),
 ) -> QtWidgets.QPlainTextEdit:
+    def label_completions() -> tuple[str, ...]:
+        with editor.binding.form_context():
+            return _label_completions()
+
     edit: QtWidgets.QPlainTextEdit
     if completions:
-        edit = CompletingPlainTextEdit(text, parent, completions=completions)
+        edit = CompletingPlainTextEdit(
+            text,
+            parent,
+            completions=completions,
+            completion_provider=(
+                label_completions if completions == LABEL_COMPLETIONS else None
+            ),
+        )
     else:
         edit = QtWidgets.QPlainTextEdit(parent)
         edit.setPlainText(text)

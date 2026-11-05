@@ -10,7 +10,7 @@ import pydantic
 import pyqtgraph as pg
 import pytest
 import xarray as xr
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive._options.runtime as options_runtime
@@ -31,6 +31,7 @@ from erlab.interactive._options.parameters import (
     FigureDpiOverrideWidget,
     SavefigDpiWidget,
     SavefigPaddingWidget,
+    StringListWidget,
     StylesheetListWidget,
     TrustedFoldersWidget,
 )
@@ -685,6 +686,74 @@ def test_user_figure_export_settings_save_immediately(dialog: OptionDialog) -> N
         bbox_inches="tight",
         pad_inches="layout",
     )
+
+
+def test_custom_label_completions_save_revert_and_reset(qtbot) -> None:
+    path = "figure/label_completions"
+    options[path] = ["Initial label"]
+    dlg = OptionDialog()
+    qtbot.addWidget(dlg)
+    control = typing.cast(
+        "StringListWidget", _control(dlg, "user", path, StringListWidget)
+    )
+
+    control.setPlainText("$I(k_x, E)$\nCounts, normalized\n")
+    assert options[path] == ["Initial label"]
+    QtWidgets.QApplication.sendEvent(
+        control, QtGui.QFocusEvent(QtCore.QEvent.Type.FocusOut)
+    )
+    assert OptionManager()[path] == [r"$I(k_x, E)$", "Counts, normalized"]
+
+    dlg.revert_changes()
+    assert options[path] == ["Initial label"]
+    assert control.toPlainText() == "Initial label"
+
+    _button(dlg, "user", path).click()
+    assert OptionManager()[path] == []
+    assert control.toPlainText() == ""
+
+
+def test_custom_label_completions_workspace_override(qtbot) -> None:
+    path = "figure/label_completions"
+    options[path] = ["User label"]
+    manager = _WorkspaceManagerStub()
+    qtbot.addWidget(manager)
+    dlg = OptionDialog(manager)
+    qtbot.addWidget(dlg)
+    control = typing.cast(
+        "StringListWidget", _control(dlg, "workspace", path, StringListWidget)
+    )
+
+    assert not control.isEnabled()
+    _override(dlg, path).setChecked(True)
+    control.set_values([r"$I(k_x, E)$", "Counts, normalized"])
+    assert manager.effective_interactive_options.figure.label_completions == [
+        r"$I(k_x, E)$",
+        "Counts, normalized",
+    ]
+    assert options[path] == ["User label"]
+
+    _button(dlg, "workspace", path).click()
+    assert path not in manager.overrides
+    assert control.get_values() == ["User label"]
+    assert not control.isEnabled()
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, []),
+        (
+            "  $I(k_x, E)$\n\nCounts, normalized\n$I(k_x, E)$",
+            [r"$I(k_x, E)$", "Counts, normalized"],
+        ),
+        (("  Counts, normalized  ", "", "Counts, normalized"), ["Counts, normalized"]),
+    ],
+)
+def test_custom_label_completions_normalize(value, expected) -> None:
+    model = AppOptions.model_validate({"figure": {"label_completions": value}})
+
+    assert model.figure.label_completions == expected
 
 
 @pytest.mark.parametrize("configuration", [1, 2, 3, 4])

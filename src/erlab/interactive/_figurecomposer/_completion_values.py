@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import typing
 
+from erlab.interactive._figurecomposer._defaults import _current_options
 from erlab.interactive._figurecomposer._text import _code_args, _literal_from_text
 
 if typing.TYPE_CHECKING:
@@ -40,6 +41,14 @@ FONT_SIZE_COMPLETIONS: tuple[str, ...] = (
 )
 
 ASPECT_COMPLETIONS: tuple[str, ...] = ("auto", "equal")
+
+
+def _label_completions() -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            (*LABEL_COMPLETIONS, *_current_options().figure.label_completions)
+        )
+    )
 
 
 def _format_completion_literal(value: typing.Any, *, completions: Sequence[str]) -> str:

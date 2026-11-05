@@ -85,6 +85,7 @@ from erlab.interactive._figurecomposer._ui._toolbar_dialogs import (
     _connect_panel_editor_signal,
 )
 from erlab.interactive._options import options
+from erlab.interactive._options.core import model_with_workspace_overrides
 from erlab.interactive._options.schema import FigureOptions
 from erlab.interactive.imagetool._provenance._model import script
 from erlab.interactive.imagetool.manager._workspace import (
@@ -8745,6 +8746,57 @@ def test_figure_composer_toolbar_axes_labels_offer_completion(qtbot, name) -> No
     qtbot.keyClicks(edit, "Custom label")
     (operation,) = _method_operations(tool, FigureMethodFamily.AXES, f"set_{name}")
     assert operation.method_args == ("Custom label",)
+
+
+@pytest.mark.parametrize("name", ["xlabel", "ylabel"])
+def test_figure_composer_toolbar_label_completions_follow_settings(qtbot, name) -> None:
+    options["figure/label_completions"] = ["User label"]
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+    tool._show_axes_customize_dialog()
+    dialog = tool._axes_customize_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    edit = dialog.findChild(
+        CompletingPlainTextEdit, f"figureComposerToolbarAxes{name[0].upper()}LabelEdit"
+    )
+    assert edit is not None
+    assert edit.completion_model.stringList() == [
+        *completion_values.LABEL_COMPLETIONS,
+        "User label",
+    ]
+
+    options["figure/label_completions"] = ["Updated label"]
+    edit.show_all_completions()
+    assert edit.completion_model.stringList() == [
+        *completion_values.LABEL_COMPLETIONS,
+        "Updated label",
+    ]
+    options["figure/label_completions"] = []
+    edit.show_all_completions()
+    assert edit.completion_model.stringList() == list(
+        completion_values.LABEL_COMPLETIONS
+    )
+
+    effective_options = model_with_workspace_overrides(
+        options.model, {"figure/label_completions": ["Workspace label"]}
+    )
+    tool.set_options_getter(lambda: effective_options)
+    edit.show_all_completions()
+    assert edit.completion_model.stringList() == [
+        *completion_values.LABEL_COMPLETIONS,
+        "Workspace label",
+    ]
+    edit.completion_completer.activated[str].emit("Workspace label")
+    (operation,) = _method_operations(tool, FigureMethodFamily.AXES, f"set_{name}")
+    assert operation.method_args == ("Workspace label",)
+
+    effective_options = model_with_workspace_overrides(options.model, {})
+    edit.show_all_completions()
+    assert edit.completion_model.stringList() == list(
+        completion_values.LABEL_COMPLETIONS
+    )
+    assert edit.toPlainText() == "Workspace label"
 
 
 def test_figure_composer_toolbar_axes_aspect_offers_completion(qtbot) -> None:

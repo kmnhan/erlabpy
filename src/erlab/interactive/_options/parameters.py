@@ -4,6 +4,7 @@ This module defines custom parameter types for use in the options dialog of the
 ImageTool. It includes list-style parameters and a custom colormap parameter.
 """
 
+import typing
 from collections.abc import Callable
 
 import pyqtgraph as pg
@@ -16,6 +17,7 @@ from erlab.interactive._code_trust import (
     reset_saved_code_trust,
     validate_trusted_location,
 )
+from erlab.interactive._options.schema import _str_list
 from erlab.interactive._widgets import _CenteredIconToolButton
 
 _STYLESHEET_AVAILABLE_ROLE = QtCore.Qt.ItemDataRole.UserRole + 1
@@ -796,6 +798,66 @@ class TrustedFoldersParameter(pyqtgraph.parametertree.parameterTypes.SimpleParam
 
     def __init__(self, **opts):
         opts.setdefault("type", "trusted_folders")
+        super().__init__(**opts)
+
+
+class StringListWidget(QtWidgets.QPlainTextEdit):
+    sigValuesChanged = QtCore.Signal(list)
+
+    def __init__(
+        self,
+        values: list[str] | None = None,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._values: list[str] = []
+        self.setTabChangesFocus(True)
+        self.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+        document = typing.cast("QtGui.QTextDocument", self.document())
+        self.setFixedHeight(
+            self.fontMetrics().lineSpacing() * 4
+            + self.frameWidth() * 2
+            + int(document.documentMargin()) * 2
+        )
+        self.set_values(values or [])
+
+    def get_values(self) -> list[str]:
+        return _str_list(self.toPlainText(), separator=None)
+
+    def set_values(self, values: list[str]) -> None:
+        normalized = _str_list(values, separator=None)
+        text = "\n".join(normalized)
+        if self.toPlainText() != text:
+            self.setPlainText(text)
+        if normalized != self._values:
+            self._values = normalized
+            self.sigValuesChanged.emit(normalized)
+
+    def focusOutEvent(self, event: QtGui.QFocusEvent | None) -> None:
+        super().focusOutEvent(event)
+        values = self.get_values()
+        if values != self._values:
+            self._values = values
+            self.sigValuesChanged.emit(values)
+
+
+class StringListParameterItem(
+    pyqtgraph.parametertree.parameterTypes.WidgetParameterItem
+):
+    def makeWidget(self) -> StringListWidget:
+        widget = StringListWidget()
+        widget.sigChanged = widget.sigValuesChanged  # type: ignore[attr-defined]
+        widget.value = widget.get_values  # type: ignore[attr-defined]
+        widget.setValue = widget.set_values  # type: ignore[attr-defined]
+        self.hideWidget = False
+        return widget
+
+
+class StringListParameter(pyqtgraph.parametertree.parameterTypes.SimpleParameter):
+    itemClass = StringListParameterItem
+
+    def __init__(self, **opts):
+        opts.setdefault("type", "string_list")
         super().__init__(**opts)
 
 
