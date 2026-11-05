@@ -25,6 +25,12 @@ if typing.TYPE_CHECKING:
 
 
 class _LineStyleDoubleSpinBox(QtWidgets.QDoubleSpinBox):
+    def stepBy(self, steps: int) -> None:
+        if steps > 0 and self.value() == self.minimum():
+            self.setValue(steps * self.singleStep())
+        else:
+            super().stepBy(steps)
+
     def setToolTip(self, text: str | None) -> None:
         super().setToolTip(text)
         line_edit = self.lineEdit()
@@ -38,17 +44,17 @@ def optional_positive_spinbox(
     parent: QtWidgets.QWidget,
 ) -> QtWidgets.QDoubleSpinBox:
     spinbox = _LineStyleDoubleSpinBox(parent)
-    spinbox.setRange(0.0, 1_000_000.0)
     spinbox.setDecimals(3)
+    spinbox.setRange(-0.001, 1_000_000.0)
     spinbox.setSingleStep(0.5)
     spinbox.setSpecialValueText("default")
     spinbox.setKeyboardTracking(False)
-    spinbox.setValue(0.0 if value is None else float(value))
+    spinbox.setValue(spinbox.minimum() if value is None else float(value))
     return spinbox
 
 
 def optional_positive_spinbox_value(value: float) -> float | None:
-    return None if value == 0.0 else float(value)
+    return None if value < 0.0 else float(value)
 
 
 def configure_style_combo(

@@ -422,6 +422,7 @@ def _render_into_figure(
 ) -> None:
     from erlab.interactive._figurecomposer._operations import _registry
 
+    tool._rendered_color_cache.invalidate()
     # Custom code may mutate source arrays even when no Plot Slices step renders.
     tool._plot_slices_cache_for_render()
     render_errors: dict[str, str] = {}
@@ -458,6 +459,7 @@ def _render_into_figure(
             except Exception as exc:
                 render_errors[operation.operation_id] = _render_error_text(exc)
     tool._set_operation_render_errors(render_errors)
+    tool._rendered_color_cache.mark_rendered(figure)
 
 
 @contextlib.contextmanager

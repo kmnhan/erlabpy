@@ -185,6 +185,7 @@ class MethodControlSpec:
     option_labels: tuple[str, ...] = ()
     aliases: tuple[str, ...] = ()
     default: typing.Any = None
+    default_rcparam: str | None = None
     minimum: int | float | None = None
     maximum: int | float | None = None
     decimals: int | None = None
@@ -564,6 +565,7 @@ def _float_kwarg(
     tooltip: str,
     *,
     default: float | None = None,
+    rcparam: str | None = None,
     minimum: float | None = None,
     maximum: float | None = None,
     decimals: int | None = None,
@@ -577,6 +579,7 @@ def _float_kwarg(
         object_name=object_name,
         tooltip=tooltip,
         default=default,
+        default_rcparam=rcparam,
         minimum=minimum,
         maximum=maximum,
         decimals=decimals,
@@ -690,6 +693,7 @@ def _color_kwarg(
     tooltip: str,
     *,
     aliases: Sequence[str] = (),
+    rcparam: str | None = None,
 ) -> MethodControlSpec:
     return MethodControlSpec(
         kind=MethodControlKind.COLOR_KWARG,
@@ -698,6 +702,7 @@ def _color_kwarg(
         object_name=object_name,
         tooltip=tooltip,
         aliases=tuple(aliases),
+        default_rcparam=rcparam,
     )
 
 
@@ -846,13 +851,16 @@ def _title_location_control(object_name: str, tooltip: str) -> MethodControlSpec
 _AXIS_LABEL_POSITION_GROUP = "axis_label_position"
 
 
-def _text_color_control(object_name: str, description: str) -> MethodControlSpec:
+def _text_color_control(
+    object_name: str, description: str, *, rcparam: str = "text.color"
+) -> MethodControlSpec:
     return _color_kwarg(
         "Color",
         "color",
         object_name,
         f"Matplotlib color for {description}.",
         aliases=("c",),
+        rcparam=rcparam,
     )
 
 
@@ -861,12 +869,15 @@ def _text_artist_controls(
     description: str,
     *,
     horizontalalignment_exclusive_group: str | None = None,
+    color_rcparam: str = "text.color",
 ) -> tuple[MethodControlSpec, ...]:
     horizontalalignment_tooltip = f"Horizontal alignment for {description}."
     if horizontalalignment_exclusive_group is not None:
         horizontalalignment_tooltip += "\nSelecting this value clears Location."
     return (
-        _text_color_control(f"{object_name_prefix}ColorEdit", description),
+        _text_color_control(
+            f"{object_name_prefix}ColorEdit", description, rcparam=color_rcparam
+        ),
         _font_size_kwarg(
             "Font size",
             "fontsize",
@@ -945,6 +956,7 @@ def _axis_label_controls(
             object_name_prefix,
             description,
             horizontalalignment_exclusive_group=_AXIS_LABEL_POSITION_GROUP,
+            color_rcparam="axes.labelcolor",
         ),
     )
 
@@ -1032,9 +1044,10 @@ def _legend_controls(prefix: str) -> tuple[MethodControlSpec, ...]:
             "Location",
             "loc",
             _LEGEND_LOC_OPTIONS,
-            "best",
+            None,
             f"figureComposer{prefix}MethodLegendLocCombo",
             "Legend location passed as loc.",
+            none_label="Default",
         ),
         _int_kwarg(
             "Columns",
@@ -1051,12 +1064,11 @@ def _legend_controls(prefix: str) -> tuple[MethodControlSpec, ...]:
             f"figureComposer{prefix}MethodLegendTitleEdit",
             "Optional legend title.",
         ),
-        _bool_kwarg_combo(
+        _optional_bool_kwarg_combo(
             "Frame",
             "frameon",
             f"figureComposer{prefix}MethodLegendFrameCombo",
             "Show or hide the legend frame.",
-            default=True,
         ),
         _font_size_kwarg(
             "Font size",
@@ -1075,7 +1087,7 @@ def _legend_controls(prefix: str) -> tuple[MethodControlSpec, ...]:
             "markerscale",
             f"figureComposer{prefix}MethodLegendMarkerScaleEdit",
             "Scale factor for marker size in the legend.",
-            default=float(matplotlib.rcParams["legend.markerscale"]),
+            rcparam="legend.markerscale",
             minimum=0.0,
             maximum=100.0,
             step=0.1,
@@ -1085,7 +1097,7 @@ def _legend_controls(prefix: str) -> tuple[MethodControlSpec, ...]:
             "labelspacing",
             f"figureComposer{prefix}MethodLegendLabelSpacingEdit",
             "Vertical spacing between legend labels.",
-            default=float(matplotlib.rcParams["legend.labelspacing"]),
+            rcparam="legend.labelspacing",
             minimum=0.0,
             maximum=100.0,
             step=0.1,
@@ -1095,7 +1107,7 @@ def _legend_controls(prefix: str) -> tuple[MethodControlSpec, ...]:
             "handlelength",
             f"figureComposer{prefix}MethodLegendHandleLengthEdit",
             "Length of the legend handle.",
-            default=float(matplotlib.rcParams["legend.handlelength"]),
+            rcparam="legend.handlelength",
             minimum=0.0,
             maximum=100.0,
             step=0.1,
@@ -1105,7 +1117,7 @@ def _legend_controls(prefix: str) -> tuple[MethodControlSpec, ...]:
             "handletextpad",
             f"figureComposer{prefix}MethodLegendHandleTextPadEdit",
             "Spacing between the handle and legend text.",
-            default=float(matplotlib.rcParams["legend.handletextpad"]),
+            rcparam="legend.handletextpad",
             minimum=0.0,
             maximum=100.0,
             step=0.1,
@@ -1115,7 +1127,7 @@ def _legend_controls(prefix: str) -> tuple[MethodControlSpec, ...]:
             "columnspacing",
             f"figureComposer{prefix}MethodLegendColumnSpacingEdit",
             "Horizontal spacing between legend columns.",
-            default=float(matplotlib.rcParams["legend.columnspacing"]),
+            rcparam="legend.columnspacing",
             minimum=0.0,
             maximum=100.0,
             step=0.1,
@@ -1179,7 +1191,7 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "linewidth",
                 "figureComposerAxesMethodPlotLineWidthSpin",
                 "Line width for the plotted line.",
-                default=float(matplotlib.rcParams["lines.linewidth"]),
+                rcparam="lines.linewidth",
                 minimum=0.0,
                 maximum=1_000_000.0,
                 step=0.5,
@@ -1199,7 +1211,7 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "markersize",
                 "figureComposerAxesMethodPlotMarkerSizeSpin",
                 "Marker size for the plotted line.",
-                default=float(matplotlib.rcParams["lines.markersize"]),
+                rcparam="lines.markersize",
                 minimum=0.0,
                 maximum=1_000_000.0,
                 step=0.5,
@@ -1211,6 +1223,7 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "figureComposerAxesMethodPlotMarkerFaceColorEdit",
                 "Matplotlib marker face color.",
                 aliases=("mfc",),
+                rcparam="lines.markerfacecolor",
             ),
             _color_kwarg(
                 "Marker edge",
@@ -1218,6 +1231,7 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "figureComposerAxesMethodPlotMarkerEdgeColorEdit",
                 "Matplotlib marker edge color.",
                 aliases=("mec",),
+                rcparam="lines.markeredgecolor",
             ),
             _float_kwarg(
                 "Alpha",
@@ -1264,7 +1278,7 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "linewidth",
                 "figureComposerAxesMethodErrorbarLineWidthSpin",
                 "Line width for the errorbar line.",
-                default=float(matplotlib.rcParams["lines.linewidth"]),
+                rcparam="lines.linewidth",
                 minimum=0.0,
                 maximum=1_000_000.0,
                 step=0.5,
@@ -1284,7 +1298,7 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "markersize",
                 "figureComposerAxesMethodErrorbarMarkerSizeSpin",
                 "Marker size for the errorbar line.",
-                default=float(matplotlib.rcParams["lines.markersize"]),
+                rcparam="lines.markersize",
                 minimum=0.0,
                 maximum=1_000_000.0,
                 step=0.5,
@@ -1296,6 +1310,7 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "figureComposerAxesMethodErrorbarMarkerFaceColorEdit",
                 "Matplotlib marker face color.",
                 aliases=("mfc",),
+                rcparam="lines.markerfacecolor",
             ),
             _color_kwarg(
                 "Marker edge",
@@ -1303,13 +1318,14 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "figureComposerAxesMethodErrorbarMarkerEdgeColorEdit",
                 "Matplotlib marker edge color.",
                 aliases=("mec",),
+                rcparam="lines.markeredgecolor",
             ),
             _float_kwarg(
                 "Cap size",
                 "capsize",
                 "figureComposerAxesMethodErrorbarCapSizeSpin",
                 "Errorbar cap size in points.",
-                default=float(matplotlib.rcParams["errorbar.capsize"]),
+                rcparam="errorbar.capsize",
                 minimum=0.0,
                 maximum=1_000_000.0,
                 step=0.5,
@@ -1547,13 +1563,17 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "figureComposerAxesMethodTitleLocCombo",
                 "Horizontal title location.",
             ),
-            *_text_artist_controls("figureComposerAxesMethodTitle", "the title"),
+            *_text_artist_controls(
+                "figureComposerAxesMethodTitle",
+                "the title",
+                color_rcparam="axes.titlecolor",
+            ),
             _float_kwarg(
                 "Padding",
                 "pad",
                 "figureComposerAxesMethodTitlePadEdit",
                 "Optional title padding in points.",
-                default=float(matplotlib.rcParams["axes.titlepad"]),
+                rcparam="axes.titlepad",
                 minimum=0.0,
                 maximum=1000.0,
                 step=0.5,
@@ -1581,7 +1601,7 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "labelpad",
                 "figureComposerAxesMethodXLabelPadEdit",
                 "Optional x-axis label padding in points.",
-                default=float(matplotlib.rcParams["axes.labelpad"]),
+                rcparam="axes.labelpad",
                 minimum=0.0,
                 maximum=1000.0,
                 step=0.5,
@@ -1609,7 +1629,7 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "labelpad",
                 "figureComposerAxesMethodYLabelPadEdit",
                 "Optional y-axis label padding in points.",
-                default=float(matplotlib.rcParams["axes.labelpad"]),
+                rcparam="axes.labelpad",
                 minimum=0.0,
                 maximum=1000.0,
                 step=0.5,
@@ -1842,7 +1862,9 @@ FIGURE_METHODS: dict[str, MethodSpec] = {
                 "Text string passed to fig.supxlabel.",
             ),
             *_text_artist_controls(
-                "figureComposerFigureMethodText", "the figure x label"
+                "figureComposerFigureMethodText",
+                "the figure x label",
+                color_rcparam="text.color",
             ),
         ),
     ),
@@ -1862,7 +1884,9 @@ FIGURE_METHODS: dict[str, MethodSpec] = {
                 "Text string passed to fig.supylabel.",
             ),
             *_text_artist_controls(
-                "figureComposerFigureMethodText", "the figure y label"
+                "figureComposerFigureMethodText",
+                "the figure y label",
+                color_rcparam="text.color",
             ),
         ),
     ),
@@ -1882,7 +1906,9 @@ FIGURE_METHODS: dict[str, MethodSpec] = {
                 "Text string passed to fig.suptitle.",
             ),
             *_text_artist_controls(
-                "figureComposerFigureMethodText", "the figure title"
+                "figureComposerFigureMethodText",
+                "the figure title",
+                color_rcparam="text.color",
             ),
         ),
     ),
@@ -1973,8 +1999,8 @@ FIGURE_METHODS: dict[str, MethodSpec] = {
                 "Height pad",
                 "h_pad",
                 "figureComposerFigureLayoutEngineHpadEdit",
-                "Height padding for tight, constrained, or compressed layout.",
-                default=0.04167,
+                "Height padding for tight, constrained, or compressed layout. "
+                "Leave empty to inherit Pad in tight layout.",
                 minimum=0.0,
                 maximum=100.0,
                 decimals=5,
@@ -1984,8 +2010,8 @@ FIGURE_METHODS: dict[str, MethodSpec] = {
                 "Width pad",
                 "w_pad",
                 "figureComposerFigureLayoutEngineWpadEdit",
-                "Width padding for tight, constrained, or compressed layout.",
-                default=0.04167,
+                "Width padding for tight, constrained, or compressed layout. "
+                "Leave empty to inherit Pad in tight layout.",
                 minimum=0.0,
                 maximum=100.0,
                 decimals=5,
@@ -1996,7 +2022,6 @@ FIGURE_METHODS: dict[str, MethodSpec] = {
                 "hspace",
                 "figureComposerFigureLayoutEngineHspaceEdit",
                 "Height spacing for constrained or compressed layout.",
-                default=0.02,
                 minimum=0.0,
                 maximum=100.0,
                 decimals=5,
@@ -2007,7 +2032,6 @@ FIGURE_METHODS: dict[str, MethodSpec] = {
                 "wspace",
                 "figureComposerFigureLayoutEngineWspaceEdit",
                 "Width spacing for constrained or compressed layout.",
-                default=0.02,
                 minimum=0.0,
                 maximum=100.0,
                 decimals=5,

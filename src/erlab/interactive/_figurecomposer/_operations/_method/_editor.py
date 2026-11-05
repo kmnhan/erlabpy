@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import functools
 import typing
 
@@ -98,7 +99,10 @@ from erlab.interactive._figurecomposer._text import (
     _string_tuple_from_text,
     _text_tuple_from_text,
 )
-from erlab.interactive._figurecomposer._ui._color_widgets import _ColorLineEditWidget
+from erlab.interactive._figurecomposer._ui._color_widgets import (
+    _ColorLineEditWidget,
+    _mpl_color_value_text,
+)
 from erlab.interactive._figurecomposer._ui._operation_editor import StepSection
 from erlab.interactive._figurecomposer._ui._tick_params import TickParamsEditorWidget
 
@@ -108,6 +112,48 @@ if typing.TYPE_CHECKING:
     from erlab.interactive._figurecomposer._ui._operation_editor import (
         FigureOperationEditor,
     )
+
+
+class _MethodLimitsEdit(QtWidgets.QLineEdit):
+    def __init__(
+        self,
+        text: str,
+        editor: FigureOperationEditor,
+        operation: FigureOperationState,
+        spec: MethodSpec,
+        *,
+        parent: QtWidgets.QWidget | None,
+    ) -> None:
+        super().__init__(text, parent)
+        self._editor = editor
+        self._operation_id = operation.operation_id
+        self._spec = spec
+        self._displayed_text = text
+        editor.connect_rendered_value_refresh(self, self.refresh_rendered_value)
+
+    @QtCore.Slot()
+    def refresh_rendered_value(self) -> None:
+        if self.isVisible() and self._editor.control_signal_allowed(self):
+            operation = self._editor.context.operation_by_id(self._operation_id)
+            if (
+                operation is not None
+                and self.text() == self._displayed_text
+                and not self._editor.has_input_error(operation)
+            ):
+                text, mixed = self._editor.batch_text(
+                    operation,
+                    lambda target: _method_float_pair_args(
+                        self._editor, target, self._spec
+                    ),
+                    _format_limit_pair,
+                )
+                self.setText(text)
+                self._displayed_text = text
+                self._editor.apply_mixed_line_edit(self, mixed)
+
+    def showEvent(self, event: QtGui.QShowEvent | None) -> None:
+        self.refresh_rendered_value()
+        super().showEvent(event)
 
 
 def _method_combo(
@@ -287,7 +333,13 @@ def _build_method_editor(
 
     for control in spec.controls:
         if _method_control_visible(operation, spec, control):
-            _add_method_control_row(editor, layout, operation, spec, control)
+            _add_method_control_row(
+                editor,
+                layout,
+                operation,
+                spec,
+                _layout_engine_numeric_control(operation, spec, control),
+            )
 
     if not spec.controls and spec.text_values_policy == MethodTextValuesPolicy.NONE:
         label = QtWidgets.QLabel(f"{_callable_display(spec)} takes no values.", page)
@@ -596,13 +648,17 @@ def _add_method_control_row(
         case MethodControlKind.FLOAT_PAIR_ARGS:
             text, mixed = editor.batch_text(
                 operation,
-                lambda target: _method_float_pair_args(editor, target, spec),
+                lambda target: _method_float_pair_args(
+                    editor, target, spec, resolve_defaults=False
+                ),
                 _format_limit_pair,
             )
-            edit = editor.line_edit(
+            edit = _MethodLimitsEdit(
                 text,
+                editor,
+                operation,
+                spec,
                 parent=layout.parentWidget(),
-                completions=control.completions,
             )
             editor.apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
@@ -818,22 +874,32 @@ def _add_method_control_row(
         case MethodControlKind.FLOAT_KWARG:
             key = _control_key(control)
             if _control_uses_numeric_spinbox(control):
+                rc_default = (
+                    None
+                    if control.default_rcparam is None
+                    else float(editor.styled_rcparams_value(control.default_rcparam))
+                )
                 mixed = editor.batch_is_mixed(
                     operation,
                     lambda target: _method_kwarg_value(target, key, control.default),
                 )
                 spinbox = _float_spinbox(
-                    control.default
+                    (control.default if rc_default is None else rc_default)
                     if mixed
                     else _method_kwarg_value(operation, key, control.default),
                     control,
                     parent=layout.parentWidget(),
+                    default_value=rc_default,
                 )
                 spinbox.setObjectName(control.object_name)
                 editor.connect_value_signal(
                     spinbox,
                     spinbox.valueChanged,
-                    float,
+                    lambda value: (
+                        None
+                        if rc_default is not None and value == spinbox.minimum()
+                        else float(value)
+                    ),
                     _method_kwarg_update_callback(editor, key),
                 )
                 editor.add_form_row(
@@ -855,6 +921,8 @@ def _add_method_control_row(
                     parent=layout.parentWidget(),
                     completions=control.completions,
                 )
+                if not mixed:
+                    edit.setPlaceholderText("default")
                 editor.apply_mixed_line_edit(edit, mixed)
                 edit.setObjectName(control.object_name)
                 editor.connect_line_edit_finished(
@@ -917,20 +985,37 @@ def _add_method_control_row(
             color_text, color_mixed = editor.batch_text(
                 operation,
                 lambda target: _method_kwarg_value(target, key, ""),
-                lambda value: str(value or ""),
+                _mpl_color_value_text,
             )
             color_edit = _ColorLineEditWidget(
                 color_text,
                 parent=layout.parentWidget(),
-                inherited_color=(
-                    _method_kwarg_value(operation, "color", None)
-                    if key != "color"
-                    else None
+                inherited_color=_method_color_default(
+                    editor, operation, control, resolve_rendered=False
+                ),
+                inherited_color_getter=functools.partial(
+                    _method_color_default, editor, operation, control
+                ),
+                auto_color=_method_color_default(
+                    editor,
+                    operation,
+                    control,
+                    use_line_color=key in {"markerfacecolor", "markeredgecolor"},
+                    resolve_rendered=False,
+                ),
+                auto_color_getter=functools.partial(
+                    _method_color_default,
+                    editor,
+                    operation,
+                    control,
+                    use_line_color=key in {"markerfacecolor", "markeredgecolor"},
                 ),
             )
             color_edit.setLineEditObjectName(control.object_name)
             color_edit.setColorButtonObjectName(f"{control.object_name}Button")
             editor.apply_mixed_line_edit(color_edit.line_edit, color_mixed)
+            if not color_mixed:
+                color_edit.setPlaceholderText("default")
             editor.connect_value_signal(
                 color_edit,
                 color_edit.editingFinished,
@@ -1065,6 +1150,7 @@ def _method_color_kwarg_update_callback(
 ) -> Callable[[str], None]:
     def update(text: str) -> None:
         _update_current_method_kwarg(editor, key, color_kw_value_from_text(text))
+        editor.refresh_rendered_values()
 
     return update
 
@@ -1127,12 +1213,14 @@ def _update_current_method_args_from_pair_text(
 
 
 def _method_float_pair_args(
-    editor: FigureOperationEditor, operation: FigureOperationState, spec: MethodSpec
+    editor: FigureOperationEditor,
+    operation: FigureOperationState,
+    spec: MethodSpec,
+    *,
+    resolve_defaults: bool = True,
 ) -> tuple[float | None, float | None] | None:
-    args = _method_args(
-        operation,
-        spec,
-        default_args=_default_method_args(spec, editor.first_live_axis(operation.axes)),
+    args = operation.method_args or _default_method_args(
+        spec, editor.first_live_axis(operation.axes) if resolve_defaults else None
     )
     if len(args) < 2:
         return None
@@ -1237,11 +1325,59 @@ def _update_current_tick_params_kwargs(
     editor.request_transform(update_kwargs)
 
 
+def _method_color_default(
+    editor: FigureOperationEditor,
+    operation: FigureOperationState,
+    control: MethodControlSpec,
+    *,
+    use_line_color: bool = False,
+    resolve_rendered: bool = True,
+) -> typing.Any:
+    current = editor.current_operation()
+    if current is not None and current[1].operation_id == operation.operation_id:
+        operation = current[1]
+    key = _control_key(control)
+    if not use_line_color and control.default_rcparam is not None:
+        color = editor.styled_rcparams_value(control.default_rcparam)
+        if color != "auto":
+            return color
+        if key == "color":
+            return editor.styled_rcparams_value("text.color")
+        use_line_color = True
+    if use_line_color:
+        color = _method_kwarg_value(operation, "color", None)
+        if color is not None:
+            return color
+
+    color = (
+        editor.rendered_color(
+            operation, "color" if use_line_color or key == "colors" else key
+        )
+        if resolve_rendered
+        else None
+    )
+    if color is not None:
+        return color
+    if use_line_color:
+        return _method_kwarg_value(operation, "color", None)
+    return _method_kwarg_value(operation, "color", None) if key != "color" else None
+
+
 def _build_tick_params_editor(
     editor: FigureOperationEditor,
     operation: FigureOperationState,
     layout: QtWidgets.QFormLayout,
 ) -> None:
+    def color_defaults(axis: str, _which: str) -> Mapping[str, object]:
+        axis_name = "y" if axis == "y" else "x"
+        tick_color = editor.styled_rcparams_value(f"{axis_name}tick.color")
+        label_color = editor.styled_rcparams_value(f"{axis_name}tick.labelcolor")
+        return {
+            "color": tick_color,
+            "labelcolor": tick_color if label_color == "inherit" else label_color,
+            "grid_color": editor.styled_rcparams_value("grid.color"),
+        }
+
     tick_kwargs = {
         key: value
         for key, value in operation.method_kwargs.items()
@@ -1258,6 +1394,7 @@ def _build_tick_params_editor(
     tick_editor = TickParamsEditorWidget(
         {} if mixed else tick_kwargs,
         parent=layout.parentWidget(),
+        color_defaults=color_defaults,
     )
     editor.connect_value_signal(
         tick_editor,
@@ -1276,7 +1413,7 @@ def _build_tick_params_editor(
 
 
 def _control_uses_numeric_spinbox(control: MethodControlSpec) -> bool:
-    return control.default is not None
+    return control.default is not None or control.default_rcparam is not None
 
 
 def _numeric_control_tooltip(control: MethodControlSpec, mixed: bool) -> str:
@@ -1304,13 +1441,30 @@ def _int_spinbox(
     return spinbox
 
 
+class _DefaultDoubleSpinBox(QtWidgets.QDoubleSpinBox):
+    def __init__(self, default_value: float, parent: QtWidgets.QWidget | None) -> None:
+        super().__init__(parent)
+        self._default_value = default_value
+
+    def stepBy(self, steps: int) -> None:
+        if steps > 0 and self.value() == self.minimum():
+            self.setValue(self._default_value + steps * self.singleStep())
+        else:
+            super().stepBy(steps)
+
+
 def _float_spinbox(
     value: typing.Any,
     control: MethodControlSpec,
     *,
     parent: QtWidgets.QWidget | None,
+    default_value: float | None = None,
 ) -> QtWidgets.QDoubleSpinBox:
-    spinbox = QtWidgets.QDoubleSpinBox(parent)
+    spinbox = (
+        QtWidgets.QDoubleSpinBox(parent)
+        if default_value is None
+        else _DefaultDoubleSpinBox(default_value, parent)
+    )
     spinbox.setDecimals(
         _FLOAT_SPINBOX_DECIMALS if control.decimals is None else control.decimals
     )
@@ -1322,6 +1476,12 @@ def _float_spinbox(
         _FLOAT_SPINBOX_STEP if control.step is None else float(control.step)
     )
     spinbox.setKeyboardTracking(False)
+    if default_value is not None:
+        spinbox.setMinimum(spinbox.minimum() - 10.0 ** -spinbox.decimals())
+        spinbox.setSpecialValueText(f"Default ({default_value:g})")
+        if value is None:
+            spinbox.setValue(spinbox.minimum())
+            return spinbox
     if value is None:
         value = 0.0 if control.default is None else control.default
     spinbox.setValue(float(value))
@@ -1359,6 +1519,20 @@ def _subplots_adjust_spinbox(
         _subplots_adjust_kwarg_update_callback(editor, key),
     )
     return spinbox
+
+
+def _layout_engine_numeric_control(
+    operation: FigureOperationState, spec: MethodSpec, control: MethodControlSpec
+) -> MethodControlSpec:
+    if (
+        _is_layout_engine_method(spec)
+        and _layout_engine_name(operation, spec) in {"constrained", "compressed"}
+        and control.key in {"h_pad", "w_pad", "hspace", "wspace"}
+    ):
+        return dataclasses.replace(
+            control, default_rcparam=f"figure.constrained_layout.{control.key}"
+        )
+    return control
 
 
 def _method_control_visible(
@@ -1516,7 +1690,7 @@ def _update_current_method_family(
         label=spec.label,
         method_family=family,
         method_name=spec.name,
-        method_args=_default_method_args(spec, editor.first_live_axis(axes)),
+        method_args=_default_method_args(spec, None),
         method_kwargs={},
         method_call_policy=None,
         text_values=(),
@@ -1549,7 +1723,12 @@ def _update_current_method_name(editor: FigureOperationEditor, name: str) -> Non
             update=_method_transfer_updates(
                 target,
                 target_spec,
-                default_axis=editor.first_live_axis(target_axes),
+                default_axis=(
+                    editor.first_live_axis(target_axes)
+                    if target_spec.family == FigureMethodFamily.AXES
+                    and target_spec.name in {"set_xlim", "set_ylim"}
+                    else None
+                ),
             )
         )
 

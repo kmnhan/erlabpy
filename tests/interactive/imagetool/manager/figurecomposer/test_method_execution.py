@@ -40,6 +40,7 @@ from ._common import (
     _activate_combo_text,
     _operation_status_codes,
     _select_operation_rows,
+    _set_figure_stylesheets,
 )
 
 
@@ -1085,6 +1086,93 @@ def test_figure_composer_figure_layout_methods_render_and_codegen(qtbot) -> None
     assert namespace["fig"].get_layout_engine().__class__.__name__ == (
         "ConstrainedLayoutEngine"
     )
+
+
+@pytest.mark.parametrize("engine", ["constrained", "compressed"])
+def test_figure_composer_layout_engine_defaults_use_current_rcparams(
+    qtbot, engine
+) -> None:
+    _set_figure_stylesheets([])
+    defaults = {"h_pad": 0.1, "w_pad": 0.2, "hspace": 0.3, "wspace": 0.4}
+    data = xr.DataArray(np.arange(2.0), dims="x", name="data")
+    operation = FigureOperationState.method(
+        family=FigureMethodFamily.FIGURE,
+        name="set_layout_engine",
+        args=(engine,),
+    )
+    with matplotlib.rc_context(
+        {f"figure.constrained_layout.{key}": value for key, value in defaults.items()}
+    ):
+        tool = FigureComposerTool.from_sources(
+            {"data": data},
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        )
+        qtbot.addWidget(tool)
+        tool.operation_editor.select_section("method")
+        page = tool.operation_editor.current_page
+        for key, suffix in (
+            ("h_pad", "Hpad"),
+            ("w_pad", "Wpad"),
+            ("hspace", "Hspace"),
+            ("wspace", "Wspace"),
+        ):
+            spinbox = page.findChild(
+                QtWidgets.QDoubleSpinBox,
+                f"figureComposerFigureLayoutEngine{suffix}Edit",
+            )
+            assert spinbox is not None
+            assert spinbox.value() == spinbox.minimum()
+            assert str(defaults[key]) in spinbox.text()
+            spinbox.setValue(0.0)
+            assert tool.tool_status.operations[0].method_kwargs == {key: 0.0}
+            spinbox.setValue(spinbox.minimum())
+            assert tool.tool_status.operations[0].method_kwargs == {}
+
+        figurecomposer_rendering._render_into_figure(
+            tool, tool.figure, sync_visible=False
+        )
+        actual = tool.figure.get_layout_engine().get()
+        assert {key: actual[key] for key in defaults} == defaults
+
+
+@pytest.mark.parametrize(("key", "suffix"), [("h_pad", "Hpad"), ("w_pad", "Wpad")])
+def test_figure_composer_tight_layout_padding_inherits_pad(qtbot, key, suffix) -> None:
+    data = xr.DataArray(np.arange(2.0), dims="x", name="data")
+    operation = FigureOperationState.method(
+        family=FigureMethodFamily.FIGURE,
+        name="set_layout_engine",
+        args=("tight",),
+        kwargs={"pad": 2.0},
+    )
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    tool.operation_editor.select_section("method")
+    edit = tool.operation_editor.current_page.findChild(
+        QtWidgets.QLineEdit, f"figureComposerFigureLayoutEngine{suffix}Edit"
+    )
+    assert edit is not None
+    assert edit.text() == ""
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert tool.figure.get_layout_engine().get()[key] is None
+
+    edit.setText("0")
+    edit.editingFinished.emit()
+    assert tool.tool_status.operations[0].method_kwargs == {"pad": 2.0, key: 0.0}
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert tool.figure.get_layout_engine().get()[key] == 0.0
+
+    edit.clear()
+    edit.editingFinished.emit()
+    assert tool.tool_status.operations[0].method_kwargs == {"pad": 2.0}
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert tool.figure.get_layout_engine().get()[key] is None
 
 
 def test_figure_composer_layout_engine_none_is_post_creation_method(qtbot) -> None:

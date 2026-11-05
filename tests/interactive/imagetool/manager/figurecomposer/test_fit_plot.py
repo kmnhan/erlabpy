@@ -15,6 +15,7 @@ from erlab.interactive._figurecomposer import (
 )
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._fit_sources import FigureFitSourceSnapshot
+from erlab.interactive._figurecomposer._ui._color_widgets import _ColorPickerButton
 from erlab.interactive.utils import ToolWindow, qt_is_valid
 from tests.interactive.imagetool.manager.helpers import _exec_generated_code
 
@@ -93,6 +94,50 @@ def _render(tool):
     rendering._render_into_figure(tool, tool.figure, sync_visible=False)
     assert not tool._operation_render_errors
     return tool.figure.axes[0]
+
+
+def test_fit_plot_default_color_controls_match_artists(qtbot, component_snapshot):
+    operation = FigureOperationState.fit_plot(source="edc_fit").model_copy(
+        update={"show_components": True, "fit_sigma": 1.0}
+    )
+    tool = _tool(qtbot, component_snapshot, operation)
+    tool.show()
+    tool.show_figure_window(activate=False)
+    axis = tool.figure.axes[0]
+    curves = {line.get_label(): line for line in axis.lines}
+    for section, name, value in (
+        ("fit_data", "figureComposerFitPlotDataColor", curves["Data"].get_color()),
+        (
+            "fit_line",
+            "figureComposerFitPlotBestFitColor",
+            curves["Best fit"].get_color(),
+        ),
+        (
+            "fit_band",
+            "figureComposerFitPlotBandColor",
+            axis.collections[0].get_facecolor()[0],
+        ),
+    ):
+        tool.operation_editor.select_section(section)
+        page = tool.operation_editor.current_page
+        edit = page.findChild(QtWidgets.QLineEdit, name)
+        button = page.findChild(_ColorPickerButton, name + "Button")
+        assert edit is not None
+        assert button is not None
+        assert edit.text() == ""
+        np.testing.assert_allclose(
+            button.color().getRgbF(), mcolors.to_rgba(value), atol=2e-5
+        )
+    tool.operation_editor.select_section("fit_components")
+    page = _component_page(tool.operation_editor, "bg_")
+    button = _style_control(
+        page, _ColorPickerButton, "figureComposerFitPlotComponentLineColorButton"
+    )
+    assert button is not None
+    np.testing.assert_allclose(
+        button.color().getRgbF(), mcolors.to_rgba(curves["bg_"].get_color()), atol=2e-5
+    )
+    assert tool.tool_status.operations[0] == operation
 
 
 def _style_control(parent, widget_type, name):

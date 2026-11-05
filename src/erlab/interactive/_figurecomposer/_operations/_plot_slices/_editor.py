@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import math
 import typing
 
@@ -85,7 +86,10 @@ from erlab.interactive._figurecomposer._text import (
     _format_tuple,
     _plot_limit_from_text,
 )
-from erlab.interactive._figurecomposer._ui._color_widgets import _ColorLineEditWidget
+from erlab.interactive._figurecomposer._ui._color_widgets import (
+    _ColorLineEditWidget,
+    _default_mpl_marker_color,
+)
 from erlab.interactive._figurecomposer._ui._label_help import legend_label_input_widget
 from erlab.interactive._figurecomposer._ui._line_style import (
     add_extra_line_kw_control,
@@ -372,26 +376,66 @@ def _build_plot_slices_editor(
     editor: FigureOperationEditor, operation: FigureOperationState
 ) -> list[tuple[str, str, QtWidgets.QWidget]]:
     operation = _normalized_selection_operation(editor.context, operation)
-    shape = _plot_slices_shape(editor.context, operation)
     panel_kind = _plot_slices_batch_panel_kind(
-        editor.context, editor.editable_operations(), operation
+        editor.context,
+        editor.editable_operations(),
+        operation,
+        resolve_slice_values=False,
     )
     is_line_plot = panel_kind == _PLOT_SLICES_PANEL_LINE
     is_image_plot = panel_kind == _PLOT_SLICES_PANEL_IMAGE
-    is_mixed_panel_kind = panel_kind == _PLOT_SLICES_PANEL_MIXED
-    selection_page, selection_layout = editor.new_form_page(
+    selection_page, _selection_layout = editor.new_form_page(
         "figureComposerPlotSlicesSelectionPage"
     )
-    view_page, view_layout = editor.new_form_page("figureComposerPlotSlicesViewPage")
-    colors_page, colors_layout = editor.new_form_page(
+    view_page, _view_layout = editor.new_form_page("figureComposerPlotSlicesViewPage")
+    colors_page, _colors_layout = editor.new_form_page(
         "figureComposerPlotSlicesColorsPage"
     )
-    transform_page, transform_layout = editor.new_form_page(
+    transform_page, _transform_layout = editor.new_form_page(
         "figureComposerPlotSlicesTransformPage"
     )
-    advanced_page, advanced_layout = editor.new_form_page(
+    advanced_page, _advanced_layout = editor.new_form_page(
         "figureComposerPlotSlicesAdvancedPage"
     )
+    for page, builder in (
+        (selection_page, _build_plot_slices_selection_page),
+        (view_page, _build_plot_slices_view_page),
+        (colors_page, _build_plot_slices_colors_page),
+        (transform_page, _build_plot_slices_transform_page),
+        (advanced_page, _build_plot_slices_advanced_page),
+    ):
+        editor.defer_form_page(page, functools.partial(builder, editor))
+    sections = [
+        ("selection", "Selection", selection_page),
+        ("view", "View", view_page),
+    ]
+    if is_line_plot:
+        sections.extend(
+            (
+                ("colors", "Style", colors_page),
+                ("transform", "Transform", transform_page),
+            )
+        )
+    else:
+        sections.append(
+            (
+                "colors",
+                "Colors" if is_image_plot else "Style",
+                colors_page,
+            )
+        )
+    sections.append(("advanced", "Other", advanced_page))
+    return sections
+
+
+def _build_plot_slices_selection_page(
+    editor: FigureOperationEditor,
+    operation: FigureOperationState,
+    selection_page: QtWidgets.QWidget,
+    selection_layout: QtWidgets.QFormLayout,
+) -> None:
+    operation = _normalized_selection_operation(editor.context, operation)
+    shape = _plot_slices_shape(editor.context, operation)
     editor.add_form_section(
         selection_layout,
         "Dimensions",
@@ -564,6 +608,14 @@ def _build_plot_slices_editor(
         "Use dimension keys such as kx=slice(-1, 1) or beta=0.",
     )
 
+
+def _build_plot_slices_view_page(
+    editor: FigureOperationEditor,
+    operation: FigureOperationState,
+    view_page: QtWidgets.QWidget,
+    view_layout: QtWidgets.QFormLayout,
+) -> None:
+    operation = _normalized_selection_operation(editor.context, operation)
     editor.add_form_section(
         view_layout,
         "Panels",
@@ -732,6 +784,23 @@ def _build_plot_slices_editor(
         "Dict literal or keyword arguments forwarded as annotate_kw.",
     )
 
+
+def _build_plot_slices_colors_page(
+    editor: FigureOperationEditor,
+    operation: FigureOperationState,
+    colors_page: QtWidgets.QWidget,
+    colors_layout: QtWidgets.QFormLayout,
+) -> None:
+    operation = _normalized_selection_operation(editor.context, operation)
+    panel_kind = _plot_slices_batch_panel_kind(
+        editor.context,
+        editor.editable_operations(),
+        operation,
+        resolve_slice_values=False,
+    )
+    is_line_plot = panel_kind == _PLOT_SLICES_PANEL_LINE
+    is_image_plot = panel_kind == _PLOT_SLICES_PANEL_IMAGE
+    is_mixed_panel_kind = panel_kind == _PLOT_SLICES_PANEL_MIXED
     if is_line_plot:
         editor.add_form_section(
             colors_layout,
@@ -900,10 +969,34 @@ def _build_plot_slices_editor(
             if line_colormap_active(operation)
             else line_kw_text(operation, "color", "c") or None
         )
+
+        def marker_auto_color() -> object | None:
+            current = editor.current_operation()
+            target = (
+                current[1]
+                if current is not None
+                and current[1].operation_id == operation.operation_id
+                else operation
+            )
+            return (
+                None
+                if line_colormap_active(target)
+                else line_kw_text(target, "color", "c") or None
+            )
+
+        def marker_default_color(key: str) -> object | None:
+            color = editor.styled_rcparams_value(f"lines.{key}")
+            return marker_auto_color() if color == "auto" else color
+
         marker_face_edit = _ColorLineEditWidget(
             marker_face_text,
             parent=colors_page,
-            inherited_color=marker_inherited_color,
+            inherited_color=_default_mpl_marker_color(
+                "markerfacecolor", marker_inherited_color
+            ),
+            auto_color=marker_inherited_color,
+            inherited_color_getter=lambda: marker_default_color("markerfacecolor"),
+            auto_color_getter=marker_auto_color,
         )
         marker_face_edit.setLineEditObjectName(
             "figureComposerPlotSlicesMarkerFaceColorEdit"
@@ -935,7 +1028,12 @@ def _build_plot_slices_editor(
         marker_edge_edit = _ColorLineEditWidget(
             marker_edge_text,
             parent=colors_page,
-            inherited_color=marker_inherited_color,
+            inherited_color=_default_mpl_marker_color(
+                "markeredgecolor", marker_inherited_color
+            ),
+            auto_color=marker_inherited_color,
+            inherited_color_getter=lambda: marker_default_color("markeredgecolor"),
+            auto_color_getter=marker_auto_color,
         )
         marker_edge_edit.setLineEditObjectName(
             "figureComposerPlotSlicesMarkerEdgeColorEdit"
@@ -984,17 +1082,6 @@ def _build_plot_slices_editor(
             object_name="figureComposerPlotSlicesLineKwEdit",
             tooltip=(
                 "Additional Matplotlib Line2D kwargs not covered by the controls above."
-            ),
-        )
-
-        add_line_transform_controls(
-            editor,
-            operation,
-            transform_page,
-            transform_layout,
-            object_prefix="figureComposerPlotSlicesLine",
-            offset_coord_options=lambda target: _available_plot_slices_offset_coords(
-                editor, target
             ),
         )
 
@@ -1420,6 +1507,33 @@ def _build_plot_slices_editor(
             "Color controls are hidden for mixed image/line plot_slices selection.",
         )
 
+
+def _build_plot_slices_transform_page(
+    editor: FigureOperationEditor,
+    operation: FigureOperationState,
+    transform_page: QtWidgets.QWidget,
+    transform_layout: QtWidgets.QFormLayout,
+) -> None:
+    operation = _normalized_selection_operation(editor.context, operation)
+    add_line_transform_controls(
+        editor,
+        operation,
+        transform_page,
+        transform_layout,
+        object_prefix="figureComposerPlotSlicesLine",
+        offset_coord_options=lambda target: _available_plot_slices_offset_coords(
+            editor, target
+        ),
+    )
+
+
+def _build_plot_slices_advanced_page(
+    editor: FigureOperationEditor,
+    operation: FigureOperationState,
+    advanced_page: QtWidgets.QWidget,
+    advanced_layout: QtWidgets.QFormLayout,
+) -> None:
+    operation = _normalized_selection_operation(editor.context, operation)
     extra_text, extra_mixed = editor.batch_text(
         operation,
         lambda target: _effective_extra_kwargs(editor.context, target),
@@ -1438,27 +1552,6 @@ def _build_plot_slices_editor(
         extra_edit,
         "Dict literal or keyword arguments merged into the plot_slices call.",
     )
-    sections = [
-        ("selection", "Selection", selection_page),
-        ("view", "View", view_page),
-    ]
-    if is_line_plot:
-        sections.extend(
-            (
-                ("colors", "Style", colors_page),
-                ("transform", "Transform", transform_page),
-            )
-        )
-    else:
-        sections.append(
-            (
-                "colors",
-                "Colors" if is_image_plot else "Style",
-                colors_page,
-            )
-        )
-    sections.append(("advanced", "Other", advanced_page))
-    return sections
 
 
 def _bool_or_text(text: str) -> bool | str:

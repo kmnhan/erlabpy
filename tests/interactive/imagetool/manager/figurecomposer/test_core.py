@@ -1514,6 +1514,7 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
+    tool.show()
     _select_operation_rows(tool, (2,))
     tool.operation_editor.select_section("selection")
     selection_page = tool.operation_editor.current_page
@@ -1660,6 +1661,7 @@ def test_figure_composer_axis_inversion_controls(qtbot, operation, prefix) -> No
         ),
     )
     qtbot.addWidget(tool)
+    tool.show()
     _select_operation_rows(tool, (0,))
     tool.operation_editor.select_section("view")
     for axis in ("X", "Y"):

@@ -58,6 +58,12 @@ from erlab.interactive._figurecomposer._operations import (
     _registry as figurecomposer_operation_registry,
 )
 from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _model as plot_slices_model,
+)
+from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _panel_style_editor as plot_slices_panel_style_editor,
+)
+from erlab.interactive._figurecomposer._operations._plot_slices import (
     _render as plot_slices_render,
 )
 from erlab.interactive._figurecomposer._ui import (
@@ -111,6 +117,208 @@ from ._common import (
     _send_mouse_move,
     _set_figure_stylesheets,
 )
+
+
+@pytest.mark.parametrize(
+    ("operation", "prefix"),
+    [
+        (
+            FigureOperationState.line(label="Profile", source="profile"),
+            "figureComposerLine",
+        ),
+        (
+            FigureOperationState.plot_slices(label="Slices", sources=("profile",)),
+            "figureComposerPlotSlices",
+        ),
+        (
+            FigureOperationState.method(
+                family=FigureMethodFamily.AXES,
+                name="plot",
+                args=((0, 1), (1, 2)),
+            ),
+            "figureComposerAxesMethodPlot",
+        ),
+        (
+            FigureOperationState.method(
+                family=FigureMethodFamily.AXES,
+                name="errorbar",
+                args=((0, 1), (1, 2)),
+            ),
+            "figureComposerAxesMethodErrorbar",
+        ),
+    ],
+)
+@pytest.mark.parametrize("marker_color", [None, "auto"])
+def test_figure_composer_marker_color_controls_use_style(
+    qtbot, operation, prefix, marker_color
+) -> None:
+    _set_figure_stylesheets([])
+    line_kw = (
+        {"markerfacecolor": marker_color, "markeredgecolor": marker_color}
+        if marker_color is not None
+        else {}
+    )
+    if operation.kind == FigureOperationKind.LINE:
+        operation = operation.model_copy(
+            update={"line_kw": line_kw, "line_colors": ("blue",)}
+        )
+    elif operation.kind == FigureOperationKind.METHOD:
+        line_kw["color"] = "blue"
+        operation = operation.model_copy(update={"method_kwargs": line_kw})
+    else:
+        line_kw["color"] = "blue"
+        operation = operation.model_copy(update={"line_kw": line_kw})
+    with mpl.rc_context(
+        {"lines.markerfacecolor": "red", "lines.markeredgecolor": "purple"}
+    ):
+        tool = FigureComposerTool.from_sources(
+            {"profile": _figure_composer_profile_source()},
+            sources=(FigureSourceState(name="profile"),),
+            operations=(operation,),
+            primary_source="profile",
+        )
+        qtbot.addWidget(tool)
+        tool.show()
+        tool.operation_editor.select_section(
+            "style"
+            if operation.kind == FigureOperationKind.LINE
+            else "method"
+            if operation.kind == FigureOperationKind.METHOD
+            else "colors"
+        )
+        page = tool.operation_editor.current_page
+
+        def check_marker_widget(
+            widget: color_widgets._ColorLineEditWidget, default_color: str
+        ) -> None:
+            expected = "blue" if marker_color == "auto" else default_color
+            assert widget.color_button.color() == QtGui.QColor(expected)
+            widget.setText("")
+            assert widget.color_button.color() == QtGui.QColor(default_color)
+            widget.setText("auto")
+            assert widget.color_button.color() == QtGui.QColor("blue")
+
+        suffix = (
+            "EditButton" if operation.kind == FigureOperationKind.METHOD else "Button"
+        )
+        for role, default_color in (("Face", "red"), ("Edge", "purple")):
+            button = page.findChild(
+                color_widgets._ColorPickerButton, f"{prefix}Marker{role}Color{suffix}"
+            )
+            assert button is not None
+            widget = button.parentWidget()
+            assert isinstance(widget, color_widgets._ColorLineEditWidget)
+            check_marker_widget(widget, default_color)
+        current = tool.tool_status.operations[0]
+        assert (
+            current.method_kwargs
+            if current.kind == FigureOperationKind.METHOD
+            else current.line_kw
+        ) == line_kw
+
+        if operation.kind == FigureOperationKind.LINE:
+            extra_editor = figurecomposer_toolbar_dialogs._LineOperationStyleWidget(
+                tool, operation
+            )
+        elif operation.kind == FigureOperationKind.PLOT_SLICES:
+            panel_operation = operation.model_copy(
+                update={
+                    "line_kw": {"color": "green"},
+                    "panel_styles_enabled": True,
+                    "panel_styles": (
+                        FigurePlotSlicesPanelStyleState(
+                            map_index=0, slice_index=0, line_kw=dict(line_kw)
+                        ),
+                    ),
+                }
+            )
+            extra_editor = plot_slices_panel_style_editor._PanelLineStyleEditorWidget(
+                panel_operation,
+                (plot_slices_model._PlotSlicesPanelKey(0, 0, "Panel"),),
+                lambda _owner, signal, callback: signal.connect(callback),
+            )
+        else:
+            return
+        qtbot.addWidget(extra_editor)
+        check_marker_widget(extra_editor.marker_face_edit, "red")
+        check_marker_widget(extra_editor.marker_edge_edit, "purple")
+
+
+@pytest.mark.parametrize(
+    "kind", [FigureOperationKind.LINE, FigureOperationKind.PLOT_SLICES]
+)
+@pytest.mark.parametrize("marker_color", [None, "auto"])
+def test_figure_composer_marker_colors_follow_line_color_edits(
+    qtbot, kind, marker_color
+) -> None:
+    _set_figure_stylesheets([])
+    line_kw = (
+        {"markerfacecolor": "auto", "markeredgecolor": "auto"}
+        if marker_color == "auto"
+        else {}
+    )
+    if kind == FigureOperationKind.LINE:
+        operation = FigureOperationState.line(
+            label="Profile", source="profile"
+        ).model_copy(update={"line_kw": line_kw, "line_colors": ("blue",)})
+        prefix = "figureComposerLine"
+        section = "style"
+        color_edit_name = "figureComposerLineColorsEdit"
+    else:
+        operation = FigureOperationState.plot_slices(
+            label="Slices", sources=("profile",)
+        ).model_copy(update={"line_kw": {"color": "blue", **line_kw}})
+        prefix = "figureComposerPlotSlices"
+        section = "colors"
+        color_edit_name = "figureComposerPlotSlicesLineColorEdit"
+    with mpl.rc_context(
+        {
+            "lines.markerfacecolor": "red" if marker_color == "auto" else "auto",
+            "lines.markeredgecolor": "purple" if marker_color == "auto" else "auto",
+        }
+    ):
+        tool = FigureComposerTool.from_sources(
+            {"profile": _figure_composer_profile_source()},
+            sources=(FigureSourceState(name="profile"),),
+            operations=(operation,),
+            primary_source="profile",
+        )
+        qtbot.addWidget(tool)
+        tool.show()
+        tool.show_figure_window(activate=False)
+        tool.operation_editor.select_section(section)
+        page = tool.operation_editor.current_page
+        markers = tuple(
+            page.findChild(
+                color_widgets._ColorPickerButton, f"{prefix}Marker{role}ColorButton"
+            )
+            for role in ("Face", "Edge")
+        )
+        assert all(
+            button is not None and button.color() == QtGui.QColor("blue")
+            for button in markers
+        )
+        color_edit = page.findChild(QtWidgets.QLineEdit, color_edit_name)
+        assert color_edit is not None
+        color_edit.setText("green")
+        color_edit.editingFinished.emit()
+        qtbot.waitUntil(
+            lambda: all(button.color() == QtGui.QColor("green") for button in markers)
+        )
+        assert tool.operation_editor.current_page is page
+
+        if kind == FigureOperationKind.LINE:
+            toolbar_editor = figurecomposer_toolbar_dialogs._LineOperationStyleWidget(
+                tool, tool.tool_status.operations[0]
+            )
+            qtbot.addWidget(toolbar_editor)
+            toolbar_editor._colors_changed(("orange",))
+            assert toolbar_editor.marker_face_edit.color_button.color() == QtGui.QColor(
+                "orange"
+            )
+            assert toolbar_editor.marker_edge_edit.color_button.color() == QtGui.QColor(
+                "orange"
+            )
 
 
 def _operation_context_action(
@@ -197,6 +405,28 @@ def test_figure_composer_color_widgets_parse_and_sync(qtbot, monkeypatch) -> Non
     )
     inherited_edit.setInheritedColor("#01020304")
     assert inherited_edit.color_button.color().getRgb() == (1, 2, 3, 4)
+    inherited_edit.setText("auto")
+    inherited_edit.setInheritedColor("red")
+    assert inherited_edit.color_button.color().getRgb() == (255, 0, 0, 255)
+
+    cycle_edit = color_widgets._ColorLineEditWidget(
+        "C1", color_cycle=("#010203", "#445566")
+    )
+    qtbot.addWidget(cycle_edit)
+    assert cycle_edit.color_button.color().getRgb() == (68, 85, 102, 255)
+    cycle_edit.setText("C0")
+    assert cycle_edit.color_button.color().getRgb() == (1, 2, 3, 255)
+    cycle_edit.setInheritedColor("C1")
+    cycle_edit.setText("")
+    assert cycle_edit.color_button.color().getRgb() == (68, 85, 102, 255)
+
+    array_color = color_widgets._mpl_color_value_text(np.array([1.0, 0.0, 0.0, 0.5]))
+    assert color_widgets._qcolor_from_mpl_color_text(array_color).getRgb() == (
+        255,
+        0,
+        0,
+        128,
+    )
 
     color_edit = color_widgets._ColorLineEditWidget("tab:blue")
     qtbot.addWidget(color_edit)
@@ -5384,6 +5614,82 @@ def test_figure_composer_unmounted_editor_pages_stay_hidden(qtbot, action_id) ->
     )
 
 
+def test_figure_composer_color_refresh_tracks_section_and_tab_visibility(qtbot) -> None:
+    tabs = QtWidgets.QTabWidget()
+    qtbot.addWidget(tabs)
+    editor = FigureOperationEditor(tabs, (), tabs)
+    tabs.addTab(editor, "Recipe")
+    tabs.addTab(QtWidgets.QWidget(tabs), "Other")
+    colors = {"first": "red", "second": "blue", "hidden": "green"}
+    reads: dict[str, int] = {}
+
+    def read_color(key: str) -> str:
+        reads[key] = reads.get(key, 0) + 1
+        return colors[key]
+
+    first_page = editor.create_page("firstColorPage")
+    first_layout = QtWidgets.QVBoxLayout(first_page)
+    first = color_widgets._ColorLineEditWidget(
+        parent=first_page, inherited_color_getter=lambda: read_color("first")
+    )
+    hidden = color_widgets._ColorLineEditWidget(
+        parent=first_page, inherited_color_getter=lambda: read_color("hidden")
+    )
+    explicit = color_widgets._ColorLineEditWidget(
+        "orange", first_page, inherited_color_getter=lambda: read_color("explicit")
+    )
+    for widget in (first, hidden, explicit):
+        first_layout.addWidget(widget)
+    hidden.hide()
+    second_page = editor.create_page("secondColorPage")
+    second_layout = QtWidgets.QVBoxLayout(second_page)
+    second = color_widgets._ColorLineEditWidget(
+        parent=second_page, inherited_color_getter=lambda: read_color("second")
+    )
+    second_layout.addWidget(second)
+    editor.replace_sections(
+        (
+            StepSection("first", "First", first_page, "First section"),
+            StepSection("second", "Second", second_page, "Second section"),
+        ),
+        summaries={},
+    )
+    editor.refresh_rendered_values()
+    assert reads == {}
+    tabs.show()
+    assert reads == {"first": 1}
+    editor.refresh_rendered_values()
+    assert reads == {"first": 2}
+
+    editor.select_section("second")
+    assert reads == {"first": 2, "second": 1}
+    colors["first"] = "purple"
+    editor.refresh_rendered_values()
+    assert reads == {"first": 2, "second": 2}
+    editor.select_section("first")
+    assert reads == {"first": 3, "second": 2}
+    assert first.color_button.color() == QtGui.QColor("purple")
+
+    tabs.hide()
+    colors["first"] = "green"
+    editor.refresh_rendered_values()
+    assert reads == {"first": 3, "second": 2}
+    tabs.show()
+    assert reads == {"first": 4, "second": 2}
+    assert first.color_button.color() == QtGui.QColor("green")
+    tabs.setCurrentIndex(1)
+    colors["first"] = "blue"
+    editor.refresh_rendered_values()
+    assert reads == {"first": 4, "second": 2}
+    tabs.setCurrentIndex(0)
+    assert reads == {"first": 5, "second": 2}
+    assert first.color_button.color() == QtGui.QColor("blue")
+    hidden.show()
+    assert reads == {"first": 5, "second": 2, "hidden": 1}
+    editor.refresh_rendered_values()
+    assert reads == {"first": 6, "second": 2, "hidden": 2}
+
+
 def test_figure_composer_step_sections_scroll_independently(qtbot) -> None:
     tabs = QtWidgets.QTabWidget()
     qtbot.addWidget(tabs)
@@ -9277,6 +9583,8 @@ def test_figure_composer_toolbar_axes_dialog_updates_image_style(qtbot) -> None:
             norm_name="Normalize",
         ),
     )
+    tool.show()
+    tool.operation_editor.select_section("colors")
     main_panel_styles_check = tool.findChild(
         QtWidgets.QCheckBox, "figureComposerPlotSlicesPanelStylesCheck"
     )
@@ -9557,6 +9865,7 @@ def test_figure_composer_editor_widget_rebuilds_are_deferred(
         ),
     )
     qtbot.addWidget(tool)
+    tool.show()
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
@@ -9634,6 +9943,68 @@ def test_figure_composer_editor_widget_rebuilds_are_deferred(
     assert tool._operation_editor_update_pending is True
     qtbot.waitUntil(lambda: rebuild_calls == [None], timeout=1000)
     assert tool._operation_editor_update_pending is False
+
+
+def test_figure_composer_combo_popup_guards_skip_unrelated_view_events(
+    qtbot, monkeypatch
+) -> None:
+    class CountingComboBox(QtWidgets.QComboBox):
+        def __init__(self, parent: QtWidgets.QWidget) -> None:
+            super().__init__(parent)
+            self.view_calls = 0
+
+        def view(self):
+            self.view_calls += 1
+            return super().view()
+
+    tabs = QtWidgets.QTabWidget()
+    qtbot.addWidget(tabs)
+    editor = FigureOperationEditor(tabs, (), tabs)
+    combos = tuple(CountingComboBox(tabs) for _ in range(3))
+    for combo in combos:
+        editor.track_controls(combo)
+    view = combos[0].view()
+    for combo in combos:
+        combo.view_calls = 0
+    lookups: list[QtWidgets.QAbstractItemView] = []
+    original_lookup = editor._combo_for_popup_view
+
+    def lookup(popup_view):
+        lookups.append(popup_view)
+        return original_lookup(popup_view)
+
+    monkeypatch.setattr(editor, "_combo_for_popup_view", lookup)
+    for event_type in (
+        QtCore.QEvent.Type.Paint,
+        QtCore.QEvent.Type.Resize,
+        QtCore.QEvent.Type.LayoutRequest,
+        QtCore.QEvent.Type.UpdateRequest,
+        QtCore.QEvent.Type.Polish,
+        QtCore.QEvent.Type.StyleChange,
+    ):
+        editor.eventFilter(view, QtCore.QEvent(event_type))
+    assert lookups == []
+    assert tuple(combo.view_calls for combo in combos) == (0, 0, 0)
+
+    editor.eventFilter(view, QtCore.QEvent(QtCore.QEvent.Type.Show))
+    assert lookups == [view]
+    assert tuple(combo.view_calls for combo in combos) == (1, 0, 0)
+    first_guard = next(iter(editor._combo_popup_guard_tokens))
+    editor.eventFilter(view, QtCore.QEvent(QtCore.QEvent.Type.ShowToParent))
+    assert editor._combo_popup_guard_tokens == {first_guard}
+
+    assert not combos[0].isVisible()
+    editor.eventFilter(view, QtCore.QEvent(QtCore.QEvent.Type.Hide))
+    editor.eventFilter(view, QtCore.QEvent(QtCore.QEvent.Type.Show))
+    second_guard = next(
+        token for token in editor._combo_popup_guard_tokens if token != first_guard
+    )
+    qtbot.waitUntil(lambda: first_guard not in editor._combo_popup_guard_tokens)
+    assert editor._combo_popup_guard_tokens == {second_guard}
+    assert editor.rebuild_must_wait()
+    editor.eventFilter(view, QtCore.QEvent(QtCore.QEvent.Type.Close))
+    qtbot.waitUntil(lambda: not editor._combo_popup_guard_tokens)
+    assert not editor.rebuild_must_wait()
 
 
 def test_figure_composer_retired_editor_widgets_drain_after_popup(
@@ -9718,6 +10089,7 @@ def test_figure_composer_retired_editor_control_signal_is_ignored(
         ),
     )
     qtbot.addWidget(tool)
+    tool.show()
     render_calls: list[tuple[object, ...]] = []
     monkeypatch.setattr(
         figurecomposer_tool_module,

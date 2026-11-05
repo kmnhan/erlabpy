@@ -40,7 +40,10 @@ from erlab.interactive._figurecomposer._operations._plot_slices._model import (
     _PlotSlicesPanelKey,
 )
 from erlab.interactive._figurecomposer._text import _dict_from_text, _format_dict
-from erlab.interactive._figurecomposer._ui._color_widgets import _ColorLineEditWidget
+from erlab.interactive._figurecomposer._ui._color_widgets import (
+    _ColorLineEditWidget,
+    _default_mpl_marker_color,
+)
 from erlab.interactive._figurecomposer._ui._line_style import (
     configure_style_combo,
     set_style_combo_value,
@@ -766,6 +769,22 @@ class _PanelLineStyleEditorWidget(QtWidgets.QWidget):
                     tuple(self._line_value(style, "color", "c") for style in styles)
                 ),
             )
+            global_line_color = line_kw_text(self._operation, "color", "c") or None
+            self.color_edit.setInheritedColor(global_line_color)
+            line_color = self.color_edit.text() or global_line_color
+            for widget, key, alias in (
+                (self.marker_face_edit, "markerfacecolor", "mfc"),
+                (self.marker_edge_edit, "markeredgecolor", "mec"),
+            ):
+                widget.setAutoColor(line_color)
+                color = line_kw_text(self._operation, key, alias)
+                if color == "auto":
+                    inherited_color = line_color
+                elif color:
+                    inherited_color = color
+                else:
+                    inherited_color = _default_mpl_marker_color(key, line_color)
+                widget.setInheritedColor(inherited_color)
             self._set_combo(
                 self.style_combo,
                 self._common_value(

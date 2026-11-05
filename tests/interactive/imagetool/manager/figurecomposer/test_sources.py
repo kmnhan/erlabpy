@@ -3762,6 +3762,8 @@ def test_figure_composer_source_inspector_is_sources_tab_compact(
         QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents
     )
 
+    tool.editor_tabs.setCurrentWidget(tool.source_panel)
+    tool.show()
     tool.source_panel.source_inspector.details_button.setChecked(True)
     assert tool.source_panel.source_inspector.details_label.isVisibleTo(
         tool.source_panel.source_inspector
@@ -3810,6 +3812,8 @@ def test_figure_composer_source_inspector_details_show_coord_values(qtbot) -> No
     )
     qtbot.addWidget(tool)
 
+    tool.editor_tabs.setCurrentWidget(tool.source_panel)
+    tool.show()
     tool.source_panel.source_inspector.details_button.setChecked(True)
     html = tool.source_panel.source_inspector.details_html()
 
@@ -3858,6 +3862,8 @@ def test_figure_composer_source_inspector_details_fallback_is_metadata_only(
     )
     qtbot.addWidget(tool)
 
+    tool.editor_tabs.setCurrentWidget(tool.source_panel)
+    tool.show()
     tool.source_panel.source_inspector.details_button.setChecked(True)
     assert (
         tool.source_panel.source_inspector.details_html() == "<p>fallback details</p>"
@@ -3867,6 +3873,92 @@ def test_figure_composer_source_inspector_details_fallback_is_metadata_only(
         "show_summary": False,
         "load_values": False,
     }
+
+
+@pytest.mark.parametrize("hidden_target", ["inspector", "parent", "tab"])
+def test_figure_composer_source_details_load_only_when_visible_and_expanded(
+    qtbot, monkeypatch, hidden_target
+) -> None:
+    host = QtWidgets.QWidget()
+    qtbot.addWidget(host)
+    layout = QtWidgets.QVBoxLayout(host)
+    tabs = QtWidgets.QTabWidget(host)
+    layout.addWidget(tabs)
+    page = QtWidgets.QWidget(tabs)
+    page_layout = QtWidgets.QVBoxLayout(page)
+    inspector = figurecomposer_source_inspector.SourceInspectorWidget(page)
+    page_layout.addWidget(inspector)
+    tabs.addTab(page, "Source")
+    tabs.addTab(QtWidgets.QWidget(tabs), "Other")
+    host.show()
+    qtbot.waitUntil(inspector.isVisible)
+
+    loaded_revisions: list[int] = []
+    original_load = xr.DataArray.load
+
+    def counted_load(data, *args, **kwargs):
+        if data.name == "reading":
+            loaded_revisions.append(data.attrs["revision"])
+        return original_load(data, *args, **kwargs)
+
+    monkeypatch.setattr(xr.DataArray, "load", counted_load)
+
+    def source_data(revision):
+        data = xr.DataArray(
+            np.arange(6.0).reshape(2, 3),
+            dims=("y", "x"),
+            coords={
+                "y": [0.0, 1.0],
+                "x": [0.0, 1.0, 2.0],
+                "reading": (("y", "x"), np.full((2, 3), float(revision))),
+            },
+            name="source",
+        )
+        data.coords["reading"].attrs["revision"] = revision
+        return data
+
+    def set_hidden(hidden):
+        if hidden_target == "inspector":
+            inspector.setVisible(not hidden)
+        elif hidden_target == "parent":
+            host.setVisible(not hidden)
+        else:
+            tabs.setCurrentIndex(1 if hidden else 0)
+        qtbot.waitUntil(lambda: inspector.isVisible() is not hidden)
+
+    inspector.set_context(source_name="data", data=source_data(1))
+    assert loaded_revisions == []
+    inspector.details_button.setChecked(True)
+    assert loaded_revisions == [1]
+
+    set_hidden(True)
+    inspector.set_context(source_name="data", data=source_data(2))
+    inspector.invalidate_details()
+    latest = source_data(3)
+    inspector.set_context(source_name="data", data=latest)
+    assert loaded_revisions == [1]
+    set_hidden(False)
+    assert loaded_revisions == [1, 3]
+    set_hidden(True)
+    set_hidden(False)
+    assert loaded_revisions == [1, 3]
+
+    set_hidden(True)
+    latest.coords["reading"].attrs["revision"] = 4
+    inspector.invalidate_details()
+    inspector.set_context(source_name="data", data=latest)
+    assert loaded_revisions == [1, 3]
+    set_hidden(False)
+    assert loaded_revisions == [1, 3, 4]
+
+    inspector.details_button.setChecked(False)
+    set_hidden(True)
+    inspector.set_context(source_name="data", data=source_data(5))
+    inspector.invalidate_details()
+    set_hidden(False)
+    assert loaded_revisions == [1, 3, 4]
+    inspector.details_button.setChecked(True)
+    assert loaded_revisions == [1, 3, 4, 5]
 
 
 @pytest.mark.parametrize("column", [1, 2])
@@ -3932,6 +4024,8 @@ def test_figure_composer_source_inspector_uses_public_nonuniform_dims(qtbot) -> 
 
     dims = tool.source_panel.source_inspector.property("figureComposerSourceDims")
     assert dims == ("alpha", "eV", "sample_temp")
+    tool.editor_tabs.setCurrentWidget(tool.source_panel)
+    tool.show()
     tool.source_panel.source_inspector.details_button.setChecked(True)
     assert "sample_temp_idx" not in tool.source_panel.source_inspector.details_html()
     assert "sample_temp" in tool.source_panel.source_inspector.details_html()
@@ -5202,6 +5296,7 @@ def test_figure_composer_batch_line_source_dependent_combos_disable(
     )
     qtbot.addWidget(tool)
 
+    tool.show()
     _select_operation_rows(tool, (0, 1))
     tool.operation_editor.select_section("selection")
     selection_page = tool.operation_editor.current_page

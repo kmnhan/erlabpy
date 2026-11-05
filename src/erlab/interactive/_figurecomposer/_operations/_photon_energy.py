@@ -472,41 +472,17 @@ def _editor_sections(
     )
 
 
-def _seed_source(tool: FigureComposerTool) -> str | None:
+def _default_source(tool: FigureComposerTool) -> str | None:
     source_names = tuple(tool._document.array_source_names())
-    current = tool._current_operation()
-    if current is not None:
-        sources = tuple(
-            name
-            for name in tool._selected_sources_for_operation(current[1])
-            if name in source_names
-        )
-        if sources:
-            return sources[0]
     if tool._document.recipe.primary_source in source_names:
         return tool._document.recipe.primary_source
     return source_names[0] if source_names else None
 
 
-def _seed_binding_energy(tool: FigureComposerTool) -> float | None:
-    current = tool._current_operation()
-    if current is None:
-        return None
-    operation = current[1]
-    if (
-        operation.kind == FigureOperationKind.PLOT_SLICES
-        and operation.slice_dim == "eV"
-        and len(operation.slice_values) == 1
-    ):
-        return operation.slice_values[0]
-    return None
-
-
 def _create_operation(tool: FigureComposerTool) -> FigureOperationState:
     return FigureOperationState.photon_energy_overlay(
-        source=_seed_source(tool),
+        source=_default_source(tool),
         axes=tool._selected_axes_state(),
-        binding_energy=_seed_binding_energy(tool),
     )
 
 

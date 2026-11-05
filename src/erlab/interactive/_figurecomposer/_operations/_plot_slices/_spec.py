@@ -42,6 +42,7 @@ from erlab.interactive._figurecomposer._operations._plot_slices._model import (
     _plot_slices_selection_sources,
     _plot_slices_shape,
     _plot_slices_uses_transformed_line_maps,
+    _use_all_coordinate_slice_values,
 )
 from erlab.interactive._figurecomposer._operations._plot_slices._render import (
     _render_plot_slices,
@@ -83,14 +84,33 @@ def _display_text(tool: FigureComposerTool, operation: FigureOperationState) -> 
     )
     if not source_text:
         source_text = "missing source"
-    shape = _plot_slices_shape(tool._document, operation)
+    shape = _plot_slices_shape(tool._document, operation, resolve_slice_values=False)
     plot_kind = "Line slices" if shape.plot_ndim == 1 else "Image slices"
-    slice_values = _effective_slice_values(tool._document, operation)
-    if operation.slice_dim and slice_values:
-        selection_text = f"{operation.slice_dim} = {len(slice_values)} values"
+    slice_count = _slice_summary_count(tool._document, operation)
+    if operation.slice_dim and slice_count:
+        selection_text = f"{operation.slice_dim} = {slice_count} values"
     else:
         selection_text = "current selection"
     return f"{plot_kind}: {source_text}, {selection_text}"
+
+
+def _slice_summary_count(
+    context: FigureRecipeContext, operation: FigureOperationState
+) -> int:
+    dim = operation.slice_dim
+    if dim is None:
+        return 0
+    if not _use_all_coordinate_slice_values(operation):
+        return len(operation.slice_values)
+    source_data = context.source_data
+    for name in operation.sources:
+        if name not in source_data:
+            continue
+        data = source_data[name]
+        if dim not in data.dims:
+            return 0
+        return len(range(0, data.sizes[dim], operation.slice_values_thin))
+    return 0
 
 
 def _tooltip(tool: FigureComposerTool, operation: FigureOperationState) -> str:
@@ -132,9 +152,9 @@ def _section_summary(
         case "axes":
             return tool._axes_target_text(operation.axes)
         case "selection":
-            slice_values = _effective_slice_values(tool._document, operation)
-            if operation.slice_dim and slice_values:
-                return f"{operation.slice_dim}, {len(slice_values)}"
+            slice_count = _slice_summary_count(tool._document, operation)
+            if operation.slice_dim and slice_count:
+                return f"{operation.slice_dim}, {slice_count}"
             if operation.slice_kwargs:
                 return "additional"
             return "none"
@@ -147,7 +167,10 @@ def _section_summary(
             return ", ".join(labels) if labels else "auto"
         case "colors":
             panel_kind = _plot_slices_batch_panel_kind(
-                tool._document, tool._editable_operations(), operation
+                tool._document,
+                tool._editable_operations(),
+                operation,
+                resolve_slice_values=False,
             )
             if panel_kind == _PLOT_SLICES_PANEL_MIXED:
                 return "mixed"

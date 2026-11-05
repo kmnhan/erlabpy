@@ -40,6 +40,7 @@ from erlab.interactive._figurecomposer._operations._plot_slices import (
 from erlab.interactive._figurecomposer._operations._plot_slices import (
     _model as plot_slices_model,
 )
+from erlab.interactive._figurecomposer._sources import ArraySourcePayload
 from erlab.interactive._figurecomposer._ui import (
     _toolbar_dialogs as figurecomposer_toolbar_dialogs,
 )
@@ -110,6 +111,7 @@ def test_figure_composer_line_migrates_single_map_selection_to_source_alias(
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
+    tool.show()
     tool.operation_editor.select_section("selection")
 
     assert tool.findChild(QtWidgets.QLineEdit, "figureComposerLineSelectionEdit")
@@ -303,6 +305,73 @@ def test_figure_composer_line_offset_coords_empty_without_iter_dim() -> None:
     assert figurecomposer_line_profile._line_offset_coord_names(data, operation) == []
 
 
+def test_figure_composer_line_hidden_sections_load_current_profiles(
+    qtbot, monkeypatch
+) -> None:
+    original = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("cut", "kx"),
+        coords={"cut": [0.0, 1.0], "kx": [-1.0, 0.0, 1.0]},
+    )
+    replacement = original.assign_coords(temperature=("cut", [10.0, 20.0]))
+    operation = FigureOperationState.line(
+        label="profiles", source="profiles"
+    ).model_copy(
+        update={
+            "line_iter_dim": "cut",
+            "line_color_mode": "coordinate",
+            "line_offset_source": "associated",
+        }
+    )
+    extractions = []
+    original_extract = figurecomposer_line_profile._line_data_items_with_sources
+
+    def extract(context, display_name, target):
+        extractions.append((target, context.source_data["profiles"]))
+        return original_extract(context, display_name, target)
+
+    offsets = []
+    original_offsets = figurecomposer_line_profile._available_line_offset_coords
+
+    def offset_coords(context, target):
+        offsets.append(target)
+        return original_offsets(context, target)
+
+    monkeypatch.setattr(
+        figurecomposer_line_profile, "_line_data_items_with_sources", extract
+    )
+    monkeypatch.setattr(
+        figurecomposer_line_profile, "_available_line_offset_coords", offset_coords
+    )
+    tool = FigureComposerTool.from_sources(
+        {"profiles": original},
+        sources=(FigureSourceState(name="profiles"),),
+        operations=(operation,),
+        primary_source="profiles",
+    )
+    qtbot.addWidget(tool)
+    tool.operation_editor.select_section("style")
+    assert extractions == []
+    assert offsets == []
+    updated = operation.model_copy(update={"line_color_coord": "temperature"})
+    tool._document.replace_recipe_and_payloads(
+        tool.tool_status.model_copy(update={"operations": (updated,)}),
+        {"profiles": ArraySourcePayload(replacement)},
+    )
+    tool.show()
+    assert len(extractions) == 1
+    assert extractions[0][0] == updated
+    assert extractions[0][1] is replacement
+    assert offsets == []
+    coord_combo = tool.operation_editor.current_page.findChild(
+        QtWidgets.QComboBox, "figureComposerLineColorCoordCombo"
+    )
+    assert coord_combo is not None
+    assert coord_combo.currentData() == "temperature"
+    tool.operation_editor.select_section("other")
+    assert offsets == [updated]
+
+
 def test_figure_composer_line_profile_operation_uses_semantic_sections(
     qtbot,
 ) -> None:
@@ -419,6 +488,9 @@ def test_figure_composer_line_profile_operation_uses_semantic_sections(
         ),
     )
     pages = (selection_page, view_page, style_page, other_page)
+    tool.show()
+    for key in ("selection", "view", "style", "other"):
+        tool.operation_editor.select_section(key)
     for expected_page, control_names in section_controls:
         for name in control_names:
             widget = tool.findChild(QtWidgets.QWidget, name)
@@ -438,6 +510,55 @@ def test_figure_composer_line_profile_operation_uses_semantic_sections(
         tool.operation_editor.select_section(key)
         assert tool.operation_editor.current_page is page
         assert tool.tool_status.operations[0] == operation
+
+
+@pytest.mark.parametrize(
+    ("key", "object_name", "artist_getter"),
+    [
+        ("linewidth", "figureComposerLineWidthSpin", "get_linewidth"),
+        ("markersize", "figureComposerLineMarkerSizeSpin", "get_markersize"),
+    ],
+)
+def test_figure_composer_line_style_preserves_zero_sizes(
+    qtbot, key, object_name, artist_getter
+) -> None:
+    profile = xr.DataArray(
+        [2.0, 4.0, 8.0],
+        dims="kx",
+        coords={"kx": [-1.0, 0.0, 1.0]},
+        name="profile",
+    )
+    operation = FigureOperationState.line(label="profile", source="profile").model_copy(
+        update={"line_kw": {key: 0.0, "marker": "o"}}
+    )
+    tool = FigureComposerTool.from_sources(
+        {"profile": profile},
+        sources=(FigureSourceState(name="profile", label="profile"),),
+        operations=(operation,),
+        primary_source="profile",
+    )
+    qtbot.addWidget(tool)
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
+    tool.show()
+    tool.operation_editor.select_section("style")
+    spinbox = tool.operation_editor.current_page.findChild(
+        QtWidgets.QDoubleSpinBox, object_name
+    )
+    assert spinbox is not None
+    assert spinbox.value() == 0.0
+    assert spinbox.value() > spinbox.minimum()
+
+    spinbox.setValue(1.0)
+    assert tool.tool_status.operations[0].line_kw[key] == 1.0
+    spinbox.setValue(0.0)
+    assert tool.tool_status.operations[0].line_kw[key] == 0.0
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert getattr(tool.figure.axes[0].lines[0], artist_getter)() == 0.0
+
+    spinbox.setValue(spinbox.minimum())
+    assert key not in tool.tool_status.operations[0].line_kw
 
 
 def test_figure_composer_line_values_axis_swaps_regular_profile(qtbot) -> None:
@@ -716,6 +837,8 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     )
     qtbot.addWidget(tool)
     profiles = figurecomposer_line_profile._line_data_items(tool, operation)
+
+    tool.show()
 
     tool.operation_editor.select_section("selection")
     selection_page = tool.operation_editor.current_page
@@ -1226,6 +1349,8 @@ def test_figure_composer_line_profile_coordinate_colormap_render_and_codegen(
         expected_colors,
     )
 
+    tool.show()
+
     tool.operation_editor.select_section("style")
     style_page = tool.operation_editor.current_page
     assert (
@@ -1661,6 +1786,7 @@ def test_figure_composer_line_label_help_button_opens_structured_dialog(
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
+    tool.show()
     tool.operation_editor.select_section("style")
     editor = tool.operation_editor.current_page
     labels_edit = editor.findChild(QtWidgets.QLineEdit, "figureComposerLineLabelsEdit")
@@ -2517,6 +2643,7 @@ def test_figure_composer_line_labels_auto_add_axes_legend_step(
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
+    tool.show()
     tool.operation_editor.select_section("style")
     labels_edit = tool.operation_editor.current_page.findChild(
         QtWidgets.QLineEdit, "figureComposerLineLabelsEdit"
@@ -2580,6 +2707,7 @@ def test_figure_composer_disabled_line_labels_do_not_add_legend_or_render(
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
+    tool.show()
     tool.operation_editor.select_section("style")
     labels_edit = tool.operation_editor.current_page.findChild(
         QtWidgets.QLineEdit, "figureComposerLineLabelsEdit"
@@ -2644,6 +2772,7 @@ def test_figure_composer_batch_line_labels_add_one_legend_per_axes_group(
     qtbot.addWidget(tool)
 
     _select_operation_rows(tool, (0, 1, 2))
+    tool.show()
     tool.operation_editor.select_section("style")
     labels_edit = tool.operation_editor.current_page.findChild(
         QtWidgets.QLineEdit, "figureComposerLineLabelsEdit"
@@ -3064,7 +3193,7 @@ def test_figure_composer_line_coordinate_colormap_rejects_bad_values(qtbot) -> N
         plot_tool.generated_code()
 
 
-def test_figure_composer_line_action_seeds_from_selected_slice_step(
+def test_figure_composer_line_action_uses_defaults_and_selected_axes(
     qtbot,
 ) -> None:
     data = xr.DataArray(
@@ -3086,7 +3215,7 @@ def test_figure_composer_line_action_seeds_from_selected_slice_step(
                 FigureOperationState.plot_slices(
                     label="selection",
                     sources=("data",),
-                    axes=FigureAxesSelectionState(axes=((0, 0), (0, 1), (0, 2))),
+                    axes=FigureAxesSelectionState(axes=((0, 1), (0, 2))),
                     slice_dim="cut",
                     slice_values=(0.0, 1.0, 2.0),
                     slice_width=0.25,
@@ -3096,6 +3225,7 @@ def test_figure_composer_line_action_seeds_from_selected_slice_step(
         ),
     )
     qtbot.addWidget(tool)
+    _select_operation_rows(tool, (0,))
 
     profile_action = next(
         action
@@ -3106,13 +3236,18 @@ def test_figure_composer_line_action_seeds_from_selected_slice_step(
 
     operation = tool.tool_status.operations[-1]
     assert operation.kind == FigureOperationKind.LINE
-    assert operation.line_placement == "one_per_axis"
-    assert operation.line_normalize == "max"
-    assert operation.line_colors == ("black",)
-    assert operation.line_x == "kx"
-    assert operation.line_iter_dim == "cut"
-    assert operation.line_selection == {"cut": [0.0, 1.0, 2.0], "cut_width": 0.25}
-    assert operation.axes.axes == ((0, 0), (0, 1), (0, 2))
+    assert operation.line_source == "data"
+    assert operation.line_placement == "all_axes"
+    assert operation.line_values_axis == "y"
+    assert operation.line_normalize == "none"
+    assert operation.line_colors == ()
+    assert operation.line_x is None
+    assert operation.line_iter_dim is None
+    assert operation.line_selection == {}
+    assert operation.line_label_text == ""
+    assert operation.axes.axes == ((0, 1), (0, 2))
+
+    tool.show()
 
     tool.operation_editor.select_section("view")
     placement_combo = tool.operation_editor.current_page.findChild(
@@ -3141,7 +3276,10 @@ def test_figure_composer_line_action_seeds_from_selected_slice_step(
         if action.data() == "line"
     )
     line_action.trigger()
-    assert unseeded_tool.tool_status.operations[-1].line_placement == "all_axes"
+    unseeded = unseeded_tool.tool_status.operations[-1]
+    assert operation.model_dump(
+        exclude={"operation_id", "axes"}
+    ) == unseeded.model_dump(exclude={"operation_id", "axes"})
 
 
 def test_figure_composer_batch_line_edits_update_selected_steps(qtbot) -> None:
@@ -3167,6 +3305,7 @@ def test_figure_composer_batch_line_edits_update_selected_steps(qtbot) -> None:
     qtbot.addWidget(tool)
 
     _select_operation_rows(tool, (0, 1, 2))
+    tool.show()
     tool.operation_editor.select_section("other")
     other_page = tool.operation_editor.current_page
     normalize_combo = other_page.findChild(
@@ -3211,6 +3350,7 @@ def test_figure_composer_batch_line_mixed_values_do_not_overwrite_on_blur(
     qtbot.addWidget(tool)
 
     _select_operation_rows(tool, (0, 1))
+    tool.show()
     tool.operation_editor.select_section("style")
     style_page = tool.operation_editor.current_page
     color_edit = style_page.findChild(

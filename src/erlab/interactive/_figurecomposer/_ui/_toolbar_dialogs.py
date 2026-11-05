@@ -107,6 +107,7 @@ from erlab.interactive._figurecomposer._ui._axes_widgets import (
 from erlab.interactive._figurecomposer._ui._color_widgets import (
     _ColorLineEditWidget,
     _ColorListEditorWidget,
+    _default_mpl_marker_color,
 )
 from erlab.interactive._figurecomposer._ui._editor_controls import (
     MIXED_VALUE,
@@ -1030,6 +1031,10 @@ class _LineOperationStyleWidget(QtWidgets.QWidget):
     ) -> None:
         super().__init__(parent)
         self._operation = operation
+        self._marker_default_colors = {
+            key: _default_mpl_marker_color(key, None)
+            for key in ("markerfacecolor", "markeredgecolor")
+        }
 
         self.color_mode_widget = _LineColorModeWidget(
             tool,
@@ -1083,7 +1088,11 @@ class _LineOperationStyleWidget(QtWidgets.QWidget):
         self.marker_face_edit = _ColorLineEditWidget(
             line_kw_text(operation, "markerfacecolor", "mfc"),
             self,
-            inherited_color=operation.line_colors[0] if operation.line_colors else None,
+            inherited_color=_default_mpl_marker_color(
+                "markerfacecolor",
+                operation.line_colors[0] if operation.line_colors else None,
+            ),
+            auto_color=operation.line_colors[0] if operation.line_colors else None,
         )
         self.marker_face_edit.setLineEditObjectName(
             "figureComposerToolbarCurveMarkerFaceEdit"
@@ -1099,7 +1108,11 @@ class _LineOperationStyleWidget(QtWidgets.QWidget):
         self.marker_edge_edit = _ColorLineEditWidget(
             line_kw_text(operation, "markeredgecolor", "mec"),
             self,
-            inherited_color=operation.line_colors[0] if operation.line_colors else None,
+            inherited_color=_default_mpl_marker_color(
+                "markeredgecolor",
+                operation.line_colors[0] if operation.line_colors else None,
+            ),
+            auto_color=operation.line_colors[0] if operation.line_colors else None,
         )
         self.marker_edge_edit.setLineEditObjectName(
             "figureComposerToolbarCurveMarkerEdgeEdit"
@@ -1159,6 +1172,20 @@ class _LineOperationStyleWidget(QtWidgets.QWidget):
         self.colors_widget.setVisible(visible)
         if self.colors_label is not None:
             self.colors_label.setVisible(visible)
+        line_color = (
+            self._operation.line_colors[0]
+            if visible and self._operation.line_colors
+            else None
+        )
+        for widget, key in (
+            (self.marker_face_edit, "markerfacecolor"),
+            (self.marker_edge_edit, "markeredgecolor"),
+        ):
+            widget.setAutoColor(line_color)
+            default_color = self._marker_default_colors[key]
+            widget.setInheritedColor(
+                line_color if default_color is None else default_color
+            )
 
     def _colors_changed(self, colors: Sequence[str]) -> None:
         self._set_operation(

@@ -102,6 +102,9 @@ class FigureRecipeContext(typing.Protocol):
     @property
     def source_payloads(self) -> Mapping[str, object]: ...
 
+    @property
+    def source_revision(self) -> int: ...
+
     def source_kind_names(self, kind: str) -> tuple[str, ...]: ...
 
     def source_payload(

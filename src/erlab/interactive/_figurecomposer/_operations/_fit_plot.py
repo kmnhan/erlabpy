@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import typing
 
+from matplotlib.container import ErrorbarContainer
 from qtpy import QtWidgets
 
 import erlab.plotting as eplt
@@ -21,6 +22,7 @@ from erlab.interactive._figurecomposer._operations._base import (
     OperationSpec,
     SourceRequest,
 )
+from erlab.interactive._figurecomposer._rendered_colors import _FIT_STYLE_ATTR
 from erlab.interactive._figurecomposer._rendering import _axes_from_selection
 from erlab.interactive._figurecomposer._text import _code_kwargs, _RawCode
 from erlab.interactive._figurecomposer._ui._fit_style import (
@@ -508,7 +510,25 @@ def _render(
         "xr.Dataset", tool._source_value(source, evaluate=_requires_model(operation))
     )
     kwargs = _plot_kwargs(operation)
-    eplt.plot_fit(dataset, ax=typing.cast("Axes", axis), **kwargs)
+    artists = eplt.plot_fit(dataset, ax=typing.cast("Axes", axis), **kwargs)
+    data = artists.data
+    if isinstance(data, ErrorbarContainer):
+        data = data.lines[0]
+    for field, component, artist in (
+        ("fit_data_kw", None, data),
+        ("fit_line_kw", None, artists.fit),
+        ("fit_band_kw", None, artists.band),
+        *(
+            ("fit_component_kw", name, value)
+            for name, value in artists.components.items()
+        ),
+        *(
+            ("fit_component_band_kw", name, value)
+            for name, value in artists.component_bands.items()
+        ),
+    ):
+        if artist is not None:
+            setattr(artist, _FIT_STYLE_ATTR, (field, component))
 
 
 def _code_lines(tool: FigureComposerTool, operation: FigureOperationState) -> list[str]:

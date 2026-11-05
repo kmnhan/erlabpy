@@ -188,6 +188,8 @@ def _all_coordinate_slice_values_error(
     context: FigureRecipeContext,
     operation: FigureOperationState,
     dims: Sequence[str],
+    *,
+    slice_values: tuple[float, ...] | None = None,
 ) -> str:
     if not _use_all_coordinate_slice_values(operation):
         return ""
@@ -195,7 +197,9 @@ def _all_coordinate_slice_values_error(
         return "Choose a dimension before using all coordinate values."
     if operation.slice_dim not in dims:
         return f"{operation.slice_dim!r} is not an input dimension."
-    if _effective_slice_values(context, operation):
+    if slice_values is None:
+        slice_values = _effective_slice_values(context, operation)
+    if slice_values:
         return ""
     return f"{operation.slice_dim!r} coordinate values must be numeric and non-empty."
 
@@ -233,6 +237,8 @@ def _plot_slices_batch_panel_kind(
     context: FigureRecipeContext,
     editable_operations: Sequence[tuple[int, FigureOperationState]],
     operation: FigureOperationState,
+    *,
+    resolve_slice_values: bool = True,
 ) -> str:
     operations = tuple(
         target
@@ -242,7 +248,11 @@ def _plot_slices_batch_panel_kind(
     if not operations:
         operations = (operation,)
     kinds = {
-        _plot_slices_panel_kind(_plot_slices_shape(context, target))
+        _plot_slices_panel_kind(
+            _plot_slices_shape(
+                context, target, resolve_slice_values=resolve_slice_values
+            )
+        )
         for target in operations
     }
     if len(kinds) == 1:
@@ -251,13 +261,17 @@ def _plot_slices_batch_panel_kind(
 
 
 def _plot_slices_slice_count(
-    context: FigureRecipeContext, operation: FigureOperationState
+    context: FigureRecipeContext,
+    operation: FigureOperationState,
+    *,
+    slice_values: tuple[float, ...] | None = None,
 ) -> int:
     operation = _normalized_selection_operation(context, operation)
     dims = _operation_dim_names(context, operation)
     selected_dims: set[str] = set()
     slice_count = 1
-    slice_values = _effective_slice_values(context, operation)
+    if slice_values is None:
+        slice_values = _effective_slice_values(context, operation)
     if operation.slice_dim and slice_values:
         selected_dims.add(operation.slice_dim)
         slice_count = len(slice_values)
@@ -277,12 +291,18 @@ def _plot_slices_panel_keys(
     context: FigureRecipeContext,
     source_display_name: Callable[[str], str],
     operation: FigureOperationState,
+    *,
+    slice_values: tuple[float, ...] | None = None,
 ) -> tuple[_PlotSlicesPanelKey, ...]:
     operation = _normalized_selection_operation(context, operation)
     maps = _operation_maps(context, operation)
     source_names = _plot_slices_selection_sources(operation)
     map_count = len(maps) or max(len(source_names), 1)
-    slice_count = _plot_slices_slice_count(context, operation)
+    if slice_values is None:
+        slice_values = _effective_slice_values(context, operation)
+    slice_count = _plot_slices_slice_count(
+        context, operation, slice_values=slice_values
+    )
     map_labels = tuple(
         source_display_name(source_names[index])
         if index < len(source_names)
@@ -292,7 +312,7 @@ def _plot_slices_panel_keys(
     slice_labels = _plot_slices_slice_labels(
         operation,
         slice_count,
-        _effective_slice_values(context, operation),
+        slice_values,
     )
 
     keys: list[_PlotSlicesPanelKey] = []
@@ -620,9 +640,11 @@ def _plot_slices_line_label_contexts(
     source_display_name: Callable[[str], str],
     operation: FigureOperationState,
 ) -> tuple[dict[str, typing.Any], ...]:
-    keys = _plot_slices_panel_keys(context, source_display_name, operation)
-    source_labels = _plot_slices_source_labels(context, source_display_name, operation)
     slice_values = _effective_slice_values(context, operation)
+    keys = _plot_slices_panel_keys(
+        context, source_display_name, operation, slice_values=slice_values
+    )
+    source_labels = _plot_slices_source_labels(context, source_display_name, operation)
     contexts: list[dict[str, typing.Any]] = []
     for index, key in enumerate(keys):
         value = None
@@ -762,8 +784,10 @@ def _plot_slices_line_profiles(
     operation = _normalized_selection_operation(context, operation)
     if maps is None:
         maps = _operation_maps(context, operation)
-    keys = _plot_slices_panel_keys(context, source_display_name, operation)
     slice_values = _effective_slice_values(context, operation)
+    keys = _plot_slices_panel_keys(
+        context, source_display_name, operation, slice_values=slice_values
+    )
     profiles: list[xr.DataArray] = []
     profile_keys: list[_PlotSlicesPanelKey] = []
     for key in keys:
@@ -985,7 +1009,10 @@ def _norm_clip_from_text(text: str) -> bool | None:
 
 
 def _plot_slices_shape(
-    context: FigureRecipeContext, operation: FigureOperationState
+    context: FigureRecipeContext,
+    operation: FigureOperationState,
+    *,
+    resolve_slice_values: bool = True,
 ) -> _PlotSlicesShape:
     operation = _normalized_selection_operation(context, operation)
     maps = _operation_maps(context, operation)
@@ -1017,11 +1044,23 @@ def _plot_slices_shape(
     selected_dims: set[str] = set()
     selection_error = ""
     slice_count = 1
-    slice_values = _effective_slice_values(context, operation)
+    if not resolve_slice_values and _use_all_coordinate_slice_values(operation):
+        # Section navigation needs dimensions, not coordinate payloads.
+        slice_values = (
+            (0.0,)
+            if operation.slice_dim in dims and maps[0].sizes[operation.slice_dim]
+            else ()
+        )
+    else:
+        slice_values = _effective_slice_values(context, operation)
     if _use_all_coordinate_slice_values(operation) and not operation.slice_dim:
-        selection_error = _all_coordinate_slice_values_error(context, operation, dims)
+        selection_error = _all_coordinate_slice_values_error(
+            context, operation, dims, slice_values=slice_values
+        )
     if operation.slice_dim and not selection_error:
-        all_values_error = _all_coordinate_slice_values_error(context, operation, dims)
+        all_values_error = _all_coordinate_slice_values_error(
+            context, operation, dims, slice_values=slice_values
+        )
         if all_values_error:
             selection_error = all_values_error
         elif operation.slice_dim not in dims and slice_values:
