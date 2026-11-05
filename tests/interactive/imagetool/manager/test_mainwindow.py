@@ -1,5 +1,6 @@
 import concurrent.futures
 import gc
+import importlib.metadata
 import json
 import logging
 import pathlib
@@ -6563,8 +6564,82 @@ def test_manager(
         accept_dialog(manager.remove_action.trigger)
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
-        # Show about dialog
-        accept_dialog(manager.about)
+
+@pytest.mark.parametrize(
+    "optional_versions",
+    [
+        pytest.param({}, id="no-optional-packages"),
+        pytest.param({"onnx": "1.20.0"}, id="onnx"),
+        pytest.param({"onnxruntime": "1.24.1"}, id="onnxruntime"),
+        pytest.param(
+            {"onnx": "1.20.0", "onnxruntime": "1.24.1"},
+            id="both-optional-packages",
+        ),
+    ],
+)
+@pytest.mark.parametrize("copy_info", [False, True], ids=["close", "copy"])
+def test_manager_about_versions(
+    accept_dialog,
+    monkeypatch,
+    optional_versions: dict[str, str],
+    copy_info: bool,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import dask
+    import h5py
+    import lmfit
+    import numba
+    import scipy
+
+    copied: list[str] = []
+    displayed: list[str] = []
+    original_version = importlib.metadata.version
+
+    def package_version(name: str) -> str:
+        if name in ("onnx", "onnxruntime"):
+            if name not in optional_versions:
+                raise importlib.metadata.PackageNotFoundError(name)
+            return optional_versions[name]
+        return original_version(name)
+
+    def inspect_and_close(dialog: QtWidgets.QMessageBox) -> None:
+        assert isinstance(dialog, QtWidgets.QMessageBox)
+        displayed.append(dialog.informativeText())
+        versions = dict(line.split(": ", 1) for line in displayed[-1].splitlines())
+        for module in (dask, h5py, lmfit, numba, scipy):
+            assert versions[module.__name__] == module.__version__
+        for name in ("onnx", "onnxruntime"):
+            if name in optional_versions:
+                assert versions[name] == optional_versions[name]
+            else:
+                assert name not in versions
+
+        role = (
+            QtWidgets.QMessageBox.ButtonRole.AcceptRole
+            if copy_info
+            else QtWidgets.QMessageBox.ButtonRole.RejectRole
+        )
+        button = next(
+            button for button in dialog.buttons() if dialog.buttonRole(button) == role
+        )
+        button.click()
+
+    monkeypatch.setattr(importlib.metadata, "version", package_version)
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "copy_to_clipboard",
+        lambda text: copied.append(text) or text,
+    )
+    with manager_context() as manager:
+        accept_dialog(manager.about, accept_call=inspect_and_close)
+
+    assert len(displayed) == 1
+    if copy_info:
+        assert copied == [f"erlab: {erlab.__version__}\n{displayed[0]}"]
+    else:
+        assert copied == []
 
 
 def test_remove_from_window_shortcut(
