@@ -97,8 +97,8 @@ disk used by superseded results, temporary calculations, and duplicate payloads.
 
 ## Proposed implementation choices and six-stage plan
 
-The choices below are proposals. The examples above define the required behavior.
-In particular, the precise Reload policy for an already stale row is still open.
+The examples above define the required behavior. Stages 1 and 2 implement the
+graph and its commands. The later stages describe the planned integration.
 
 ### 1. Graph model outside Qt
 
@@ -125,17 +125,46 @@ Validate live bindings for cycles separately. Using a pinned C to replace B is
 valid even if C follows B. Making both ImageTools follow each other would give
 Refresh a cycle.
 
-| Command | Proposed behavior |
+| Command | Graph behavior |
 | --- | --- |
 | Replace | Protect irreplaceable input values, evaluate the operation, then publish its record and move the existing entry to the new revision together. Invalidate dependents that follow the entry. |
 | Reload | For a live row, use its refresh bindings and rebuild the required inputs from their origins. Honor fixed inputs. Perform each requested file read even when a cached result exists. |
 | Refresh | Use the current bound inputs and effective settings. Process stale prerequisites in dependency order. Auto schedules eligible results. |
 | Historical replay and Copy Full Code | Use the applied parameters and recorded input revisions of the selected result. Exact restoration requires a checkpoint or a verifiable original source. |
 
-Under the proposed Reload policy, Refresh of stale C uses the available B′.
-Reload of C first rebuilds B′ from its origins. Reading a changed file produces
-a new revision. If the original file is gone, show whether the recorded result
-can still be restored from a checkpoint.
+For stale C, both commands follow the input shown for its next update. Refresh
+uses the available B′. Refresh can read a file when a step it must run is a
+file load. Reload also rebuilds current followed entries, so it rebuilds B′
+from its origins and then recalculates C. Each pinned input keeps its exact
+revision. The command preview lists the entries and earlier steps to rebuild, the
+file loads to run, and the current and pinned revisions to use. It also identifies
+other entries affected by publication. Previewing a command does not read a file.
+When a file is missing, Reload identifies the path and the displayed revision
+that is still available.
+
+When a followed entry and an earlier step request the same producer, the planner
+shares one calculation if both bindings use the same stored recipe snapshot or
+it can establish equivalence from the settings. Both slots then record the same
+revision. A shared file load appears once in the command preview. Each new
+Reload reads the requested files again.
+
+For example, submitting the same captured recipe for `isel(x=indices)` through
+`set_recipe()` shares one selection and one result revision. This also applies
+when the recipe comes from `graph.entry()`. Recipe construction captures the
+operation and its bindings. Accessing an editable operation or file call detaches
+its settings so that a caller can change them without changing a stored revision.
+Submitting that editable copy or constructing an independent array indexer can
+produce a separate evaluation. The planner does not scan or hash array contents.
+
+Auto waits for stale prerequisites. If B has Auto off and C has Auto on, C waits
+until B is refreshed. Explicitly refreshing C updates stale prerequisites in the
+same request. After a successful publication, Auto schedules eligible followers
+as separate refresh requests. A host can defer these requests to coalesce updates.
+Graph commands return the revision displayed when the command finishes.
+If an input changes during an Auto refresh, the graph discards the superseded
+attempt and queues the latest inputs for the next pass. With a deferred scheduler
+each pass yields to the host. A failure on current inputs leaves the entry stale
+with an error until another change or an explicit retry.
 
 Stage data and its provenance together. Check that the input revisions and
 requested settings are still current before publishing. A failed, cancelled, or
@@ -239,8 +268,8 @@ default reader and writer switch.
   typed graph code and an earlier four-stage plan in `.agents/plans/provenance.md`.
   That plan uses operation nodes. Compare candidate code from it against the
   requirements here for data nodes and operation edges.
-- **Stage 1.** The working tree on `dev-provenance-redesign`, based on `e3315fbb`,
-  contains the Qt-free graph. Its acceptance test passes with Qt imports blocked. The
+- **Stage 1.** Commit `cc603569` on `dev-provenance-redesign` contains the
+  Qt-free graph. Its acceptance test passes with Qt imports blocked. The
   tests also cover a replaced derived input, a failed refresh, a file load shared
   by two branches, and code generation for a concatenation with repeated inputs.
   The graph executes synchronous requests on its owner thread. The caller supplies
@@ -255,10 +284,24 @@ default reader and writer switch.
   its edited recipe for Refresh. The result stays stale until Refresh runs that
   recipe. Regression tests cover repeated replacement, redirected sources, and
   pins on virtual inputs.
-- **Next case.** Make B file-backed in the first acceptance test, replace B, and
-  change the file while C is stale. Settle which origins Reload of C must read,
-  then test Reload alongside Refresh. Auto scheduling, Manager integration, and
-  the workspace round trip are still pending.
+- **Stage 2.** The working tree on `dev-provenance-redesign`, based on `cc603569`,
+  implements Reload, command previews, Auto scheduling, and cancellation. In the
+  file-backed acceptance case, Refresh of stale C uses B′ on screen. Reload reads
+  the changed file once, rebuilds B, and records the rebuilt revision as C's input.
+  A failed or superseded request publishes none of its prepared revisions.
+- **Review fixes.** Auto preserves newer work through consecutive supersessions.
+  The request planner tracks a producing step across successive revisions and
+  shares its result across equivalent bindings. Workspace storage in stage 5
+  will need to retain that producer identity.
+- **Historical Python.** Copy Full Code walks the recorded revisions of the
+  selected result. Notebook names identify exact checkpoint inputs. To emit a
+  file read, the caller must verify the recorded version of the file source.
+  Generated extension calls check the recorded script hash. The code adapter uses
+  the existing ImageTool emitter. [Recorded code](../../src/erlab/interactive/imagetool/_provenance/_recorded_code.py)
+- **Next case.** In stage 3, route Open Child Window and Open Top-Level Window
+  through the graph. Check that the two entries have identical lineage and
+  different tree placement. Use the graph's command preview to explain Refresh
+  and Reload for a stale row before wiring the actions.
 - **Later in the rewrite.** Move the provenance operation implementations and
   their Python generation helpers out of the Qt package. Verify a catalog
   operation can execute and emit Python with Qt imports blocked.
@@ -283,6 +326,19 @@ done
 After the pending recipe fix, Ruff, mypy, and the partition check passed again.
 Running `uv run pytest -q tests/test_provenance_graph.py` with the same two
 binding settings passed all 19 graph tests in each run.
+
+Stage 2 and its review fixes passed the same Ruff, mypy, and partition checks.
+The local PyQt6 run passed 1,115 tests after the recipe sharing fix. Use one
+binding locally for graph changes and leave the binding matrix to CI.
+
+```sh
+QT_API=pyqt6 PYTEST_QT_API=pyqt6 uv run pytest -q \
+    tests/test_provenance_graph.py \
+    tests/interactive/imagetool/test_replay_graph.py \
+    tests/interactive/imagetool/test_provenance.py \
+    tests/interactive/imagetool/manager/workspace/test_store.py \
+    tests/interactive/imagetool/test_module_split.py::test_provenance_layers_load_in_one_direction
+```
 
 At each handoff, record the branch, revision, exact checks run, and first remaining
 case.

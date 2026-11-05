@@ -6271,6 +6271,59 @@ def load_data(path: Path) -> xr.DataArray:
     xr.testing.assert_identical(namespace["derived"], xr.DataArray([4.0]))
 
 
+def test_recorded_code_requires_the_applied_extension_version(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from erlab._provenance import FileLoad, ProvenanceGraph
+    from erlab.interactive.imagetool._provenance._recorded_code import full_code
+
+    script_path = tmp_path / "loader.py"
+    script_path.write_text(
+        "from pathlib import Path\nimport xarray as xr\n"
+        "from erlab.extensions import loader\n"
+        "@loader()\ndef load_data(path: Path) -> xr.DataArray:\n"
+        "    return xr.DataArray(int(path.read_text()))\n"
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: _registered_loader(script_path),
+    )
+    data_path = tmp_path / "value.txt"
+    data_path.write_text("5")
+    call = FileReplayCall(
+        kind="extension_loader",
+        target=script_path.name,
+        source_hash=_registered_loader(script_path).source_hash,
+        capability_id="load_data",
+        selection=FileDataSelection(kind="dataarray"),
+    )
+    graph = ProvenanceGraph(
+        read_file=lambda source, call: erlab.extensions.load_script(
+            script_path, expected_source_hash=call.source_hash
+        ).load_data(pathlib.Path(source.path))
+    )
+    revision = graph.derive("scan", FileLoad(graph.file_source(str(data_path)), call))
+
+    def copy_code():
+        return full_code(
+            graph,
+            revision,
+            output_name="scan",
+            verify_file=lambda _revision: data_path.read_text() == "5",
+        )
+
+    code = copy_code()
+    xr.testing.assert_identical(
+        _exec_generated_code(code)["scan"], graph.data(revision)
+    )
+    script_path.write_text(script_path.read_text() + "# edited\n")
+    with pytest.raises(erlab.extensions.ExtensionImportError, match="expected hash"):
+        _exec_generated_code(code)
+    with pytest.raises(ReplayGraphError, match="Recorded version"):
+        copy_code()
+
+
 @pytest.mark.parametrize(
     ("code", "expected"),
     [

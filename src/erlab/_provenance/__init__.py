@@ -1,6 +1,6 @@
 """Qt-independent data provenance for ImageTool."""
 
-from erlab._provenance._graph import ProvenanceGraph
+from erlab._provenance._graph import MissingFileSource, ProvenanceGraph, UpdatePlan
 from erlab._provenance._records import (
     Application,
     DataRevision,
@@ -21,7 +21,9 @@ __all__ = [
     "FileSource",
     "Follow",
     "ImageToolEntry",
+    "MissingFileSource",
     "Pin",
     "ProvenanceGraph",
     "Recipe",
+    "UpdatePlan",
 ]
