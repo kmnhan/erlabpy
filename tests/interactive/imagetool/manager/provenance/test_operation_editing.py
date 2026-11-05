@@ -578,11 +578,7 @@ def test_manager_edit_bound_shift_rebinds_without_script_code(
                 create_dialog._SOURCE_MANAGER, QtCore.Qt.ItemDataRole.UserRole
             )
         )
-        create_dialog.shift_tool_combo.setCurrentIndex(
-            create_dialog.shift_tool_combo.findData(
-                first_shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
-            )
-        )
+        create_dialog.shift_tool_selector.set_current_uid(first_shift_node.uid)
         create_dialog.launch_mode_combo.setCurrentIndex(
             create_dialog.launch_mode_combo.findData(
                 "replace", QtCore.Qt.ItemDataRole.UserRole
@@ -622,11 +618,8 @@ def test_manager_edit_bound_shift_rebinds_without_script_code(
 
         def accept_second_shift(dialog: imagetool_dialogs.ShiftDialog) -> int:
             assert dialog.slicer_area.data.sizes["x"] == 3
-            candidate_index = dialog.shift_tool_combo.findData(
-                second_shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
-            )
-            assert candidate_index >= 0
-            dialog.shift_tool_combo.setCurrentIndex(candidate_index)
+            assert second_shift_node.uid in dialog.shift_tool_selector.candidate_uids
+            dialog.shift_tool_selector.set_current_uid(second_shift_node.uid)
             return int(QtWidgets.QDialog.DialogCode.Accepted)
 
         monkeypatch.setattr(imagetool_dialogs.ShiftDialog, "exec", accept_second_shift)
@@ -664,11 +657,7 @@ def test_manager_edit_bound_shift_rebinds_without_script_code(
 
         def select_stale_candidate(dialog: imagetool_dialogs.ShiftDialog) -> int:
             nonlocal after_accept
-            dialog.shift_tool_combo.setCurrentIndex(
-                dialog.shift_tool_combo.findData(
-                    first_shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
-                )
-            )
+            dialog.shift_tool_selector.set_current_uid(first_shift_node.uid)
             after_accept = True
             return int(QtWidgets.QDialog.DialogCode.Accepted)
 
@@ -704,11 +693,7 @@ def test_manager_edit_bound_shift_rebinds_without_script_code(
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
         def replace_missing_shift(dialog: imagetool_dialogs.ShiftDialog) -> int:
-            dialog.shift_tool_combo.setCurrentIndex(
-                dialog.shift_tool_combo.findData(
-                    first_shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
-                )
-            )
+            dialog.shift_tool_selector.set_current_uid(first_shift_node.uid)
             return int(QtWidgets.QDialog.DialogCode.Accepted)
 
         monkeypatch.setattr(
@@ -899,9 +884,7 @@ def test_manager_bound_shift_edit_rejects_invalid_dialog_selection(
             pass
 
     class _Dialog:
-        shift_tool_combo = types.SimpleNamespace(
-            currentData=lambda *_args: selected_uid
-        )
+        shift_tool_selector = types.SimpleNamespace(current_uid=selected_uid)
 
         @property
         def uses_manager_shift(self) -> bool:

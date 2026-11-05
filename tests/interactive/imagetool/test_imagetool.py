@@ -13723,7 +13723,13 @@ def test_shift_dialog_fallback_and_stale_manager_context(qtbot) -> None:
     with pytest.raises(RuntimeError, match="manager-backed"):
         dialog._current_manager_context()
 
-    dialog.shift_tool_combo.addItem("Missing ImageTool", userData="missing")
+    assert dialog.shift_tool_selector.current_uid is None
+    assert dialog.shift_tool_selector.candidate_uids == ()
+    dialog.buttonBox.setStandardButtons(
+        QtWidgets.QDialogButtonBox.StandardButton.Cancel
+    )
+    dialog._sync_replacement_availability()
+    assert dialog.copy_button.isEnabled()
     dialog.shift_source_combo.addItem(
         "Existing ImageTool", userData=dialog._SOURCE_MANAGER
     )
@@ -13734,6 +13740,7 @@ def test_shift_dialog_fallback_and_stale_manager_context(qtbot) -> None:
     )
     assert dialog.uses_manager_shift
     assert not dialog._replacement_is_safe()
+    assert not dialog.copy_button.isEnabled()
 
     dialog.reject()
     xr.testing.assert_identical(win.slicer_area._data, data)

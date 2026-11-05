@@ -114,6 +114,7 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
     from erlab.interactive.imagetool.manager import ImageToolManager
+    from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
     from erlab.interactive.imagetool.plot_items import ItoolPolyLineROI
     from erlab.interactive.imagetool.slicer import ArraySlicer
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
@@ -4621,10 +4622,6 @@ class ShiftDialog(DataTransformDialog):
         self.shift_value_spin.setObjectName("shift_scalar_value")
         self.layout_.addRow("Shift Value", self.shift_value_spin)
 
-        self.shift_tool_combo = QtWidgets.QComboBox()
-        self.shift_tool_combo.setObjectName("shift_imagetool_combo")
-        self.layout_.addRow("Shift ImageTool", self.shift_tool_combo)
-
         self.negate_check = QtWidgets.QCheckBox("Negate shift")
         self.negate_check.setObjectName("shift_negate_check")
         self.negate_check.setChecked(True)
@@ -4671,11 +4668,24 @@ class ShiftDialog(DataTransformDialog):
         self.prefilter_check.setChecked(False)
         self.layout_.addRow(self.prefilter_check)
 
+        from erlab.interactive.imagetool.manager._source_selector import (
+            ManagerSourceSelector,
+        )
+
+        self.shift_tool_selector = ManagerSourceSelector(
+            manager, eligibility=self._shift_candidate_error, parent=self
+        )
+        self.shift_tool_selector.setObjectName("shift_imagetool_selector")
+        self.layout_.insertRow(3, "Shift ImageTool", self.shift_tool_selector)
+
         self.shift_source_combo.currentIndexChanged.connect(
             self._handle_shift_source_changed
         )
-        self.shift_tool_combo.currentIndexChanged.connect(
+        self.shift_tool_selector.selectionChanged.connect(
             self._sync_replacement_availability
+        )
+        self.shift_tool_selector.candidatesChanged.connect(
+            self._sync_shift_candidate_availability
         )
         self.along_combo.currentIndexChanged.connect(self._populate_shift_candidates)
         self.assume_sorted_check.toggled.connect(self._populate_shift_candidates)
@@ -4747,7 +4757,7 @@ class ShiftDialog(DataTransformDialog):
     def _sync_shift_controls(self, *_args: object) -> None:
         manager_shift = self.uses_manager_shift
         self.shift_value_spin.setEnabled(not manager_shift)
-        self.shift_tool_combo.setEnabled(manager_shift)
+        self.shift_tool_selector.setEnabled(manager_shift)
         self.cval_spin.setEnabled(self.boundary_mode in self._CONSTANT_MODES)
         self._sync_replacement_availability()
 
@@ -4795,51 +4805,48 @@ class ShiftDialog(DataTransformDialog):
     @QtCore.Slot(int)
     @QtCore.Slot(bool)
     def _populate_shift_candidates(self, *_args: object) -> None:
-        previous_uid = self.shift_tool_combo.currentData(
-            QtCore.Qt.ItemDataRole.UserRole
-        )
-        self.shift_tool_combo.clear()
+        self.shift_tool_selector.refresh()
+        self._sync_shift_candidate_availability()
+
+    def _shift_candidate_error(self, node: _ManagedWindowNode) -> str | None:
         manager, target = self._manager_target()
-        if manager is not None and target is not None:
+        if manager is None or target is None:
+            return "A manager-backed ImageTool is required."
+        try:
             current_node = manager._node_for_target(target)
+            if node.uid == current_node.uid:
+                return "Select another ImageTool as the shift source."
+            if not node.is_imagetool:
+                return "This source is not an ImageTool."
             source_data = (
                 self.data
                 if self.is_provenance_edit_mode
                 else current_node.data_for_role("source", owner_node=current_node)
             )
-            for node in tuple(manager._tool_graph.nodes.values()):
-                if node.uid == current_node.uid or not node.is_imagetool:
-                    continue
-                try:
-                    self._candidate_data(manager, node.uid, source_data)
-                except (KeyError, TypeError, ValueError):
-                    continue
-                self.shift_tool_combo.addItem(
-                    node.label_text or f"ImageTool ({node.uid})",
-                    userData=node.uid,
-                )
-        if previous_uid is not None:
-            _set_combo_data(self.shift_tool_combo, previous_uid)
+            self._candidate_data(manager, node.uid, source_data)
+        except (LookupError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            return str(exc)
+        return None
+
+    @QtCore.Slot()
+    def _sync_shift_candidate_availability(self) -> None:
         index = self.shift_source_combo.findData(
             self._SOURCE_MANAGER, QtCore.Qt.ItemDataRole.UserRole
         )
-        available = self.shift_tool_combo.count() > 0
         if index >= 0:
             model = typing.cast(
                 "QtGui.QStandardItemModel", self.shift_source_combo.model()
             )
-            typing.cast("QtGui.QStandardItem", model.item(index)).setEnabled(available)
-            if not available and self.uses_manager_shift:
-                _set_combo_data(self.shift_source_combo, self._SOURCE_SCALAR)
+            typing.cast("QtGui.QStandardItem", model.item(index)).setEnabled(
+                bool(self.shift_tool_selector.candidate_uids)
+            )
         self._sync_replacement_availability()
 
     def _replacement_is_safe(self) -> bool:
         if not self.uses_manager_shift:
             return True
-        selected_uid = self.shift_tool_combo.currentData(
-            QtCore.Qt.ItemDataRole.UserRole
-        )
-        if not isinstance(selected_uid, str):
+        selected_uid = self.shift_tool_selector.current_uid
+        if selected_uid is None:
             return False
         try:
             manager, _target, current_node = self._current_manager_context()
@@ -4852,6 +4859,14 @@ class ShiftDialog(DataTransformDialog):
     @QtCore.Slot()
     @QtCore.Slot(int)
     def _sync_replacement_availability(self, *_args: object) -> None:
+        valid = (
+            not self.uses_manager_shift
+            or self.shift_tool_selector.current_uid is not None
+        )
+        ok_button = self.buttonBox.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+        if ok_button is not None:
+            ok_button.setEnabled(valid)
+        self.copy_button.setEnabled(valid)
         if not hasattr(self, "launch_mode_combo"):
             return
         replace_index = self.launch_mode_combo.findData(
@@ -4893,10 +4908,8 @@ class ShiftDialog(DataTransformDialog):
             return
         try:
             manager, target, current_node = self._current_manager_context()
-            selected_uid = self.shift_tool_combo.currentData(
-                QtCore.Qt.ItemDataRole.UserRole
-            )
-            if not isinstance(selected_uid, str):
+            selected_uid = self.shift_tool_selector.current_uid
+            if selected_uid is None:
                 QtWidgets.QMessageBox.warning(
                     self,
                     "Cannot Shift",

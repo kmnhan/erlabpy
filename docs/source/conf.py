@@ -406,8 +406,8 @@ nbsphinx_execute_arguments = ["--InlineBackend.figure_formats={'svg', 'pdf'}"]
 
 qt_documentation = "PyQt6"
 intersphinx_timeout = 10
+# The Qt extension adds the PyQt6 inventory and maps PySide6 references to it.
 intersphinx_mapping = {
-    "PyQt5": ("https://doc.qt.io/qtforpython-6", None),
     "python": ("https://docs.python.org/3", None),
     "numpy": ("https://numpy.org/doc/stable", None),
     "numba": ("https://numba.readthedocs.io/en/stable", None),
