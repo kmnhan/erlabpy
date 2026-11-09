@@ -1001,6 +1001,112 @@ def test_figure_composer_plot_array_render_and_generated_code(
     assert "fig" in namespace
 
 
+@pytest.mark.parametrize("values", [(False,), (True,), (False, True)])
+def test_figure_composer_plot_array_robust_control_updates_recipe(
+    qtbot, values
+) -> None:
+    data = _figure_composer_image_source("data").isel(eV=0)
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data"),),
+        operations=tuple(
+            FigureOperationState.plot_array(label="image", source="data").model_copy(
+                update={"robust": value}
+            )
+            for value in values
+        ),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    _select_operation_rows(tool, tuple(range(len(values))))
+    tool.operation_editor.select_section("colors")
+    check = tool.operation_editor.current_page.findChild(
+        QtWidgets.QCheckBox, "figureComposerPlotArrayRobustCheck"
+    )
+    assert check is not None
+    expected_state = (
+        QtCore.Qt.CheckState.PartiallyChecked
+        if len(set(values)) > 1
+        else QtCore.Qt.CheckState.Checked
+        if values[0]
+        else QtCore.Qt.CheckState.Unchecked
+    )
+    assert check.checkState() == expected_state
+
+    check.setCheckState(QtCore.Qt.CheckState.Checked)
+    assert all(operation.robust for operation in tool.tool_status.operations)
+    check.setCheckState(QtCore.Qt.CheckState.Unchecked)
+    assert all(not operation.robust for operation in tool.tool_status.operations)
+
+
+def test_figure_composer_plot_array_robust_recipe_round_trip() -> None:
+    recipe = FigureRecipeState(
+        operations=tuple(
+            FigureOperationState.plot_array(label="image", source="data").model_copy(
+                update={"robust": robust}
+            )
+            for robust in (False, True)
+        )
+    )
+    assert FigureRecipeState.model_validate_json(recipe.model_dump_json()) == recipe
+
+    legacy_operation = recipe.operations[1].model_dump()
+    legacy_operation.pop("robust")
+    assert not FigureOperationState.model_validate(legacy_operation).robust
+
+
+@pytest.mark.parametrize(
+    "norm_name",
+    ["PowerNorm", "Normalize", "CenteredPowerNorm", "CenteredInversePowerNorm"],
+)
+@pytest.mark.parametrize("robust", [False, True])
+def test_figure_composer_plot_array_robust_render_and_generated_code(
+    qtbot, norm_name, robust
+) -> None:
+    data = xr.DataArray(np.arange(100.0).reshape(10, 10), dims=("y", "x"))
+    data.values[-1, -1] = 1.0e6
+    norm_kwargs = (
+        {"vcenter": 10.0, "norm_gamma": 0.5}
+        if norm_name.startswith("Centered")
+        else {"vmin": -1.0}
+    )
+    operation = FigureOperationState.plot_array(
+        label="image", source="data"
+    ).model_copy(update={"robust": robust, "norm_name": norm_name, **norm_kwargs})
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    if norm_name.startswith("Centered"):
+        halfrange = np.max(
+            np.abs(
+                (np.percentile(data.values, [2, 98]) if robust else data.values) - 10.0
+            )
+        )
+        expected = (10.0 - halfrange, 10.0 + halfrange)
+    else:
+        expected = (-1.0, np.percentile(data.values, 98) if robust else 1.0e6)
+    figure = Figure()
+    canvas = FigureCanvasAgg(figure)
+    figurecomposer_rendering._render_into_figure(tool, figure, sync_visible=False)
+    canvas.draw()
+    assert not tool._operation_render_errors
+    np.testing.assert_allclose(figure.axes[0].images[0].get_clim(), expected)
+
+    code = tool.generated_code()
+    assert ("robust=True" in code) is robust
+    namespace = _exec_generated_code(code, {"data": data})
+    try:
+        np.testing.assert_allclose(
+            namespace["axs"][0, 0].images[0].get_clim(), expected
+        )
+    finally:
+        plt.close(namespace["fig"])
+
+
 def test_figure_composer_plot_array_aspect_control_updates_recipe(qtbot) -> None:
     data = _figure_composer_image_source("data").isel(eV=0)
     operation = FigureOperationState.plot_array(

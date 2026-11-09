@@ -689,6 +689,7 @@ class FigureOperationState(pydantic.BaseModel):
     hide_colorbar_ticks: bool = True
     annotate: bool = True
     cmap: str | None = None
+    robust: bool = False
     gamma: float | None = None
     norm_name: str | None = None
     norm_gamma: float | None = None

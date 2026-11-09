@@ -269,6 +269,7 @@ def plot_array(
     colorbar_kw: dict | None = None,
     gamma: float = 1.0,
     norm: matplotlib.colors.Normalize | None = None,
+    robust: bool = False,
     xlim: float | tuple[float, float] | None = None,
     ylim: float | tuple[float, float] | None = None,
     crop: bool = False,
@@ -303,6 +304,11 @@ def plot_array(
     norm
         Color normalization. If omitted, a power-law normalization with exponent
         `gamma` is used.
+    robust
+        If `True`, use the 2nd and 98th percentiles of finite values for color limits
+        that are not set by ``vmin``, ``vmax``, or `norm`. Percentiles are computed
+        after cropping and applying `func`. Centered normalizations keep a symmetric
+        range about their center. An explicit ``halfrange`` is preserved.
     xlim, ylim
         If given a sequence of length 2, those values are set as the lower and upper
         limits of each axis. If given a single `float`, the limits are set as ``(-lim,
@@ -375,17 +381,7 @@ def plot_array(
             ]
         arr = arr.assign_coords({d: np.rad2deg(arr[d]) for d in conv_dims})
 
-    norm_kw = {}
-    if "vmin" in improps:
-        norm_kw["vmin"] = improps.pop("vmin")
-        if "vmax" in improps:
-            norm_kw["vmax"] = improps.pop("vmax")
-            colorbar_kw.setdefault("extend", "both")
-        else:
-            colorbar_kw.setdefault("extend", "min")
-    elif "vmax" in improps:
-        norm_kw["vmax"] = improps.pop("vmax")
-        colorbar_kw.setdefault("extend", "max")
+    norm_kw = {key: improps.pop(key) for key in ("vmin", "vmax") if key in improps}
 
     if norm is None:
         norm = copy.deepcopy(matplotlib.colors.PowerNorm(gamma, **norm_kw))
@@ -404,7 +400,45 @@ def plot_array(
         arr = func(arr.copy(deep=True), **func_args)
 
     values = arr.values
+    if robust:
+        finite_values = values[np.isfinite(values)]
+        if finite_values.size:
+            if isinstance(norm, matplotlib.colors.CenteredNorm):
+                if norm.halfrange is None:
+                    norm.autoscale_None(
+                        np.percentile(finite_values, [2, 98], overwrite_input=True)
+                    )
+            elif norm.vmin is None and norm.vmax is None:
+                # Match scalar percentile promotion on both NumPy 1.x and 2.x.
+                q_dtype = np.result_type(finite_values.dtype.type(0), 0.0)
+                norm.vmin, norm.vmax = np.percentile(
+                    finite_values,
+                    np.array([2, 98], dtype=q_dtype),
+                    overwrite_input=True,
+                )
+            elif norm.vmin is None:
+                norm.vmin = np.percentile(finite_values, 2, overwrite_input=True)
+            elif norm.vmax is None:
+                norm.vmax = np.percentile(finite_values, 98, overwrite_input=True)
+    elif norm_kw:
+        colorbar_kw.setdefault(
+            "extend",
+            "both" if len(norm_kw) == 2 else "min" if "vmin" in norm_kw else "max",
+        )
     _validate_image_norm(norm, values)
+
+    if robust and finite_values.size:
+        extend_min = finite_values.min() < norm.vmin
+        extend_max = finite_values.max() > norm.vmax
+        if extend_min and extend_max:
+            extend = "both"
+        elif extend_min:
+            extend = "min"
+        elif extend_max:
+            extend = "max"
+        else:
+            extend = "neither"
+        colorbar_kw.setdefault("extend", extend)
 
     if erlab.utils.array.is_dims_uniform(arr, rtol=rtol, atol=atol):
         improps.setdefault("interpolation", "none")
