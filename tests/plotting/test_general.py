@@ -86,6 +86,31 @@ def test_plot_array_robust_limits(nonuniform: bool, robust: bool) -> None:
         plt.close(figure)
 
 
+@pytest.mark.parametrize("dtype", [np.float32, np.float64, np.uint16])
+@pytest.mark.parametrize("layout", ["uniform", "nonuniform", "transposed"])
+def test_plot_array_robust_preserves_scalar_percentiles_and_image_values(
+    dtype, layout
+) -> None:
+    values = ((np.arange(100) * 37) % 101).astype(dtype).reshape(10, 10)
+    x = np.arange(10.0)
+    if layout == "nonuniform":
+        x **= 2
+    data = xr.DataArray(values, dims=("y", "x"), coords={"x": x})
+    if layout == "transposed":
+        data = data.T
+    original = data.copy(deep=True)
+    expected = (np.percentile(data.values, 2), np.percentile(data.values, 98))
+
+    figure, axis = plt.subplots()
+    try:
+        image = plot_array(data, ax=axis, robust=True)
+        np.testing.assert_array_equal(image.get_clim(), expected)
+        np.testing.assert_array_equal(image.get_array(), original.values)
+        xr.testing.assert_identical(data, original)
+    finally:
+        plt.close(figure)
+
+
 @pytest.mark.parametrize(
     ("limits", "expected"),
     [
@@ -106,23 +131,23 @@ def test_plot_array_robust_preserves_explicit_limits(limits, expected) -> None:
         plt.close(figure)
 
 
+@pytest.mark.parametrize("dtype", [np.float32, np.float64, np.uint16])
 @pytest.mark.parametrize(
-    ("limits", "expected"),
-    [
-        ({}, (1.98, 97.02)),
-        ({"vmin": -20.0}, (-20.0, 97.02)),
-        ({"vmax": 200.0}, (1.98, 200.0)),
-        ({"vmin": -20.0, "vmax": 200.0}, (-20.0, 200.0)),
-    ],
+    "limits",
+    [{}, {"vmin": -20.0}, {"vmax": 200.0}, {"vmin": -20.0, "vmax": 200.0}],
 )
-def test_plot_array_robust_preserves_norm_limits(limits, expected) -> None:
-    data = xr.DataArray(np.arange(100.0).reshape(10, 10), dims=("y", "x"))
+def test_plot_array_robust_preserves_norm_limits(dtype, limits) -> None:
+    data = xr.DataArray(np.arange(100, dtype=dtype).reshape(10, 10), dims=("y", "x"))
+    expected = (
+        limits.get("vmin", np.percentile(data.values, 2)),
+        limits.get("vmax", np.percentile(data.values, 98)),
+    )
     norm = matplotlib.colors.Normalize(**limits)
     figure, axis = plt.subplots()
     try:
         image = plot_array(data, ax=axis, robust=True, norm=norm)
         assert image.norm is norm
-        np.testing.assert_allclose(image.get_clim(), expected)
+        np.testing.assert_array_equal(image.get_clim(), expected)
     finally:
         plt.close(figure)
 
@@ -165,6 +190,33 @@ def test_plot_array_robust_centered_norm_limits(
             (vcenter - expected_halfrange, vcenter + expected_halfrange),
         )
         assert norm(vcenter) == pytest.approx(0.5)
+    finally:
+        plt.close(figure)
+
+
+@pytest.mark.parametrize(
+    "norm_type",
+    [matplotlib.colors.CenteredNorm, CenteredPowerNorm, CenteredInversePowerNorm],
+)
+def test_plot_array_robust_centered_norm_preserves_float32_precision(norm_type) -> None:
+    values = ((np.arange(100) * 37) % 101).astype(np.float32).reshape(10, 10)
+    data = xr.DataArray(values, dims=("y", "x"))
+    original = data.copy(deep=True)
+    vcenter = 5.0
+    norm_kwargs = {"vcenter": vcenter}
+    if norm_type is not matplotlib.colors.CenteredNorm:
+        norm_kwargs["gamma"] = 0.5
+    norm = norm_type(**norm_kwargs)
+    halfrange = np.max(np.abs(np.percentile(values, [2, 98]) - vcenter))
+
+    figure, axis = plt.subplots()
+    try:
+        image = plot_array(data, ax=axis, robust=True, norm=norm)
+        np.testing.assert_array_equal(
+            image.get_clim(), (vcenter - halfrange, vcenter + halfrange)
+        )
+        np.testing.assert_array_equal(image.get_array(), original.values)
+        xr.testing.assert_identical(data, original)
     finally:
         plt.close(figure)
 

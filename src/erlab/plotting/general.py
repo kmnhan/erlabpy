@@ -404,12 +404,22 @@ def plot_array(
         finite_values = values[np.isfinite(values)]
         if finite_values.size:
             if isinstance(norm, matplotlib.colors.CenteredNorm):
-                norm.autoscale_None(np.percentile(finite_values, [2, 98]))
-            else:
-                if norm.vmin is None:
-                    norm.vmin = np.percentile(finite_values, 2)
-                if norm.vmax is None:
-                    norm.vmax = np.percentile(finite_values, 98)
+                if norm.halfrange is None:
+                    norm.autoscale_None(
+                        np.percentile(finite_values, [2, 98], overwrite_input=True)
+                    )
+            elif norm.vmin is None and norm.vmax is None:
+                # Match scalar percentile promotion on both NumPy 1.x and 2.x.
+                q_dtype = np.result_type(finite_values.dtype.type(0), 0.0)
+                norm.vmin, norm.vmax = np.percentile(
+                    finite_values,
+                    np.array([2, 98], dtype=q_dtype),
+                    overwrite_input=True,
+                )
+            elif norm.vmin is None:
+                norm.vmin = np.percentile(finite_values, 2, overwrite_input=True)
+            elif norm.vmax is None:
+                norm.vmax = np.percentile(finite_values, 98, overwrite_input=True)
     elif norm_kw:
         colorbar_kw.setdefault(
             "extend",
