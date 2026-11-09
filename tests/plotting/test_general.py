@@ -6,6 +6,7 @@ import xarray as xr
 
 import erlab.accessors.general as accessor_general
 import erlab.plotting.general as plotting_general
+from erlab.plotting.colors import CenteredInversePowerNorm, CenteredPowerNorm
 from erlab.plotting.general import (
     clean_labels,
     fermiline,
@@ -51,6 +52,217 @@ def test_plot_array_norm_ignores_nonfinite_data(invalid: float) -> None:
         figure.canvas.draw()
         assert image.norm.vmin == 1.0
         assert image.norm.vmax == 4.0
+    finally:
+        plt.close(figure)
+
+
+@pytest.mark.parametrize("nonuniform", [False, True])
+@pytest.mark.parametrize("robust", [False, True])
+def test_plot_array_robust_limits(nonuniform: bool, robust: bool) -> None:
+    values = np.arange(100.0).reshape(10, 10)
+    values.flat[:5] = [-1.0e6, 1.0e6, np.nan, np.inf, -np.inf]
+    x = np.arange(10.0)
+    if nonuniform:
+        x **= 2
+    data = xr.DataArray(values, dims=("y", "x"), coords={"x": x})
+    original = data.copy(deep=True)
+    finite_values = values[np.isfinite(values)]
+    expected = (
+        np.percentile(finite_values, [2, 98])
+        if robust
+        else (finite_values.min(), finite_values.max())
+    )
+
+    figure, axis = plt.subplots()
+    try:
+        image = plot_array(data, ax=axis, robust=robust, gamma=0.5)
+        figure.canvas.draw()
+
+        np.testing.assert_allclose(image.get_clim(), expected)
+        assert isinstance(image.norm, matplotlib.colors.PowerNorm)
+        assert image.norm.gamma == 0.5
+        xr.testing.assert_identical(data, original)
+    finally:
+        plt.close(figure)
+
+
+@pytest.mark.parametrize(
+    ("limits", "expected"),
+    [
+        ({"vmin": -20.0}, (-20.0, 97.02)),
+        ({"vmax": 200.0}, (1.98, 200.0)),
+        ({"vmin": -20.0, "vmax": 200.0}, (-20.0, 200.0)),
+        ({"vmin": None, "vmax": 200.0}, (1.98, 200.0)),
+        ({"vmin": -20.0, "vmax": None}, (-20.0, 97.02)),
+    ],
+)
+def test_plot_array_robust_preserves_explicit_limits(limits, expected) -> None:
+    data = xr.DataArray(np.arange(100.0).reshape(10, 10), dims=("y", "x"))
+    figure, axis = plt.subplots()
+    try:
+        image = plot_array(data, ax=axis, robust=True, **limits)
+        np.testing.assert_allclose(image.get_clim(), expected)
+    finally:
+        plt.close(figure)
+
+
+@pytest.mark.parametrize(
+    ("limits", "expected"),
+    [
+        ({}, (1.98, 97.02)),
+        ({"vmin": -20.0}, (-20.0, 97.02)),
+        ({"vmax": 200.0}, (1.98, 200.0)),
+        ({"vmin": -20.0, "vmax": 200.0}, (-20.0, 200.0)),
+    ],
+)
+def test_plot_array_robust_preserves_norm_limits(limits, expected) -> None:
+    data = xr.DataArray(np.arange(100.0).reshape(10, 10), dims=("y", "x"))
+    norm = matplotlib.colors.Normalize(**limits)
+    figure, axis = plt.subplots()
+    try:
+        image = plot_array(data, ax=axis, robust=True, norm=norm)
+        assert image.norm is norm
+        np.testing.assert_allclose(image.get_clim(), expected)
+    finally:
+        plt.close(figure)
+
+
+@pytest.mark.parametrize(
+    "norm_type",
+    [matplotlib.colors.CenteredNorm, CenteredPowerNorm, CenteredInversePowerNorm],
+)
+@pytest.mark.parametrize(
+    ("data_range", "vcenter", "halfrange"),
+    [
+        pytest.param((1.0, 100.0), 0.0, None, id="positive"),
+        pytest.param((-100.0, -1.0), 5.0, None, id="negative"),
+        pytest.param((-10.0, 100.0), 10.0, None, id="asymmetric"),
+        pytest.param((1.0, 100.0), 10.0, 20.0, id="fixed-halfrange"),
+    ],
+)
+def test_plot_array_robust_centered_norm_limits(
+    norm_type, data_range, vcenter, halfrange
+) -> None:
+    data = xr.DataArray(np.linspace(*data_range, 100).reshape(10, 10), dims=("y", "x"))
+    norm_kwargs = {"vcenter": vcenter, "halfrange": halfrange}
+    if norm_type is not matplotlib.colors.CenteredNorm:
+        norm_kwargs["gamma"] = 0.5
+    norm = norm_type(**norm_kwargs)
+    expected_halfrange = (
+        np.max(np.abs(np.percentile(data.values, [2, 98]) - vcenter))
+        if halfrange is None
+        else halfrange
+    )
+
+    figure, axis = plt.subplots()
+    try:
+        image = plot_array(data, ax=axis, robust=True, norm=norm)
+        figure.canvas.draw()
+        assert image.norm is norm
+        assert norm.halfrange == pytest.approx(expected_halfrange)
+        np.testing.assert_allclose(
+            image.get_clim(),
+            (vcenter - expected_halfrange, vcenter + expected_halfrange),
+        )
+        assert norm(vcenter) == pytest.approx(0.5)
+    finally:
+        plt.close(figure)
+
+
+@pytest.mark.parametrize("side", [-1, 1], ids=("negative", "positive"))
+@pytest.mark.parametrize("extend", [None, "neither"], ids=("inferred", "explicit"))
+def test_plot_array_robust_two_slope_colorbar_uses_final_limits(side, extend) -> None:
+    vcenter = 3.0
+    data = xr.DataArray(
+        side * np.arange(1.0, 101.0).reshape(10, 10) + vcenter,
+        dims=("y", "x"),
+    )
+    norm = matplotlib.colors.TwoSlopeNorm(vcenter=vcenter)
+    colorbar_kw = {} if extend is None else {"extend": extend}
+    expected_halfrange = np.percentile(np.abs(data.values - vcenter), 98)
+    figure, axis = plt.subplots()
+    try:
+        image = plot_array(
+            data,
+            ax=axis,
+            robust=True,
+            norm=norm,
+            colorbar=True,
+            colorbar_kw=colorbar_kw,
+        )
+        figure.canvas.draw()
+        np.testing.assert_allclose(
+            image.get_clim(),
+            (vcenter - expected_halfrange, vcenter + expected_halfrange),
+        )
+        assert image.colorbar.extend == (
+            extend if extend is not None else "min" if side < 0 else "max"
+        )
+    finally:
+        plt.close(figure)
+
+
+def test_plot_array_robust_uses_cropped_transformed_values() -> None:
+    data = xr.DataArray(
+        np.arange(100.0).reshape(10, 10),
+        dims=("y", "x"),
+        coords={"x": np.arange(10.0), "y": np.arange(10.0)},
+    )
+    expected_values = data.sel(x=slice(2.0, 7.0), y=slice(1.0, 8.0)) ** 2 + 10.0
+    figure, axis = plt.subplots()
+    try:
+        image = plot_array(
+            data,
+            ax=axis,
+            robust=True,
+            crop=True,
+            xlim=(2.0, 7.0),
+            ylim=(1.0, 8.0),
+            func=lambda values, offset: values**2 + offset,
+            func_args={"offset": 10.0},
+        )
+        np.testing.assert_allclose(
+            image.get_clim(), np.percentile(expected_values.values, [2, 98])
+        )
+        np.testing.assert_allclose(image.get_array(), expected_values.values)
+    finally:
+        plt.close(figure)
+
+
+def test_plot_array_robust_all_nonfinite_data() -> None:
+    data = xr.DataArray([[np.nan, np.inf], [-np.inf, np.nan]], dims=("y", "x"))
+    figure, axis = plt.subplots()
+    try:
+        image = plot_array(data, ax=axis, robust=True)
+        figure.canvas.draw()
+        assert image.get_clim() == (0.0, 0.0)
+    finally:
+        plt.close(figure)
+
+
+@pytest.mark.parametrize(
+    ("limits", "colorbar_kw", "expected"),
+    [
+        ({}, {}, "both"),
+        ({"vmin": -20.0}, {}, "max"),
+        ({"vmax": 200.0}, {}, "min"),
+        ({"vmin": -20.0, "vmax": 200.0}, {}, "neither"),
+        ({}, {"extend": "neither"}, "neither"),
+    ],
+)
+def test_plot_array_robust_colorbar_extensions(limits, colorbar_kw, expected) -> None:
+    data = xr.DataArray(np.arange(100.0).reshape(10, 10), dims=("y", "x"))
+    figure, axis = plt.subplots()
+    try:
+        image = plot_array(
+            data,
+            ax=axis,
+            robust=True,
+            colorbar=True,
+            colorbar_kw=colorbar_kw.copy(),
+            **limits,
+        )
+        assert image.colorbar.extend == expected
     finally:
         plt.close(figure)
 

@@ -233,6 +233,8 @@ def _plot_array_kwargs(operation: FigureOperationState) -> dict[str, typing.Any]
         kwargs["colorbar_kw"] = dict(operation.colorbar_kw)
     if operation.cmap is not None:
         kwargs["cmap"] = _matplotlib_cmap_name(operation.cmap)
+    if operation.robust:
+        kwargs["robust"] = True
     if _use_powernorm_plot_kwargs(operation):
         gamma = operation.norm_gamma
         if gamma is None:
@@ -290,6 +292,8 @@ def _plot_array_code_kwargs(operation: FigureOperationState) -> dict[str, typing
         kwargs["colorbar_kw"] = dict(operation.colorbar_kw)
     if operation.cmap is not None:
         kwargs["cmap"] = _matplotlib_cmap_name(operation.cmap)
+    if operation.robust:
+        kwargs["robust"] = True
     if _use_powernorm_plot_kwargs(operation):
         gamma = operation.norm_gamma
         if gamma is None:
@@ -652,6 +656,23 @@ def _build_plot_array_colors_page(
     )
     norm_combo.setObjectName("figureComposerPlotArrayNormCombo")
     editor.add_form_row(layout, "Norm", norm_combo, "Color normalization.")
+
+    robust_check = editor.check_box(
+        operation.robust,
+        lambda checked: editor.request_update(robust=checked),
+        parent=page,
+        mixed=editor.batch_is_mixed(operation, lambda target: target.robust),
+    )
+    robust_check.setObjectName("figureComposerPlotArrayRobustCheck")
+    robust_check.setText("")
+    editor.add_form_row(
+        layout,
+        "Robust",
+        robust_check,
+        "Use the 2nd and 98th percentiles for unset color limits. "
+        "Explicit bounds still apply. Clear vmin/vmax, or halfrange for "
+        "centered norms, to use percentiles.",
+    )
 
     norm_fields = _norm_kwarg_fields(operation.norm_name)
     if "gamma" in norm_fields:
