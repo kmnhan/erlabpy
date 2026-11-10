@@ -13,6 +13,13 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 from erlab.interactive import _shortcut_sequences
+from erlab.interactive.imagetool._colorlevels import (
+    display_safe_values,
+    image_display_dtype,
+)
+from erlab.interactive.imagetool._colorlevels import (
+    limits_require_display_mask as _limits_require_display_mask,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Mapping, Sequence
@@ -115,30 +122,11 @@ def _display_value_abs_limit() -> float:
     )
 
 
-def _limits_require_display_mask(mn: float, mx: float, limit: float) -> bool:
-    return np.isinf(mn) or np.isinf(mx) or mn < -limit or mx > limit
-
-
 def _display_safe_values(values, limit: float | None = None):
     """Return values safe for Qt rendering without modifying the source array."""
-    arr = np.asarray(values)
-    if (
-        arr.size == 0
-        or not np.issubdtype(arr.dtype, np.number)
-        or np.issubdtype(arr.dtype, np.complexfloating)
-    ):
-        return values
-
     if limit is None:
         limit = _display_value_abs_limit()
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", r"All-NaN (slice|axis) encountered")
-        mn, mx = float(np.nanmin(arr)), float(np.nanmax(arr))
-    if not _limits_require_display_mask(mn, mx, limit):
-        return values
-
-    with np.errstate(all="ignore"):
-        return np.where(np.isfinite(arr) & (np.abs(arr) <= limit), arr, np.nan)
+    return display_safe_values(values, limit)
 
 
 def _display_safe_float(value, limit: float | None = None) -> float:
@@ -952,8 +940,9 @@ class ArraySlicer(QtCore.QObject):
         )
 
         # Cast to float64 if not a floating point type (e.g. int)
-        if data.dtype not in (np.float32, np.float64):
-            data = data.astype(np.float64)
+        display_dtype = image_display_dtype(data.dtype)
+        if data.dtype != display_dtype:
+            data = data.astype(display_dtype)
 
         return erlab.utils.array._make_dims_uniform(data)
 

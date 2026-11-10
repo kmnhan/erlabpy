@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import enum
 import typing
 import uuid
@@ -532,12 +533,9 @@ class FigureMethodPlotValueState(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
 
 
-class FigurePlotSlicesPanelStyleState(pydantic.BaseModel):
-    """Optional style override for one logical plot_slices panel."""
+class FigureImageNormStyleState(pydantic.BaseModel):
+    """Image normalization fields shared by operations and panel overrides."""
 
-    map_index: int
-    slice_index: int
-    cmap: str | None = None
     norm_name: str | None = None
     norm_gamma: float | None = None
     norm_clip: bool | None = None
@@ -546,17 +544,99 @@ class FigurePlotSlicesPanelStyleState(pydantic.BaseModel):
     vmax: float | None = None
     vcenter: float | None = None
     halfrange: float | None = None
-    line_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
 
     model_config = pydantic.ConfigDict(extra="forbid")
 
-    @pydantic.field_validator("norm_kwargs", "line_kw", mode="before")
+    @pydantic.field_validator("norm_kwargs", mode="before")
     @classmethod
-    def _restore_slice_kwargs(cls, value: typing.Any) -> typing.Any:
+    def _restore_norm_kwargs(cls, value: typing.Any) -> typing.Any:
         return _restore_slice_mapping(value)
 
-    @pydantic.field_serializer("norm_kwargs", "line_kw", when_used="json")
-    def _serialize_slice_kwargs(
+    @pydantic.field_serializer("norm_kwargs", when_used="json")
+    def _serialize_norm_kwargs(
+        self, value: dict[str, typing.Any]
+    ) -> dict[str, typing.Any]:
+        return _jsonable_slice_mapping(value)
+
+
+class FigureImageColorStyleState(FigureImageNormStyleState):
+    """Image colors that plot_slices can override for each panel."""
+
+    cmap: str | None = None
+
+
+class FigureImageStyleState(FigureImageColorStyleState):
+    """Complete image preparation and appearance settings."""
+
+    transpose: bool = False
+    invert_x: bool | None = None
+    invert_y: bool | None = None
+    xlim: FigureLimit | None = None
+    ylim: FigureLimit | None = None
+    crop: bool = True
+    aspect: str | float | None = None
+    same_limits: bool | str = False
+    axis: str = "auto"
+    show_all_labels: bool = False
+    colorbar: str = "none"
+    hide_colorbar_ticks: bool = True
+    annotate: bool = True
+    robust: bool = False
+    image_value_abs_limit: float | None = pydantic.Field(
+        default=None, gt=0.0, allow_inf_nan=False
+    )
+    gamma: float | None = None
+    annotate_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
+    colorbar_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
+    extra_kwargs: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
+
+    @pydantic.field_validator(
+        "annotate_kw", "colorbar_kw", "extra_kwargs", mode="before"
+    )
+    @classmethod
+    def _restore_image_kwargs(cls, value: typing.Any) -> typing.Any:
+        return _restore_slice_mapping(value)
+
+    @pydantic.field_serializer(
+        "annotate_kw", "colorbar_kw", "extra_kwargs", when_used="json"
+    )
+    def _serialize_image_kwargs(
+        self, value: dict[str, typing.Any]
+    ) -> dict[str, typing.Any]:
+        return _jsonable_slice_mapping(value)
+
+    @property
+    def color_style(self) -> FigureImageColorStyleState:
+        values = {
+            name: getattr(self, name)
+            for name in FigureImageColorStyleState.model_fields
+        }
+        values["norm_name"] = self.norm_name or _POWER_NORM_NAME
+        if self.norm_gamma is None:
+            values["norm_gamma"] = self.gamma
+        return FigureImageColorStyleState.model_validate(values)
+
+    def operation_style(self) -> dict[str, typing.Any]:
+        values = self.model_dump(exclude=set(FigureImageColorStyleState.model_fields))
+        # The legacy gamma field has the same meaning as norm_gamma.
+        values.pop("gamma")
+        return values
+
+
+class FigurePlotSlicesPanelStyleState(FigureImageColorStyleState):
+    """Optional style override for one logical plot_slices panel."""
+
+    map_index: int
+    slice_index: int
+    line_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
+
+    @pydantic.field_validator("line_kw", mode="before")
+    @classmethod
+    def _restore_line_kwargs(cls, value: typing.Any) -> typing.Any:
+        return _restore_slice_mapping(value)
+
+    @pydantic.field_serializer("line_kw", when_used="json")
+    def _serialize_line_kwargs(
         self, value: dict[str, typing.Any]
     ) -> dict[str, typing.Any]:
         return _jsonable_slice_mapping(value)
@@ -614,7 +694,7 @@ class FigureSequentialPaletteState(pydantic.BaseModel):
         return self
 
 
-class FigureOperationState(pydantic.BaseModel):
+class FigureOperationState(FigureImageStyleState):
     """One ordered plotting operation in a figure recipe."""
 
     operation_id: str = pydantic.Field(default_factory=lambda: uuid.uuid4().hex)
@@ -675,30 +755,6 @@ class FigureOperationState(pydantic.BaseModel):
     slice_values_thin: int = pydantic.Field(default=1, ge=1)
     slice_width: float | None = None
     slice_kwargs: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
-    transpose: bool = False
-    invert_x: bool | None = None
-    invert_y: bool | None = None
-    xlim: FigureLimit | None = None
-    ylim: FigureLimit | None = None
-    crop: bool = True
-    aspect: str | float | None = None
-    same_limits: bool | str = False
-    axis: str = "auto"
-    show_all_labels: bool = False
-    colorbar: str = "none"
-    hide_colorbar_ticks: bool = True
-    annotate: bool = True
-    cmap: str | None = None
-    robust: bool = False
-    gamma: float | None = None
-    norm_name: str | None = None
-    norm_gamma: float | None = None
-    norm_clip: bool | None = None
-    norm_kwargs: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
-    vmin: float | None = None
-    vmax: float | None = None
-    vcenter: float | None = None
-    halfrange: float | None = None
     order: str = "C"
     cmap_order: str = "C"
     norm_order: str | None = None
@@ -708,9 +764,6 @@ class FigureOperationState(pydantic.BaseModel):
     gradient_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
     line_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
     subplot_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
-    annotate_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
-    colorbar_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
-    extra_kwargs: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
 
     line_source: str | None = None
     line_label_text: str = ""
@@ -795,9 +848,7 @@ class FigureOperationState(pydantic.BaseModel):
         return value
 
     @pydantic.field_validator(
-        "norm_kwargs",
         "slice_kwargs",
-        "extra_kwargs",
         "line_kw",
         "bz_vertex_kw",
         "bz_midpoint_kw",
@@ -805,8 +856,6 @@ class FigureOperationState(pydantic.BaseModel):
         "method_kwargs",
         "gradient_kw",
         "subplot_kw",
-        "annotate_kw",
-        "colorbar_kw",
         mode="before",
     )
     @classmethod
@@ -836,9 +885,7 @@ class FigureOperationState(pydantic.BaseModel):
         return _restore_slice_value(value)
 
     @pydantic.field_serializer(
-        "norm_kwargs",
         "slice_kwargs",
-        "extra_kwargs",
         "line_kw",
         "line_selection",
         "bz_vertex_kw",
@@ -847,8 +894,6 @@ class FigureOperationState(pydantic.BaseModel):
         "method_kwargs",
         "gradient_kw",
         "subplot_kw",
-        "annotate_kw",
-        "colorbar_kw",
         when_used="json",
     )
     def _serialize_slice_kwargs(
@@ -874,6 +919,28 @@ class FigureOperationState(pydantic.BaseModel):
         self, value: tuple[typing.Any, ...]
     ) -> tuple[typing.Any, ...]:
         return typing.cast("tuple[typing.Any, ...]", _jsonable_slice_value(value))
+
+    @property
+    def image_style(self) -> FigureImageStyleState:
+        return FigureImageStyleState.model_validate(
+            copy.deepcopy(
+                {
+                    name: getattr(self, name)
+                    for name in FigureImageStyleState.model_fields
+                }
+            )
+        )
+
+    def with_image_style(self, style: FigureImageStyleState) -> FigureOperationState:
+        return self.model_copy(
+            update=copy.deepcopy(
+                {
+                    name: getattr(style, name)
+                    for name in FigureImageStyleState.model_fields
+                }
+            ),
+            deep=True,
+        )
 
     @classmethod
     def set_palette(cls, *, label: str = "set palette") -> FigureOperationState:

@@ -912,6 +912,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "highContrastAct": self.slicer_area.high_contrast_act,
                     "zeroCenterAct": self.slicer_area.zero_centered_act,
                     "lockLevelsAct": self.slicer_area.lock_levels_act,
+                    "robustLevelsAct": self.slicer_area.robust_levels_act,
                     "sep3": {"separator": True},
                     "ktoolAct": self.slicer_area.ktool_act,
                     "meshtoolAct": self.slicer_area.meshtool_act,

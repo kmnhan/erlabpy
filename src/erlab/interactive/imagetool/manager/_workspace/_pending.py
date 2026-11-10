@@ -25,6 +25,7 @@ import erlab.interactive.imagetool.slicer
 import erlab.interactive.imagetool.viewer_linking
 from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool import _serialization
+from erlab.interactive.imagetool._colorlevels import resolve_image_levels
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._model import (
     ScriptInputDataRole,
@@ -40,6 +41,7 @@ from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
 )
+from erlab.interactive.imagetool.viewer_state import _ColorMapSettings
 
 if typing.TYPE_CHECKING:
     import os
@@ -807,24 +809,30 @@ class _PendingWorkspacePayloads:
         color = state.get("color", {})
         if not isinstance(color, collections.abc.Mapping):
             color = {}
-        image_item = erlab.interactive.colors.BetterImageItem()
+        settings = _ColorMapSettings(cmap="viridis").updated(color)
+        image_item = erlab.interactive.colors.BetterImageItem(axisOrder="row-major")
         image_item.set_colormap(
-            color.get("cmap", "viridis"),
-            float(color.get("gamma", 1.0)),
-            bool(color.get("reverse", False)),
-            high_contrast=bool(color.get("high_contrast", False)),
-            zero_centered=bool(color.get("zero_centered", False)),
+            settings.cmap,
+            settings.gamma,
+            settings.reverse,
+            high_contrast=settings.high_contrast,
+            zero_centered=settings.zero_centered,
             update=False,
         )
-        levels_locked = bool(color.get("levels_locked", False))
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore", r"All-NaN (slice|axis) encountered", RuntimeWarning
             )
-            image_item.setImage(data, autoLevels=not levels_locked)
-        levels = color.get("levels")
-        if levels_locked and isinstance(levels, (list, tuple)) and len(levels) == 2:
-            image_item.setLevels((float(levels[0]), float(levels[1])), update=True)
+            if settings.levels_robust and not settings.levels_locked:
+                image_item.setImage(
+                    data,
+                    autoLevels=False,
+                    levels=resolve_image_levels(data, robust=True).limits,
+                )
+            else:
+                image_item.setImage(data, autoLevels=not settings.levels_locked)
+        if settings.levels_locked and settings.levels is not None:
+            image_item.setLevels(settings.levels, update=True)
         return image_item.getPixmap()
 
     @staticmethod
@@ -1596,16 +1604,19 @@ class _PendingWorkspacePayloads:
         state: dict[str, typing.Any], arguments: Mapping[str, typing.Any]
     ) -> None:
         color_state = dict(state.get("color", {}))
-        for key in ("cmap", "gamma", "reverse", "high_contrast", "zero_centered"):
-            value = arguments.get(key)
-            if value is not None:
-                color_state[key] = value
-        levels_locked = arguments.get("levels_locked")
-        if levels_locked is not None:
-            color_state["levels_locked"] = bool(levels_locked)
-        levels = arguments.get("levels")
-        if levels is not None:
-            color_state["levels"] = [float(levels[0]), float(levels[1])]
+        updated = dict(
+            _ColorMapSettings.from_state(color_state)
+            .updated(arguments)
+            .to_state(json_compatible=True)
+        )
+        # Missing legacy fields must still resolve from options when opened.
+        color_state.update(
+            {
+                key: updated[key]
+                for key, value in arguments.items()
+                if value is not None and key in updated
+            }
+        )
         state["color"] = color_state
 
     def _register_pending_workspace_tool(

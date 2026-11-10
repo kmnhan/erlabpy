@@ -35,6 +35,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     ImageToolSelectionSourceBinding,
     IselOperation,
 )
+from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
 from tests.interactive.imagetool.manager.helpers import (
     _exec_generated_code,
     adopt_workspace_path,
@@ -66,6 +67,26 @@ from tests.interactive.imagetool.manager.workspace._support import (
     _WorkspaceSweepFigureTool,
     add_source_childtool,
 )
+
+
+def test_pending_colormap_change_preserves_legacy_missing_fields(qtbot) -> None:
+    data = xr.DataArray(np.arange(100.0).reshape(10, 10), dims=("x", "y"))
+    source = erlab.interactive.imagetool.ImageTool(data, cmap="viridis")
+    qtbot.addWidget(source)
+    state = source.slicer_area.state
+    # Workspace loading removes an unavailable map so the current default is used.
+    state["color"].pop("cmap")
+
+    workspace_pending._PendingWorkspacePayloads._update_pending_link_colormap_state(
+        state, {"levels_robust": True, "update": True}
+    )
+
+    assert "cmap" not in state["color"]
+    restored = erlab.interactive.imagetool.ImageTool(data, cmap="plasma", state=state)
+    qtbot.addWidget(restored)
+    assert restored.slicer_area.colormap == "plasma"
+    assert restored.slicer_area.levels_robust
+    assert not source.slicer_area.levels_robust
 
 
 @pytest.mark.parametrize(
@@ -840,6 +861,111 @@ def test_manager_pending_linked_partner_saves_color_when_linked(
             _current_workspace_payload_attrs(fname, "1")["itool_state"]
         )
         assert saved_partner_state["color"]["cmap"] == new_cmap
+
+
+@pytest.mark.parametrize("initial_robust", [False, True])
+@pytest.mark.parametrize("link_colors", [False, True])
+def test_manager_pending_linked_robust_levels_save_reopen(
+    qtbot, monkeypatch, tmp_path, manager_context, initial_robust, link_colors
+) -> None:
+    with manager_context() as manager:
+        values = np.arange(100, dtype=np.float64).reshape(10, 10)
+        values[-1, -1] = 1.0e6
+        for offset in (0.0, 100.0):
+            tool = erlab.interactive.imagetool.ImageTool(
+                xr.DataArray(values + offset, dims=("x", "y")),
+                levels_robust=initial_robust,
+            )
+            manager.add_imagetool(tool, show=False)
+            tool.hide()
+        manager.link_imagetools(0, 1, link_colors=link_colors)
+        fname = tmp_path / "pending-linked-robust.itws"
+        manager._workspace_controller.saving._save_workspace_document(fname)
+        if not initial_robust:
+            for index in range(2):
+                with _edit_current_workspace_payload_attrs(fname, str(index)) as attrs:
+                    state = json.loads(attrs["itool_state"])
+                    state["color"].pop("levels_robust")
+                    attrs["itool_state"] = json.dumps(state)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        nodes = [manager._tool_graph.root_wrappers[index] for index in range(2)]
+        assert all(node.imagetool is None for node in nodes)
+        group_keys = [node.workspace_link_key for node in nodes]
+        assert group_keys[0] is not None
+        assert group_keys[0] == group_keys[1]
+        source = manager.get_imagetool(0).slicer_area
+        assert source.levels_robust is initial_robust
+        source.flush_history()
+        proxy = source._linking_proxy
+        changes = []
+        original_notify = nodes[1]._notify_change
+
+        def _record_change(change):
+            changes.append(change)
+            original_notify(change)
+
+        monkeypatch.setattr(nodes[1], "_notify_change", _record_change)
+
+        def _fail_materialize(_node):
+            pytest.fail("A linked color update must keep the partner pending")
+
+        pending = manager._workspace_controller.loading.pending
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                pending, "_materialize_pending_workspace_payload", _fail_materialize
+            )
+            source.set_colormap(levels_robust=not initial_robust)
+            assert source.levels_robust is (not initial_robust)
+            assert len(source._prev_states) == 1
+            assert ("color", "levels_robust") in source._prev_states[-1].changed_paths
+            qtbot.wait_until(
+                lambda: nodes[0].uid in manager._workspace_state.dirty_state
+            )
+            assert (nodes[1].uid in manager._workspace_state.dirty_state) is link_colors
+            assert nodes[1].imagetool is None
+            assert nodes[1].pending_workspace_memory_payload is not None
+            assert [node.workspace_link_key for node in nodes] == group_keys
+            assert source._linking_proxy is proxy
+            assert all(node.workspace_link_colors is link_colors for node in nodes)
+            assert (
+                any(change & _ManagedNodeChange.INFO for change in changes)
+                is link_colors
+            )
+            expected_robust = not initial_robust if link_colors else initial_robust
+            attrs = nodes[1].pending_workspace_payload_attrs
+            assert attrs is not None
+            partner_state = json.loads(attrs["itool_state"])
+            assert partner_state["color"].get("levels_robust", False) is expected_robust
+            assert _request_workspace_save_and_wait(qtbot, manager)
+            assert nodes[1].imagetool is None
+
+        saved_color = json.loads(
+            _current_workspace_payload_attrs(fname, "1")["itool_state"]
+        )["color"]
+        assert saved_color.get("levels_robust", False) is expected_robust
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        assert all(
+            node.imagetool is None
+            for node in manager._tool_graph.root_wrappers.values()
+        )
+        partner_tool = manager.get_imagetool(1)
+        partner_tool.show()
+        partner = partner_tool.slicer_area
+        assert partner.levels_robust is expected_robust
+        assert partner.robust_levels_act.isChecked() is expected_robust
+        image = partner.main_image.slicer_data_items[0]
+        qtbot.wait_until(lambda: image.image is not None)
+        finite_values = image.image[np.isfinite(image.image)]
+        expected_limits = (
+            np.percentile(finite_values, [2, 98])
+            if expected_robust
+            else [finite_values.min(), finite_values.max()]
+        )
+        np.testing.assert_allclose(image.getLevels(), expected_limits)
 
 
 @pytest.mark.parametrize(

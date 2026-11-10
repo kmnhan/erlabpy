@@ -40,6 +40,7 @@ _DETAIL_LABELS = {
     "color.high_contrast": "High contrast",
     "color.levels": "Levels",
     "color.levels_locked": "Lock levels",
+    "color.levels_robust": "Robust levels",
     "color.reverse": "Reverse colormap",
     "color.zero_centered": "Zero centered",
     "slice.snap_to_data": "Snap to pixels",
@@ -409,6 +410,8 @@ def parse_change(key: str, old, new) -> str:
             if new is _MISSING or old is _MISSING:
                 return "Colormap levels lock changed"
             return "Colormap levels locked" if new else "Colormap levels unlocked"
+        case "color.levels_robust":
+            return "Robust levels enabled" if new else "Robust levels disabled"
         case "color.levels":
             return "Colormap levels changed"
         case _:
@@ -528,6 +531,7 @@ def _describe_state_change_rows(
         "color.high_contrast",
         "color.zero_centered",
         "color.levels_locked",
+        "color.levels_robust",
         "color.levels",
     ):
         if key in changes:

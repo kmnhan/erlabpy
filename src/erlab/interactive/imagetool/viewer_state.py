@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 import contextlib
+import copy
 import dataclasses
 import logging
 import typing
@@ -56,7 +57,77 @@ class ColorMapState(typing.TypedDict):
     high_contrast: bool
     zero_centered: bool
     levels_locked: bool
+    levels_robust: typing.NotRequired[bool]
     levels: typing.NotRequired[tuple[float, float]]
+
+
+@dataclasses.dataclass(frozen=True)
+class _ColorMapSettings:
+    """Complete color settings shared by live and pending ImageTools."""
+
+    cmap: str | pg.ColorMap = "magma"
+    gamma: float = 1.0
+    reverse: bool = False
+    high_contrast: bool = False
+    zero_centered: bool = False
+    levels_locked: bool = False
+    levels_robust: bool = False
+    levels: tuple[float, float] | None = None
+
+    @classmethod
+    def from_state(cls, state: collections.abc.Mapping[str, typing.Any]) -> typing.Self:
+        return cls().updated(state)
+
+    def updated(self, changes: collections.abc.Mapping[str, typing.Any]) -> typing.Self:
+        values: dict[str, typing.Any] = {}
+        for field in dataclasses.fields(self):
+            value = changes.get(field.name)
+            if value is None:
+                continue
+            if isinstance(field.default, bool):
+                value = bool(value)
+            elif isinstance(field.default, float):
+                value = float(value)
+            elif field.name == "levels":
+                value = (float(value[0]), float(value[1]))
+            values[field.name] = value
+        return dataclasses.replace(self, **values)
+
+    def to_state(
+        self, *, include_levels: bool = True, json_compatible: bool = False
+    ) -> ColorMapState:
+        state = {
+            field.name: copy.deepcopy(getattr(self, field.name))
+            for field in dataclasses.fields(self)
+        }
+        if self.levels is None or not include_levels:
+            state.pop("levels")
+        elif json_compatible:
+            state["levels"] = list(self.levels)
+        return typing.cast("ColorMapState", state)
+
+    def constructor_kwargs(self, *, keep_limits: bool = True) -> dict[str, typing.Any]:
+        kwargs: dict[str, typing.Any] = dict(self.to_state())
+        cmap = kwargs["cmap"]
+        if kwargs.pop("reverse"):
+            if isinstance(cmap, str):
+                cmap = f"{cmap}_r"
+            else:
+                cmap.reverse()
+        kwargs["cmap"] = cmap
+        levels_locked = kwargs.pop("levels_locked")
+        levels = kwargs.pop("levels", None)
+        if levels_locked and keep_limits and levels is not None:
+            kwargs["vmin"], kwargs["vmax"] = levels
+        return kwargs
+
+
+def _child_colormap_kwargs(
+    properties: ColorMapState, *, keep_limits: bool = True
+) -> dict[str, typing.Any]:
+    return _ColorMapSettings.from_state(properties).constructor_kwargs(
+        keep_limits=keep_limits
+    )
 
 
 class GuidelineState(typing.TypedDict):

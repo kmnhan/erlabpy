@@ -14,6 +14,8 @@ from erlab.interactive._figurecomposer._model._operation_metadata import (
 from erlab.interactive._figurecomposer._model._sources import _middle_coord_value
 from erlab.interactive._figurecomposer._model._state import (
     FigureAxesSelectionState,
+    FigureImageColorStyleState,
+    FigureImageNormStyleState,
     FigureOperationKind,
     FigureOperationState,
     FigurePlotSlicesPanelStyleState,
@@ -26,58 +28,16 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
 
-def _plot_slices_style_update(operation: FigureOperationState) -> dict[str, typing.Any]:
-    norm_gamma = operation.norm_gamma
-    if norm_gamma is None:
-        norm_gamma = operation.gamma
-    return {
-        "cmap": operation.cmap,
-        "norm_name": operation.norm_name or "PowerNorm",
-        "norm_gamma": norm_gamma,
-        "norm_clip": operation.norm_clip,
-        "norm_kwargs": dict(operation.norm_kwargs),
-        "vmin": operation.vmin,
-        "vmax": operation.vmax,
-        "vcenter": operation.vcenter,
-        "halfrange": operation.halfrange,
-    }
-
-
-def _plot_slices_neutral_norm_update() -> dict[str, typing.Any]:
-    return {
-        "same_limits": False,
-        "gamma": None,
-        "norm_name": "PowerNorm",
-        "norm_gamma": None,
-        "norm_clip": None,
-        "norm_kwargs": {},
-        "vmin": None,
-        "vmax": None,
-        "vcenter": None,
-        "halfrange": None,
-    }
-
-
-def _plot_slices_panel_norm_style_update(
-    style: dict[str, typing.Any],
-) -> dict[str, typing.Any]:
-    updates: dict[str, typing.Any] = {}
-    norm_name = style["norm_name"]
-    if norm_name != "PowerNorm":
-        updates["norm_name"] = norm_name
-    for key in (
-        "norm_gamma",
-        "norm_clip",
-        "vmin",
-        "vmax",
-        "vcenter",
-        "halfrange",
-    ):
-        if style[key] is not None:
-            updates[key] = style[key]
-    if style["norm_kwargs"]:
-        updates["norm_kwargs"] = dict(style["norm_kwargs"])
-    return updates
+def image_operations_have_compatible_styles(
+    operations: tuple[FigureOperationState, ...],
+) -> bool:
+    if not operations:
+        return True
+    first_style = operations[0].image_style.operation_style()
+    return all(
+        operation.image_style.operation_style() == first_style
+        for operation in operations[1:]
+    )
 
 
 def plot_slices_operation_with_source_styles(
@@ -90,64 +50,91 @@ def plot_slices_operation_with_source_styles(
     if len(source_operations) <= 1:
         return operation
 
-    styles = tuple(
-        _plot_slices_style_update(source_operation)
-        for source_operation in source_operations
-    )
-    first_style = styles[0]
-    cmap_differs = any(style["cmap"] != first_style["cmap"] for style in styles[1:])
-    norm_fields = (
-        "norm_name",
-        "norm_gamma",
-        "norm_clip",
-        "norm_kwargs",
-        "vmin",
-        "vmax",
-        "vcenter",
-        "halfrange",
-    )
+    if not image_operations_have_compatible_styles(source_operations):
+        raise ValueError("Image operations have incompatible image styles")
+    panels = []
+    slice_count = max(len(operation.slice_values), 1)
+    for source_index, source_operation in enumerate(source_operations):
+        source_style = source_operation.image_style.color_style
+        overrides = (
+            {
+                (style.map_index, style.slice_index): style
+                for style in source_operation.panel_styles
+            }
+            if source_operation.panel_styles_enabled
+            else {}
+        )
+        for selection_index in range(selections_per_source):
+            map_index = source_index * selections_per_source + selection_index
+            for slice_index in range(slice_count):
+                style = source_style
+                override = overrides.get((selection_index, slice_index))
+                if override is not None:
+                    style = style.model_copy(
+                        update={
+                            name: value
+                            for name in FigureImageColorStyleState.model_fields
+                            if (value := getattr(override, name)) is not None
+                            and value != {}
+                        }
+                    )
+                panels.append((map_index, slice_index, style))
+    first_style = panels[0][2]
+    cmap_differs = any(style.cmap != first_style.cmap for _, _, style in panels[1:])
     norm_differs = any(
-        any(style[field] != first_style[field] for field in norm_fields)
-        for style in styles[1:]
+        any(
+            getattr(style, field) != getattr(first_style, field)
+            for field in FigureImageNormStyleState.model_fields
+        )
+        for _, _, style in panels[1:]
     )
     if not cmap_differs and not norm_differs:
-        return operation
+        if not any(
+            source.panel_styles_enabled and source.panel_styles
+            for source in source_operations
+        ):
+            return operation
+        return operation.model_copy(
+            update={
+                **{
+                    name: getattr(first_style, name)
+                    for name in FigureImageColorStyleState.model_fields
+                },
+                "panel_styles_enabled": False,
+                "panel_styles": (),
+            }
+        )
 
     updates: dict[str, typing.Any] = {"panel_styles_enabled": True}
     if cmap_differs:
         updates["cmap"] = None
     if norm_differs:
-        updates.update(_plot_slices_neutral_norm_update())
+        updates.update(FigureImageNormStyleState(norm_name="PowerNorm").model_dump())
+        updates.update(same_limits=False, gamma=None)
 
-    panel_styles: list[FigurePlotSlicesPanelStyleState] = []
-    slice_count = max(len(operation.slice_values), 1)
-    for source_index, style in enumerate(styles):
-        for selection_index in range(selections_per_source):
-            map_index = source_index * selections_per_source + selection_index
-            for slice_index in range(slice_count):
-                style_update: dict[str, typing.Any] = {}
-                if cmap_differs and style["cmap"] is not None:
-                    style_update["cmap"] = style["cmap"]
-                if norm_differs:
-                    style_update.update(_plot_slices_panel_norm_style_update(style))
-                if style_update:
-                    panel_styles.append(
-                        FigurePlotSlicesPanelStyleState(
-                            map_index=map_index,
-                            slice_index=slice_index,
-                            **style_update,
-                        )
-                    )
-
-    if not panel_styles:
-        return operation
-
-    return operation.model_copy(
-        update={
-            **updates,
-            "panel_styles": tuple(panel_styles),
-        }
-    )
+    panel_styles = []
+    neutral_norm = FigureImageNormStyleState(norm_name="PowerNorm")
+    for map_index, slice_index, style in panels:
+        style_update: dict[str, typing.Any] = {}
+        if cmap_differs and style.cmap is not None:
+            style_update["cmap"] = style.cmap
+        if norm_differs:
+            style_update.update(
+                {
+                    name: value
+                    for name in FigureImageNormStyleState.model_fields
+                    if (value := getattr(style, name)) != getattr(neutral_norm, name)
+                }
+            )
+        if style_update:
+            panel_styles.append(
+                FigurePlotSlicesPanelStyleState(
+                    map_index=map_index,
+                    slice_index=slice_index,
+                    **style_update,
+                )
+            )
+    return operation.model_copy(update={**updates, "panel_styles": tuple(panel_styles)})
 
 
 def _default_bz_updates() -> dict[str, typing.Any]:
@@ -395,6 +382,32 @@ def _setup_for_operation(
     return FigureSubplotsState(nrows=max(len(squeezed), 1), ncols=1)
 
 
+def _setup_for_image_operations(
+    operations: tuple[FigureOperationState, ...],
+    source_data: Mapping[str, xr.DataArray],
+) -> FigureSubplotsState:
+    if operations and any(
+        operation.kind == FigureOperationKind.PLOT_SLICES for operation in operations
+    ):
+        shapes = tuple(
+            _plot_slices_grid_shape(operation.model_copy(update={"order": "F"}))
+            if operation.kind == FigureOperationKind.PLOT_SLICES
+            else (1, 1)
+            for operation in operations
+        )
+        return FigureSubplotsState(
+            nrows=max(shape[0] for shape in shapes),
+            ncols=sum(shape[1] for shape in shapes),
+        )
+    if operations and all(
+        operation.kind == FigureOperationKind.PLOT_ARRAY
+        and len(operation.map_selections) == 1
+        for operation in operations
+    ):
+        return FigureSubplotsState(nrows=1, ncols=len(operations))
+    return _setup_for_operation(None, source_data)
+
+
 def _operation_with_source_names(
     operation: FigureOperationState, source_name_map: Mapping[str, str]
 ) -> FigureOperationState:
@@ -411,31 +424,90 @@ def _operations_with_append_axes(
         len(operations) > 1
         and not axes_selection.expression
         and all(
-            operation.kind == FigureOperationKind.PLOT_ARRAY for operation in operations
+            operation.kind
+            in {FigureOperationKind.PLOT_ARRAY, FigureOperationKind.PLOT_SLICES}
+            for operation in operations
         )
     ):
-        if axes_selection.axes and len(axes_selection.axes) >= len(operations):
-            return tuple(
-                operation.model_copy(
-                    update={
-                        "axes": FigureAxesSelectionState(
-                            axes=(axes_selection.axes[index],)
-                        )
-                    }
+        counts = tuple(
+            max(len(operation.map_selections) or len(operation.sources), 1)
+            * max(len(operation.slice_values), 1)
+            if operation.kind == FigureOperationKind.PLOT_SLICES
+            else 1
+            for operation in operations
+        )
+        if axes_selection.axes and len(axes_selection.axes) >= sum(counts):
+            if any(
+                operation.kind == FigureOperationKind.PLOT_SLICES
+                for operation in operations
+            ):
+                rows = sorted({row for row, _col in axes_selection.axes})
+                columns = sorted({col for _row, col in axes_selection.axes})
+                shapes = tuple(
+                    _plot_slices_grid_shape(operation.model_copy(update={"order": "F"}))
+                    if operation.kind == FigureOperationKind.PLOT_SLICES
+                    else (1, 1)
+                    for operation in operations
                 )
-                for index, operation in enumerate(operations)
-            )
-        if axes_selection.axes_ids and len(axes_selection.axes_ids) >= len(operations):
-            return tuple(
-                operation.model_copy(
-                    update={
-                        "axes": FigureAxesSelectionState(
-                            axes_ids=(axes_selection.axes_ids[index],)
+                if len(rows) >= max(shape[0] for shape in shapes) and len(
+                    columns
+                ) >= sum(shape[1] for shape in shapes):
+                    selected = []
+                    offset = 0
+                    for operation, (nrows, ncols) in zip(
+                        operations, shapes, strict=True
+                    ):
+                        axes = tuple(
+                            (row, col)
+                            for row in rows[:nrows]
+                            for col in columns[offset : offset + ncols]
                         )
-                    }
+                        if not set(axes).issubset(axes_selection.axes):
+                            break
+                        selected.append(
+                            operation.model_copy(
+                                update={
+                                    "axes": FigureAxesSelectionState(axes=axes),
+                                    **(
+                                        {"order": "F"}
+                                        if operation.kind
+                                        == FigureOperationKind.PLOT_SLICES
+                                        else {}
+                                    ),
+                                }
+                            )
+                        )
+                        offset += ncols
+                    else:
+                        return tuple(selected)
+            offset = 0
+            selected = []
+            for operation, count in zip(operations, counts, strict=True):
+                axes = axes_selection.axes[offset : offset + count]
+                selected.append(
+                    operation.model_copy(
+                        update={"axes": FigureAxesSelectionState(axes=axes)}
+                    )
                 )
-                for index, operation in enumerate(operations)
-            )
+                offset += count
+            return tuple(selected)
+        if axes_selection.axes_ids and len(axes_selection.axes_ids) >= sum(counts):
+            offset = 0
+            selected = []
+            for operation, count in zip(operations, counts, strict=True):
+                selected.append(
+                    operation.model_copy(
+                        update={
+                            "axes": FigureAxesSelectionState(
+                                axes_ids=axes_selection.axes_ids[
+                                    offset : offset + count
+                                ]
+                            )
+                        }
+                    )
+                )
+                offset += count
+            return tuple(selected)
     return tuple(
         operation.model_copy(update={"axes": axes_selection})
         for operation in operations

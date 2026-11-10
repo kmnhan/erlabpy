@@ -70,6 +70,7 @@ class _FigureComposerWorkflowController(QtCore.QObject):
         self, targets: tuple[int | str, ...], source_names: tuple[str, ...]
     ) -> tuple[FigureOperationState, ...] | None:
         from erlab.interactive._figurecomposer import (
+            FigureImageStyleState,
             FigureOperationKind,
             FigureOperationState,
         )
@@ -108,32 +109,10 @@ class _FigureComposerWorkflowController(QtCore.QObject):
                 len(operation.map_selections) == 1 for operation in source_operations
             ):
                 first_operation = source_operations[0]
-                plot_array_updates = {
-                    "transpose": first_operation.transpose,
-                    "invert_x": first_operation.invert_x,
-                    "invert_y": first_operation.invert_y,
-                    "xlim": first_operation.xlim,
-                    "ylim": first_operation.ylim,
-                    "crop": first_operation.crop,
-                    "axis": "image"
-                    if first_operation.aspect == "equal"
-                    else first_operation.axis,
-                    "colorbar": first_operation.colorbar,
-                    "hide_colorbar_ticks": first_operation.hide_colorbar_ticks,
-                    "annotate": first_operation.annotate,
-                    "cmap": first_operation.cmap,
-                    "gamma": first_operation.gamma,
-                    "norm_name": first_operation.norm_name,
-                    "norm_gamma": first_operation.norm_gamma,
-                    "norm_clip": first_operation.norm_clip,
-                    "norm_kwargs": dict(first_operation.norm_kwargs),
-                    "vmin": first_operation.vmin,
-                    "vmax": first_operation.vmax,
-                    "vcenter": first_operation.vcenter,
-                    "halfrange": first_operation.halfrange,
-                    "colorbar_kw": dict(first_operation.colorbar_kw),
-                    "extra_kwargs": dict(first_operation.extra_kwargs),
-                }
+                if not _seeding.image_operations_have_compatible_styles(
+                    tuple(source_operations)
+                ):
+                    return tuple(source_operations)
                 operation = FigureOperationState.plot_slices(
                     label="plot_slices",
                     sources=source_names,
@@ -142,7 +121,9 @@ class _FigureComposerWorkflowController(QtCore.QObject):
                         for source_operation in source_operations
                         for selection in source_operation.map_selections
                     ),
-                ).model_copy(update=plot_array_updates)
+                ).with_image_style(first_operation.image_style)
+                if first_operation.aspect == "equal":
+                    operation = operation.model_copy(update={"axis": "image"})
                 if len(source_names) > 1:
                     operation = operation.model_copy(update={"order": "F"})
                 return (
@@ -157,7 +138,7 @@ class _FigureComposerWorkflowController(QtCore.QObject):
             operation.kind != FigureOperationKind.PLOT_SLICES
             for operation in source_operations
         ):
-            return None
+            return tuple(source_operations)
 
         if any(operation.map_selections for operation in source_operations):
             from erlab.interactive._figurecomposer._exceptions import (
@@ -165,6 +146,22 @@ class _FigureComposerWorkflowController(QtCore.QObject):
             )
 
             raise FigureComposerPlotSlicesSelectionError
+        non_source_fields = set(FigureImageStyleState.model_fields) | {
+            "operation_id",
+            "label",
+            "sources",
+            "axes",
+            "panel_styles_enabled",
+            "panel_styles",
+        }
+        first_settings = source_operations[0].model_dump(exclude=non_source_fields)
+        if not _seeding.image_operations_have_compatible_styles(
+            tuple(source_operations)
+        ) or any(
+            operation.model_dump(exclude=non_source_fields) != first_settings
+            for operation in source_operations[1:]
+        ):
+            return tuple(source_operations)
         operation = source_operations[0]
         source_updates: dict[str, typing.Any] = {"sources": source_names}
         if len(source_names) > 1:
@@ -855,9 +852,10 @@ class _FigureComposerWorkflowController(QtCore.QObject):
             setup_operation = None if custom_code is not None else operation
             if setup_operation is None and len(auto_operations) == 1:
                 setup_operation = auto_operations[0]
-            setup = _seeding._setup_for_operation(
-                setup_operation,
-                source_data,
+            setup = (
+                _seeding._setup_for_image_operations(auto_operations, source_data)
+                if setup_operation is None and auto_operations
+                else _seeding._setup_for_operation(setup_operation, source_data)
             )
             all_axes = FigureAxesSelectionState(
                 axes=_all_axes_for_shape(setup.nrows, setup.ncols)

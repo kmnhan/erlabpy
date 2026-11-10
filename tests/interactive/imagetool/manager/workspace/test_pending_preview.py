@@ -418,6 +418,45 @@ def test_manager_pending_memory_preview_button_materializes_selected_node(
         assert load_button.isHidden()
 
 
+@pytest.mark.parametrize("robust", [False, True])
+@pytest.mark.parametrize("locked", [False, True])
+@pytest.mark.parametrize("constant", [False, True])
+def test_pending_workspace_preview_color_matches_live_image(
+    qtbot, robust, locked, constant
+) -> None:
+    values = np.ones((10, 10), dtype=np.float64)
+    if not constant:
+        values = np.arange(100, dtype=np.float64).reshape(10, 10)
+        values[0, 0] = np.nan
+        values[-1, -1] = 1.0e6
+    tool = erlab.interactive.imagetool.ImageTool(xr.DataArray(values, dims=("x", "y")))
+    qtbot.addWidget(tool)
+    area = tool.slicer_area
+    area.set_colormap(
+        cmap="viridis",
+        gamma=0.7,
+        reverse=True,
+        high_contrast=True,
+        zero_centered=True,
+        levels_robust=robust,
+        levels_locked=locked,
+        levels=(-2.0, 90.0) if locked else None,
+    )
+    state = json.loads(json.dumps(area.state))
+    if not robust:
+        state["color"].pop("levels_robust")
+    image = area.main_image.slicer_data_items[0]
+    preview = (
+        workspace_pending._PendingWorkspacePayloads._workspace_pending_preview_pixmap(
+            image.image, state
+        )
+    )
+    assert preview is not None
+    assert not preview.isNull()
+    assert preview.toImage() == image.getPixmap().toImage()
+    tool.close()
+
+
 def test_manager_pending_memory_sidebar_renders_partial_preview_without_materializing(
     qtbot,
     monkeypatch,

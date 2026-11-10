@@ -12,6 +12,7 @@ from erlab.interactive._figurecomposer._defaults import (
     _styled_rcparams_value,
     _tool_figure_options_context,
 )
+from erlab.interactive._figurecomposer._image import _image_plot_kwargs
 from erlab.interactive._figurecomposer._labels import label_context, labels_from_text
 from erlab.interactive._figurecomposer._line_colormap import (
     colors_from_values,
@@ -29,6 +30,7 @@ from erlab.interactive._figurecomposer._line_transform import (
 from erlab.interactive._figurecomposer._model._sources import _available_source_dims
 from erlab.interactive._figurecomposer._model._state import (
     _POWER_NORM_NAME,
+    FigureImageNormStyleState,
     FigureOperationKind,
     FigureOperationState,
     FigurePlotSlicesPanelStyleState,
@@ -398,15 +400,9 @@ def _panel_style_has_cmap_override(style: FigurePlotSlicesPanelStyleState) -> bo
 
 
 def _panel_style_has_norm_override(style: FigurePlotSlicesPanelStyleState) -> bool:
-    return (
-        style.norm_name is not None
-        or style.norm_gamma is not None
-        or style.norm_clip is not None
-        or bool(style.norm_kwargs)
-        or style.vmin is not None
-        or style.vmax is not None
-        or style.vcenter is not None
-        or style.halfrange is not None
+    return any(
+        (value := getattr(style, name)) is not None and value != {}
+        for name in FigureImageNormStyleState.model_fields
     )
 
 
@@ -449,16 +445,7 @@ def _operation_with_panel_norm_style(
     if not _panel_style_has_norm_override(style):
         return operation
     updates: dict[str, typing.Any] = {}
-    for attr in (
-        "norm_name",
-        "norm_gamma",
-        "norm_clip",
-        "norm_kwargs",
-        "vmin",
-        "vmax",
-        "vcenter",
-        "halfrange",
-    ):
+    for attr in FigureImageNormStyleState.model_fields:
         value = getattr(style, attr)
         if value is not None and value != {}:
             updates[attr] = value
@@ -1120,7 +1107,7 @@ def _format_dim_names(dims: Sequence[str]) -> str:
 
 
 def _plot_slices_kwargs(
-    tool: FigureComposerTool, operation: FigureOperationState
+    tool: FigureComposerTool, operation: FigureOperationState, *, code: bool = False
 ) -> dict[str, typing.Any]:
     operation = _normalized_selection_operation(tool._document, operation)
     kwargs: dict[str, typing.Any] = {}
@@ -1163,6 +1150,7 @@ def _plot_slices_kwargs(
         if isinstance(line_kw, list) and operation.order != operation.cmap_order:
             kwargs["line_order"] = operation.order
     if not is_line_plot:
+        kwargs.update(_image_plot_kwargs(operation, code=code))
         panel_norm = _panel_norm_argument(tool, operation)
         if panel_norm is not None:
             kwargs["norm"] = panel_norm

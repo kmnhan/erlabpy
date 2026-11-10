@@ -193,8 +193,9 @@ def _required_imports(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> tuple[str, ...]:
     imports = ["import erlab.plotting as eplt"]
-    if operation.axes.expression and (
-        operation.invert_x is not None or operation.invert_y is not None
+    if operation.image_value_abs_limit is not None or (
+        operation.axes.expression
+        and (operation.invert_x is not None or operation.invert_y is not None)
     ):
         imports.append("import numpy as np")
     if (

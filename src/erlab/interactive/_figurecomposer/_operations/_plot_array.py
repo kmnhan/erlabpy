@@ -13,6 +13,7 @@ from erlab.interactive._figurecomposer._code import (
     _axis_inversion_code_lines,
     _maybe_squeeze_drop_code,
 )
+from erlab.interactive._figurecomposer._image import _image_plot_kwargs
 from erlab.interactive._figurecomposer._model._gridspec import _gridspec_valid_axes_ids
 from erlab.interactive._figurecomposer._model._sources import _valid_source_variable
 from erlab.interactive._figurecomposer._model._state import (
@@ -233,8 +234,7 @@ def _plot_array_kwargs(operation: FigureOperationState) -> dict[str, typing.Any]
         kwargs["colorbar_kw"] = dict(operation.colorbar_kw)
     if operation.cmap is not None:
         kwargs["cmap"] = _matplotlib_cmap_name(operation.cmap)
-    if operation.robust:
-        kwargs["robust"] = True
+    kwargs.update(_image_plot_kwargs(operation))
     if _use_powernorm_plot_kwargs(operation):
         gamma = operation.norm_gamma
         if gamma is None:
@@ -292,8 +292,7 @@ def _plot_array_code_kwargs(operation: FigureOperationState) -> dict[str, typing
         kwargs["colorbar_kw"] = dict(operation.colorbar_kw)
     if operation.cmap is not None:
         kwargs["cmap"] = _matplotlib_cmap_name(operation.cmap)
-    if operation.robust:
-        kwargs["robust"] = True
+    kwargs.update(_image_plot_kwargs(operation, code=True))
     if _use_powernorm_plot_kwargs(operation):
         gamma = operation.norm_gamma
         if gamma is None:
@@ -331,6 +330,8 @@ def _required_imports(
     _tool: FigureComposerTool, operation: FigureOperationState
 ) -> tuple[str, ...]:
     imports = ["import erlab.plotting as eplt"]
+    if operation.image_value_abs_limit is not None:
+        imports.append("import numpy as np")
     if (
         not _use_powernorm_plot_kwargs(operation)
         and _effective_norm_name(operation.norm_name) in _MATPLOTLIB_NORM_NAMES

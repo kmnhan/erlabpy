@@ -385,9 +385,9 @@ def test_manager_workspace_link_settings_preserve_pending_group(
         source = manager.get_imagetool(0).slicer_area
         target = manager.get_imagetool(1).slicer_area
         assert source._linking_proxy.link_colors is enabled
-        initial_gamma = target._colormap_properties["gamma"]
+        initial_gamma = target.colormap_properties["gamma"]
         source.set_colormap(gamma=2.0)
-        assert target._colormap_properties["gamma"] == (
+        assert target.colormap_properties["gamma"] == (
             2.0 if enabled else initial_gamma
         )
         assert nodes[2].imagetool is None
@@ -397,7 +397,7 @@ def test_manager_workspace_link_settings_preserve_pending_group(
             dialog.link_colors_check.setChecked(not enabled)
 
         proxy = source._linking_proxy
-        previous_gamma = target._colormap_properties["gamma"]
+        previous_gamma = target.colormap_properties["gamma"]
         accept_dialog(
             lambda: manager._actions_controller.show_link_settings(nodes[2]),
             pre_call=_invert_colors,
@@ -407,7 +407,7 @@ def test_manager_workspace_link_settings_preserve_pending_group(
         assert all(node.workspace_link_colors is (not enabled) for node in nodes)
         assert nodes[2].imagetool is None
         source.set_colormap(gamma=3.0)
-        assert target._colormap_properties["gamma"] == (
+        assert target.colormap_properties["gamma"] == (
             previous_gamma if enabled else 3.0
         )
         assert nodes[2].imagetool is None

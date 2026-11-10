@@ -1039,7 +1039,7 @@ def test_link_action_color_linking_is_opt_in(qtbot, manager_context) -> None:
             for node in manager._tool_graph.nodes.values()
         )
         tools[0].slicer_area.set_colormap(gamma=3.0)
-        assert tools[1].slicer_area._colormap_properties["gamma"] == 2.0
+        assert tools[1].slicer_area.colormap_properties["gamma"] == 2.0
         tools[0].slicer_area.set_index(0, 3)
         assert tools[1].slicer_area.array_slicer.get_index(0, 0) == 3
 
@@ -1047,7 +1047,7 @@ def test_link_action_color_linking_is_opt_in(qtbot, manager_context) -> None:
         manager.link_selected(deselect=False)
         assert tools[0].slicer_area._linking_proxy.link_colors is True
         tools[0].slicer_area.set_colormap(gamma=4.0)
-        assert tools[1].slicer_area._colormap_properties["gamma"] == 4.0
+        assert tools[1].slicer_area.colormap_properties["gamma"] == 4.0
 
 
 def test_link_settings_support_live_proxy_without_workspace_group(
@@ -1101,7 +1101,7 @@ def test_link_settings_support_live_proxy_without_workspace_group(
         assert set(link_metadata) == set(manager._tool_graph.nodes)
         assert {enabled for _, enabled in link_metadata.values()} == {True}
         tools[0].slicer_area.set_colormap(gamma=2.0)
-        assert tools[1].slicer_area._colormap_properties["gamma"] == 2.0
+        assert tools[1].slicer_area.colormap_properties["gamma"] == 2.0
 
 
 def test_linked_child_imagetool_badge_is_interactive(
@@ -1210,7 +1210,7 @@ def test_linked_child_imagetool_badge_is_interactive(
 
         child.slicer_area.set_colormap(gamma=2.0)
         peer_gammas = [
-            tool.slicer_area._colormap_properties["gamma"] for tool in tools[1:]
+            tool.slicer_area.colormap_properties["gamma"] for tool in tools[1:]
         ]
 
         def _enable_colors(dialog):
@@ -1241,11 +1241,11 @@ def test_linked_child_imagetool_badge_is_interactive(
             member = manager._node_for_target(target)
             assert member.workspace_link_colors is True
         assert [
-            tool.slicer_area._colormap_properties["gamma"] for tool in tools[1:]
+            tool.slicer_area.colormap_properties["gamma"] for tool in tools[1:]
         ] == peer_gammas
         child.slicer_area.set_colormap(gamma=3.0)
         assert all(
-            tool.slicer_area._colormap_properties["gamma"] == 3.0 for tool in tools[1:]
+            tool.slicer_area.colormap_properties["gamma"] == 3.0 for tool in tools[1:]
         )
 
         def _disable_colors(dialog):
@@ -1263,7 +1263,7 @@ def test_linked_child_imagetool_badge_is_interactive(
         )
         child.slicer_area.set_colormap(gamma=4.0)
         assert all(
-            tool.slicer_area._colormap_properties["gamma"] == 3.0 for tool in tools[1:]
+            tool.slicer_area.colormap_properties["gamma"] == 3.0 for tool in tools[1:]
         )
 
         accept_dialog(
