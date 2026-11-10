@@ -25,6 +25,7 @@ def _base_state() -> dict:
             "high_contrast": False,
             "zero_centered": False,
             "levels_locked": False,
+            "levels_robust": False,
         },
         "slice": {
             "indices": [[np.int64(0), np.int64(0)]],
@@ -88,6 +89,8 @@ class _DummySlicerArea(QtCore.QObject):
         ("color.zero_centered", True, "Colormap options changed"),
         ("color.levels_locked", True, "Colormap levels locked"),
         ("color.levels_locked", False, "Colormap levels unlocked"),
+        ("color.levels_robust", True, "Robust levels enabled"),
+        ("color.levels_robust", False, "Robust levels disabled"),
         ("color.levels", [0, 1], "Colormap levels changed"),
         ("other.key", None, "other.key changed"),
     ],
@@ -349,6 +352,17 @@ def test_describe_state_change_reports_snap_toggle():
     assert details == ("Snap to pixels changed from Off to On",)
 
 
+def test_describe_state_change_reports_robust_levels_toggle() -> None:
+    previous = _base_state()
+    current = copy.deepcopy(previous)
+    current["color"]["levels_robust"] = True
+
+    assert _history.describe_state_change(previous, current) == (
+        "Robust levels enabled",
+        ("Robust levels changed from Off to On",),
+    )
+
+
 def test_describe_state_change_reports_active_cursor_and_bins() -> None:
     prev = _base_state()
     curr = copy.deepcopy(prev)
@@ -527,6 +541,35 @@ def test_history_states_include_current_and_future(qtbot):
     assert states[1] == current_state
     assert states[2] == future_state
     assert current_index == 1
+    win.close()
+
+
+def test_robust_levels_toggle_undo_redo(qtbot) -> None:
+    values = ((np.arange(100) * 37) % 101).astype(np.float32).reshape(10, 10)
+    win = ImageTool(xr.DataArray(values, dims=("x", "y")))
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    image = area.main_image.slicer_data_items[0]
+    initial_levels = image.getLevels().copy()
+
+    area.robust_levels_act.trigger()
+    area.finalize_history_entry()
+    assert area.levels_robust is True
+    assert len(area._prev_states) == 1
+    assert ("color", "levels_robust") in area._prev_states[0].changed_paths
+    q_dtype = np.result_type(values.dtype.type(0), 0.0)
+    robust_levels = np.percentile(values, np.array([2, 98], dtype=q_dtype))
+    np.testing.assert_array_equal(image.getLevels(), robust_levels)
+
+    area.undo()
+    assert area.levels_robust is False
+    assert not area.robust_levels_act.isChecked()
+    np.testing.assert_array_equal(image.getLevels(), initial_levels)
+
+    area.redo()
+    assert area.levels_robust is True
+    assert area.robust_levels_act.isChecked()
+    np.testing.assert_array_equal(image.getLevels(), robust_levels)
     win.close()
 
 

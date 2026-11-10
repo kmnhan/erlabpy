@@ -1,3 +1,7 @@
+import dataclasses
+import inspect
+import types
+
 import numpy as np
 import pyqtgraph as pg
 import pytest
@@ -16,6 +20,14 @@ from erlab.interactive.colors import (
     pg_colormap_names,
     pg_colormap_powernorm,
     pg_colormap_to_QPixmap,
+)
+from erlab.interactive.imagetool._colorlevels import resolve_image_levels
+from erlab.interactive.imagetool.plot_items import ItoolImageItem
+from erlab.interactive.imagetool.viewer import ImageSlicerArea
+from erlab.interactive.imagetool.viewer_state import (
+    ColorMapState,
+    _child_colormap_kwargs,
+    _ColorMapSettings,
 )
 
 
@@ -193,6 +205,173 @@ def test_better_image_item_lut_matches_dense_powernorm() -> None:
     assert np.array_equal(image.lut, dense.getStops()[1])
 
 
+@pytest.fixture
+def robust_image_item(qtbot):
+    area = types.SimpleNamespace(levels_locked=False, levels_robust=True)
+    return ItoolImageItem(types.SimpleNamespace(slicer_area=area))
+
+
+@pytest.mark.parametrize("robust", [False, True])
+def test_image_level_resolution_uses_finite_values_without_mutation(robust):
+    values = np.array([np.nan, -np.inf, 0.0, 1.0, 2.0, 3.0, 1.0e6, np.inf])
+    original = values.copy()
+
+    resolved = resolve_image_levels(values, robust=robust)
+
+    assert not resolved.fallback
+    expected = (
+        np.percentile([0.0, 1.0, 2.0, 3.0, 1.0e6], [2, 98]) if robust else (0, 1e6)
+    )
+    np.testing.assert_array_equal(resolved.limits, expected)
+    np.testing.assert_array_equal(values, original)
+
+
+def test_colormap_settings_schema_matches_update_contract() -> None:
+    fields = {field.name for field in dataclasses.fields(_ColorMapSettings)}
+    assert fields == set(ColorMapState.__annotations__)
+    assert fields <= set(inspect.signature(ImageSlicerArea.set_colormap).parameters)
+    constructor_fields = set(
+        _ColorMapSettings(levels_locked=True, levels=(0.0, 1.0)).constructor_kwargs()
+    )
+    assert constructor_fields <= set(
+        inspect.signature(ImageSlicerArea.__init__).parameters
+    )
+
+
+@pytest.mark.parametrize(
+    "field", [field.name for field in dataclasses.fields(_ColorMapSettings)]
+)
+def test_each_colormap_setting_survives_child_creation(qtbot, field) -> None:
+    changes = {
+        "cmap": "plasma",
+        "gamma": 0.5,
+        "reverse": True,
+        "high_contrast": True,
+        "zero_centered": True,
+        "levels_locked": False,
+        "levels_robust": True,
+        "levels": (15.0, 65.0),
+    }
+    assert set(changes) == {item.name for item in dataclasses.fields(_ColorMapSettings)}
+    data = np.arange(100.0).reshape(10, 10)
+    parent = erlab.interactive.itool(
+        data, manager=False, execute=False, cmap="viridis", vmin=10.0, vmax=80.0
+    )
+    qtbot.addWidget(parent)
+    parent.slicer_area.set_colormap(**{field: changes[field]})
+    expected = parent.slicer_area.colormap_properties
+    child = erlab.interactive.imagetool.ImageTool(
+        data, **_child_colormap_kwargs(expected)
+    )
+    qtbot.addWidget(child)
+    actual = child.slicer_area.colormap_properties
+
+    assert set(actual) == set(expected)
+    for name, value in expected.items():
+        if name == "levels":
+            np.testing.assert_allclose(actual[name], value)
+        else:
+            assert actual[name] == value
+    np.testing.assert_array_equal(
+        parent.slicer_area.main_image.slicer_data_items[0].lut,
+        child.slicer_area.main_image.slicer_data_items[0].lut,
+    )
+    assert not child.slicer_area.undoable
+    np.testing.assert_array_equal(data, np.arange(100.0).reshape(10, 10))
+
+
+@pytest.mark.parametrize("dtype", [np.float16, np.float32, np.float64, np.int16])
+@pytest.mark.parametrize("layout", ["C", "F", "strided", "transposed", "read-only"])
+def test_itool_image_robust_levels_preserve_source(robust_image_item, dtype, layout):
+    data = np.arange(1200, dtype=dtype).reshape(30, 40)
+    data.flat[-1] = 30000
+    if layout == "F":
+        data = np.asfortranarray(data)
+    elif layout == "strided":
+        data = data[::2, ::3]
+    elif layout == "transposed":
+        data = data.T
+    elif layout == "read-only":
+        data.setflags(write=False)
+    original = data.copy()
+    expected = np.array([np.percentile(data, 2), np.percentile(data, 98)])
+
+    robust_image_item.setImage(data, autoLevels=True, levelSamples=2)
+
+    np.testing.assert_array_equal(robust_image_item.getLevels(), expected)
+    np.testing.assert_array_equal(robust_image_item.image, original)
+    np.testing.assert_array_equal(data, original)
+    assert robust_image_item.getLevels().dtype == expected.dtype
+
+
+def test_itool_image_robust_levels_use_all_finite_values(robust_image_item):
+    data = np.arange(512 * 512, dtype=np.float32).reshape(512, 512)
+    data.flat[:5] = [-1.0e9, 1.0e9, np.nan, np.inf, -np.inf]
+    original = data.copy()
+    finite_values = data[np.isfinite(data)]
+    expected = np.array(
+        [np.percentile(finite_values, 2), np.percentile(finite_values, 98)]
+    )
+
+    robust_image_item.setImage(data, autoLevels=True, levelSamples=2)
+
+    np.testing.assert_array_equal(robust_image_item.getLevels(), expected)
+    np.testing.assert_array_equal(data, original)
+    np.testing.assert_array_equal(robust_image_item.image, original)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [np.empty((0, 2)), np.full((2, 2), np.nan), np.full((2, 2), 5.0)],
+    ids=["empty", "invalid", "constant"],
+)
+def test_itool_image_robust_degenerate_auto_levels(robust_image_item, data):
+    robust_image_item.setImage(data, autoLevels=True)
+
+    np.testing.assert_array_equal(robust_image_item.getLevels(), (0.0, 255.0))
+    if data.size and np.isfinite(data).any():
+        np.testing.assert_array_equal(robust_image_item._robust_levels(), (5.0, 5.0))
+    else:
+        assert robust_image_item._robust_levels() is None
+
+
+def test_itool_image_robust_explicit_levels_and_updates(robust_image_item):
+    data = np.arange(100.0).reshape(10, 10)
+    assert robust_image_item._robust_levels() is None
+    robust_image_item.setImage()
+    robust_image_item.setImage(data, levels=(10.0, 20.0))
+    np.testing.assert_array_equal(robust_image_item.getLevels(), (10.0, 20.0))
+
+    area = robust_image_item.slicer_area
+    area.levels_locked = True
+    robust_image_item.updateImage()
+    np.testing.assert_array_equal(robust_image_item.getLevels(), (10.0, 20.0))
+
+    area.levels_locked = False
+    robust_image_item.updateImage()
+    np.testing.assert_array_equal(robust_image_item.getLevels(), (1.98, 97.02))
+    assert robust_image_item.quickMinMax() == (0.0, 99.0)
+
+    area.levels_robust = False
+    robust_image_item.updateImage()
+    np.testing.assert_array_equal(robust_image_item.getLevels(), (0.0, 99.0))
+
+
+@pytest.mark.parametrize("update_method", ["updateImage", "setImage"])
+def test_itool_image_robust_redraw_updates_in_place_data(
+    robust_image_item, update_method
+):
+    data = np.arange(100.0).reshape(10, 10)
+    robust_image_item.setImage(data, autoLevels=True)
+    robust_image_item.image += 100.0
+    getattr(robust_image_item, update_method)()
+    np.testing.assert_allclose(robust_image_item.getLevels(), (101.98, 197.02))
+    np.testing.assert_array_equal(robust_image_item.image, data)
+
+    robust_image_item.clear()
+    assert robust_image_item._robust_levels() is None
+
+
 def test_lut_powernorm_returns_read_only_shared_arrays() -> None:
     colors_mod = erlab.interactive.colors
 
@@ -292,6 +471,244 @@ def test_colorbar_lazy_context_menu_access_paths(qtbot, monkeypatch) -> None:
     assert menu is colorbar.ctrlMenu
     assert colorbar._ensure_context_menu() is colorbar._context_menu
     assert colorbar.getContextMenus(None) is None
+
+
+@pytest.mark.parametrize("robust", [False, True])
+def test_itool_colorbar_percentiles_lock_current_image_in_one_history_entry(
+    qtbot, robust
+):
+    data = np.arange(100.0).reshape(10, 10)
+    data[-1, -1] = 1.0e9
+    original = data.copy()
+    window = erlab.interactive.itool(data, execute=False)
+    qtbot.addWidget(window)
+    window.show()
+    area = window.slicer_area
+    area.robust_levels_act.setChecked(robust)
+    area.flush_history()
+    colorbar = area._colorbar.cb
+    image = colorbar.primary_image()
+    expected = np.array([np.percentile(image.image, 2), np.percentile(image.image, 98)])
+    menu = colorbar.vb.getMenu(None)
+    action = colorbar._percentile_limits_action
+    assert action is not None
+    assert action.objectName() == "itool_percentile_color_limits_action"
+    assert action in menu.actions()
+    assert action.isEnabled()
+    assert action.toolTip()
+    assert menu.toolTipsVisible()
+
+    action.trigger()
+
+    assert area.levels_locked
+    assert area.levels_robust is robust
+    np.testing.assert_allclose(area.levels, expected)
+    for item in area._materialized_imageitems():
+        np.testing.assert_allclose(item.getLevels(), expected)
+    assert colorbar.limits == (0.0, 1.0e9)
+    assert len(area._prev_states) == 1
+    np.testing.assert_array_equal(data, original)
+
+    area.undo()
+    assert not area.levels_locked
+    assert area.levels_robust is robust
+    area.redo()
+    assert area.levels_locked
+    np.testing.assert_allclose(area.levels, expected)
+
+
+def test_itool_colorbar_percentile_action_follows_active_cursor(qtbot) -> None:
+    first_slice = np.arange(100.0).reshape(10, 10)
+    data = np.stack((first_slice, first_slice + 1000.0), axis=2)
+    window = erlab.interactive.itool(data, execute=False)
+    qtbot.addWidget(window)
+    window.show()
+    area = window.slicer_area
+    area.add_cursor()
+    area.set_index(2, 0, cursor=0)
+    area.set_index(2, 1, cursor=1)
+    colorbar = area._colorbar.cb
+
+    for cursor in (1, 0, 1):
+        area.set_current_cursor(cursor)
+        assert area.main_image.slicer_data_items[cursor].isVisible()
+        colorbar.vb.getMenu(None)
+        action = colorbar._percentile_limits_action
+        assert action is not None
+        assert action.isEnabled()
+
+        action.trigger()
+
+        assert area.levels_locked
+        expected = np.percentile(data[..., cursor], [2, 98])
+        np.testing.assert_array_equal(area.levels, expected)
+
+
+@pytest.mark.parametrize("hidden_invalid", [False, True])
+def test_itool_colorbar_percentile_action_checks_visible_cursor_data(
+    qtbot, hidden_invalid
+) -> None:
+    first_slice = np.arange(100.0).reshape(10, 10)
+    data = np.stack((first_slice, first_slice + 1000.0), axis=2)
+    data[..., 0 if hidden_invalid else 1] = np.nan
+    window = erlab.interactive.itool(data, execute=False)
+    qtbot.addWidget(window)
+    window.show()
+    area = window.slicer_area
+    area.add_cursor()
+    area.set_index(2, 0, cursor=0)
+    area.set_index(2, 1, cursor=1)
+    colorbar = area._colorbar.cb
+
+    for cursor in (1, 0, 1):
+        area.set_current_cursor(cursor)
+        colorbar.vb.getMenu(None)
+        action = colorbar._percentile_limits_action
+        assert action is not None
+        assert action.isEnabled() is (
+            hidden_invalid if cursor == 1 else not hidden_invalid
+        )
+
+    area.flush_history()
+    if hidden_invalid:
+        action.trigger()
+        assert area.levels_locked
+        np.testing.assert_array_equal(area.levels, np.percentile(data[..., 1], [2, 98]))
+    else:
+        colorbar._set_percentile_limits()
+        assert not area.levels_locked
+        assert not area._prev_states
+
+
+def test_itool_colorbar_percentile_action_handles_invalid_images_and_menu_reset(
+    qtbot, monkeypatch
+):
+    window = erlab.interactive.itool(np.full((3, 3), np.nan), execute=False)
+    qtbot.addWidget(window)
+    colorbar = window.slicer_area._colorbar.cb
+    with monkeypatch.context() as patch:
+        patch.setattr(colorbar, "_menu_for_context_setup", lambda: None)
+        assert colorbar._ensure_context_menu() is None
+    menu = colorbar.vb.getMenu(None)
+    action = colorbar._percentile_limits_action
+    assert action is not None
+    assert not action.isEnabled()
+    area = window.slicer_area
+    area.flush_history()
+    colorbar._set_percentile_limits()
+    assert not area.levels_locked
+    assert not area._prev_states
+
+    image = colorbar.primary_image()
+    image.setImage(np.arange(9.0).reshape(3, 3), autoLevels=False)
+    assert colorbar.vb.getMenu(None) is menu
+    assert action.isEnabled()
+    assert menu.actions().count(action) == 1
+
+    colorbar.vb.setMenuEnabled(False)
+    assert colorbar._percentile_limits_action is None
+    colorbar.vb.setMenuEnabled(True)
+    new_menu = colorbar.vb.getMenu(None)
+    assert new_menu is not menu
+    assert colorbar._percentile_limits_action is not action
+    assert colorbar._percentile_limits_action in new_menu.actions()
+
+
+@pytest.mark.parametrize("managed", [False, True])
+@pytest.mark.parametrize("use_parent_colormap", [False, True])
+def test_itool_child_inherits_robust_colormap_preference(
+    qtbot, monkeypatch, managed, use_parent_colormap
+):
+    itool = erlab.interactive.itool
+    window = itool(np.arange(100.0).reshape(10, 10), manager=False, execute=False)
+    qtbot.addWidget(window)
+    area = window.slicer_area
+    area.set_colormap(levels_robust=True)
+    plot = area.main_image
+    children = []
+    manager_children = []
+
+    def create_child(**kwargs):
+        kwargs.setdefault("manager", False)
+        child = itool(**kwargs)
+        qtbot.addWidget(child)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(erlab.interactive, "itool", create_child)
+    manager = types.SimpleNamespace(
+        target_from_slicer_area=lambda _area: "parent",
+        add_imagetool_child=lambda child, target, *, source_spec: (
+            manager_children.append((child, target, source_spec))
+        ),
+    )
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager, "_manager_instance", manager
+    )
+    area._in_manager = managed
+    try:
+        plot._open_data_in_new_window(
+            plot.current_data,
+            plot.make_tool_source_spec(),
+            use_parent_colormap=use_parent_colormap,
+        )
+    finally:
+        area._in_manager = False
+
+    assert len(children) == 1
+    child = children[0]
+    assert child.slicer_area.levels_robust is use_parent_colormap
+    assert not child.slicer_area.undoable
+    assert len(manager_children) == int(managed)
+    if use_parent_colormap:
+        image = child.slicer_area.main_image.slicer_data_items[0]
+        expected = np.array(
+            [np.percentile(image.image, 2), np.percentile(image.image, 98)]
+        )
+        np.testing.assert_array_equal(image.getLevels(), expected)
+
+
+@pytest.mark.parametrize("use_parent_colormap", [False, True])
+@pytest.mark.parametrize("locked", [False, True])
+def test_itool_child_inherits_robust_preference_through_manager_dispatch(
+    qtbot, manager_context, use_parent_colormap, locked
+) -> None:
+    data = np.arange(100.0).reshape(10, 10)
+    data[-1, -1] = 1.0e6
+    window = erlab.interactive.itool(data, manager=False, execute=False)
+    qtbot.addWidget(window)
+    area = window.slicer_area
+    area.set_colormap(
+        levels_robust=True,
+        levels_locked=locked,
+        levels=(10.0, 60.0) if locked else None,
+    )
+    plot = area.main_image
+
+    with manager_context() as manager:
+        plot._open_data_in_new_window(
+            plot.current_data,
+            plot.make_tool_source_spec(),
+            use_parent_colormap=use_parent_colormap,
+        )
+
+        assert manager.ntools == 1
+        child = manager.get_imagetool(0)
+        child_area = child.slicer_area
+        assert child_area.levels_robust is use_parent_colormap
+        assert child_area.robust_levels_act.isChecked() is use_parent_colormap
+        assert child_area.levels_locked is (locked and use_parent_colormap)
+        assert not child_area.undoable
+        expected = (
+            (10.0, 60.0)
+            if locked and use_parent_colormap
+            else np.percentile(data, [2, 98])
+            if use_parent_colormap
+            else (data.min(), data.max())
+        )
+        image = child_area.main_image.slicer_data_items[0]
+        qtbot.waitUntil(lambda: image.getLevels() is not None)
+        np.testing.assert_allclose(image.getLevels(), expected)
 
 
 def test_colorbar_edit_widget_applies_changes_to_images(qtbot):

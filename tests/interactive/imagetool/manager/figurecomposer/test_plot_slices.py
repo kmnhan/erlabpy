@@ -803,6 +803,55 @@ def test_imagetool_plot_slices_selection_warning_shows_error_detail(
     assert "Cannot plot when more than one dimension" in messages[0][2]
 
 
+@pytest.mark.parametrize("overrides", [{"robust": False}, {"func": None}])
+def test_figure_composer_plot_slices_image_overrides_match_generated_code(
+    qtbot, overrides
+) -> None:
+    values = np.arange(100.0).reshape(10, 10)
+    values[-1, :] = 1.0e31
+    data = xr.DataArray(values, dims=("y", "x"))
+    operation = FigureOperationState.plot_slices(
+        label="plot_slices", sources=("data",)
+    ).model_copy(
+        update={
+            "robust": True,
+            "image_value_abs_limit": 1.0e30,
+            "extra_kwargs": overrides,
+        }
+    )
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    expected = values.copy()
+    if "func" not in overrides:
+        expected[-1, :] = np.nan
+    finite = expected[np.isfinite(expected)]
+    expected_levels = (
+        np.percentile(finite, [2, 98])
+        if overrides.get("robust", True)
+        else (finite.min(), finite.max())
+    )
+    figure = Figure()
+    figurecomposer_rendering._render_into_figure(tool, figure, sync_visible=False)
+    assert not tool._operation_render_errors
+    preview = figure.axes[0].images[0]
+    np.testing.assert_allclose(preview.get_array().filled(np.nan), expected)
+    np.testing.assert_allclose(preview.get_clim(), expected_levels)
+
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    try:
+        exported = namespace["fig"].axes[0].images[0]
+        np.testing.assert_allclose(exported.get_array().filled(np.nan), expected)
+        np.testing.assert_allclose(exported.get_clim(), expected_levels)
+    finally:
+        plt.close(namespace["fig"])
+
+
 def test_figure_composer_plot_slices_kwargs_normalize_colorcet_colormaps(
     qtbot,
 ) -> None:

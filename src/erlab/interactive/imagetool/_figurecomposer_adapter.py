@@ -17,15 +17,19 @@ from erlab.interactive._figurecomposer._exceptions import (
 from erlab.interactive._figurecomposer._labels import default_label_text
 from erlab.interactive._figurecomposer._model._state import (
     FigureDataSelectionState,
+    FigureImageStyleState,
     FigureOperationState,
+    FigurePlotSlicesPanelStyleState,
 )
 from erlab.interactive._figurecomposer._norms import _norm_updates_from_kwargs
+from erlab.interactive.imagetool._colorlevels import resolve_image_levels
 
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Sequence
 
     import matplotlib.colors
 
+    from erlab.interactive.imagetool.plot_items import ItoolImageItem
     from erlab.interactive.imagetool.slicer import ArraySlicer
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
 
@@ -180,37 +184,14 @@ def _norm_updates(norm_code: str) -> dict[str, typing.Any] | None:
 def _operation_updates(
     plot_kwargs: dict[str, typing.Any],
 ) -> dict[str, typing.Any] | None:
-    field_names = {
-        "transpose",
-        "xlim",
-        "ylim",
-        "invert_x",
-        "invert_y",
-        "crop",
-        "same_limits",
-        "axis",
-        "show_all_labels",
-        "colorbar",
-        "hide_colorbar_ticks",
-        "annotate",
-        "cmap",
-        "gamma",
-        "norm_name",
-        "norm_gamma",
-        "norm_kwargs",
+    field_names = set(FigureImageStyleState.model_fields) | {
         "slice_kwargs",
-        "vmin",
-        "vmax",
-        "vcenter",
-        "halfrange",
         "order",
         "cmap_order",
         "norm_order",
         "gradient",
         "gradient_kw",
         "subplot_kw",
-        "annotate_kw",
-        "colorbar_kw",
     }
     updates: dict[str, typing.Any] = {}
     extra_kwargs: dict[str, typing.Any] = {}
@@ -746,6 +727,44 @@ class _PlotOperationBuilder:
         selected = crop_indexers[x_dim]
         return {"xlim": (float(selected.start), float(selected.stop))}
 
+    def image_level_updates(
+        self, image: ItoolImageItem, *, norm_name: str | None
+    ) -> dict[str, typing.Any]:
+        robust = self.slicer_area.levels_robust and not self.slicer_area.levels_locked
+        centered = norm_name in {"CenteredPowerNorm", "CenteredInversePowerNorm"}
+        if self.slicer_area.levels_locked:
+            return {}
+        values = image.image
+        if values is None:
+            # A hidden image may not have populated its display cache yet.
+            values = self.array_slicer.display_safe_values(image.fetch_new_data()[1])
+        resolved = resolve_image_levels(values, robust=robust)
+        levels = resolved.limits if robust else image.getLevels()
+        if levels is None:
+            levels = resolved.limits
+        vmin, vmax = float(levels[0]), float(levels[1])
+        updates = {"vcenter": 0.5 * (vmin + vmax)} if centered else {}
+        if resolved.fallback:
+            if centered:
+                updates["halfrange"] = 0.5 * (vmax - vmin)
+            else:
+                updates.update(vmin=vmin, vmax=vmax)
+        return updates
+
+    def plot_operation_updates(
+        self, dim_order_plot: list[Hashable]
+    ) -> dict[str, typing.Any]:
+        updates = _operation_updates(self.plot_slices_kwargs(dim_order_plot)) or {}
+        if len(dim_order_plot) == 2:
+            # Zoom limits restrict the axes, but ImageTool scales the full image.
+            updates.update(
+                robust=self.slicer_area.levels_robust
+                and not self.slicer_area.levels_locked,
+                image_value_abs_limit=self.array_slicer.display_value_abs_limit,
+                crop=False,
+            )
+        return updates
+
     def plot_slices_operation(
         self,
         *,
@@ -756,8 +775,30 @@ class _PlotOperationBuilder:
         selected_maps: list[str] | None = None,
         map_selections: tuple[FigureDataSelectionState, ...] = (),
     ) -> FigureOperationState:
-        updates = _operation_updates(self.plot_slices_kwargs(dim_order_plot)) or {}
+        updates = self.plot_operation_updates(dim_order_plot)
         line_plot = len(dim_order_plot) == 1
+        if not line_plot:
+            selected_maps_mode = (
+                selected_maps is not None
+                or qsel_kwargs is None
+                or any(not isinstance(key, str) for key in qsel_kwargs)
+            )
+            panel_styles = tuple(
+                FigurePlotSlicesPanelStyleState(
+                    map_index=cursor if selected_maps_mode else 0,
+                    slice_index=0 if selected_maps_mode else cursor,
+                    **level_updates,
+                )
+                for cursor, item in enumerate(self.source.slicer_data_items)
+                if (
+                    level_updates := self.image_level_updates(
+                        typing.cast("ItoolImageItem", item),
+                        norm_name=updates.get("norm_name"),
+                    )
+                )
+            )
+            if panel_styles:
+                updates.update(panel_styles_enabled=True, panel_styles=panel_styles)
         label_updates: dict[str, typing.Any] = {}
         if selected_maps is not None:
             if line_plot:
@@ -876,7 +917,13 @@ class _PlotOperationBuilder:
         dim_order_plot: list[Hashable],
         map_selections: tuple[FigureDataSelectionState, ...] = (),
     ) -> FigureOperationState:
-        updates = _operation_updates(self.plot_slices_kwargs(dim_order_plot)) or {}
+        updates = self.plot_operation_updates(dim_order_plot)
+        updates.update(
+            self.image_level_updates(
+                typing.cast("ItoolImageItem", self.source.slicer_data_items[0]),
+                norm_name=updates.get("norm_name"),
+            )
+        )
         extra_kwargs = dict(updates.pop("extra_kwargs", {}))
         updates["aspect"] = "equal" if updates.pop("axis", None) == "image" else "auto"
         for key in (

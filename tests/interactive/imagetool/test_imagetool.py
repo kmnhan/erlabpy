@@ -1,5 +1,6 @@
 import collections.abc
 import copy
+import dataclasses
 import json
 import logging
 import pathlib
@@ -1142,6 +1143,7 @@ def test_itool_dataset_metadata_fields_roundtrip(qtbot, tmp_path: pathlib.Path) 
         high_contrast=True,
         zero_centered=True,
         levels_locked=True,
+        levels_robust=True,
     )
     area.main_image.set_guidelines(3)
     area.main_image._guidelines_items[0].setAngle(60.0)
@@ -1186,6 +1188,7 @@ def test_itool_dataset_metadata_fields_roundtrip(qtbot, tmp_path: pathlib.Path) 
         "high_contrast",
         "zero_centered",
         "levels_locked",
+        "levels_robust",
         "levels",
     }
     assert set(saved_state["slice"]) == {
@@ -1205,6 +1208,7 @@ def test_itool_dataset_metadata_fields_roundtrip(qtbot, tmp_path: pathlib.Path) 
     assert saved_color["high_contrast"] is True
     assert saved_color["zero_centered"] is True
     assert saved_color["levels_locked"] is True
+    assert saved_color["levels_robust"] is True
     assert all(isinstance(level, float) for level in saved_color["levels"])
     assert saved_state["slice"] == {
         "dims": ["alpha", "eV"],
@@ -1309,6 +1313,9 @@ def test_itool_dataset_metadata_fields_roundtrip(qtbot, tmp_path: pathlib.Path) 
     assert restored_area.high_contrast_act.isChecked()
     assert restored_area.zero_centered_act.isChecked()
     assert restored_area.lock_levels_act.isChecked()
+    assert restored_area.levels_robust is True
+    assert restored_area.robust_levels_act.isChecked()
+    assert not restored_area.robust_levels_act.isEnabled()
     assert not restored_area._colorbar.isHidden()
     assert restored_area.controls_visible is True
     restored_splitter_sizes = restored_area.splitter_sizes
@@ -1369,6 +1376,7 @@ def test_itool_state_schema_guard() -> None:
         "high_contrast",
         "zero_centered",
         "levels_locked",
+        "levels_robust",
         "levels",
     }
     assert set(ArraySlicerState.__annotations__) == {
@@ -1992,6 +2000,7 @@ def test_itool_state_optional_metadata_fields_restore_defaults(qtbot) -> None:
     qtbot.addWidget(win)
     ds = win.to_dataset()
     state = json.loads(ds.attrs["itool_state"])
+    state["color"].pop("levels_robust")
     for key in (
         "axis_inversions",
         "controls_visible",
@@ -2013,6 +2022,13 @@ def test_itool_state_optional_metadata_fields_restore_defaults(qtbot) -> None:
     assert restored.slicer_area.n_cursors == 1
     assert restored.slicer_area.current_cursor == 0
     assert restored.slicer_area.state["plotitem_states"]
+    assert restored.slicer_area.levels_robust is False
+    assert not restored.slicer_area.robust_levels_act.isChecked()
+
+    restored.slicer_area.set_colormap(levels_robust=True)
+    restored.slicer_area.state = state
+    assert restored.slicer_area.levels_robust is False
+    assert not restored.slicer_area.robust_levels_act.isChecked()
 
     restored.close()
     win.close()
@@ -2034,6 +2050,70 @@ def test_locked_levels_state_uses_json_scalars(qtbot) -> None:
     win.close()
 
 
+@pytest.mark.parametrize(
+    "field", dataclasses.fields(imagetool_viewer_state._ColorMapSettings)
+)
+def test_colormap_settings_live_and_pending_partial_updates(qtbot, field) -> None:
+    from erlab.interactive.imagetool.manager._workspace._pending import (
+        _PendingWorkspacePayloads,
+    )
+
+    changes = {
+        "cmap": "viridis",
+        "gamma": 1.7,
+        "reverse": True,
+        "high_contrast": True,
+        "zero_centered": True,
+        "levels_locked": False,
+        "levels_robust": True,
+        "levels": (-2.0, 7.0),
+    }
+    assert set(changes) == {
+        item.name
+        for item in dataclasses.fields(imagetool_viewer_state._ColorMapSettings)
+    }
+    assert set(changes) == set(imagetool_viewer_state.ColorMapState.__annotations__)
+    win = ImageTool(_TEST_DATA["2D"], cmap="magma", gamma=0.5)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    area.set_colormap(levels_locked=True, levels=(-1.0, 5.0))
+    pending_state = json.loads(json.dumps({"color": area.colormap_properties}))
+
+    update = {field.name: changes[field.name]}
+    area.set_colormap(**update)
+    _PendingWorkspacePayloads._update_pending_link_colormap_state(pending_state, update)
+
+    live_color = area.colormap_properties
+    pending_color = imagetool_viewer_state._ColorMapSettings.from_state(
+        pending_state["color"]
+    ).to_state(include_levels=area.levels_locked)
+    assert live_color == pending_color
+    assert (
+        area._color_settings.to_state(include_levels=area.levels_locked) == live_color
+    )
+    win.close()
+
+
+def test_colormap_settings_follow_level_span_and_lock_actions(qtbot) -> None:
+    win = ImageTool(_TEST_DATA["2D"])
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    area.lock_levels_act.trigger()
+    assert area._color_settings.levels_locked
+    area._colorbar.cb.setSpanRegion((1.0, 8.0))
+    assert area._color_settings.levels == pytest.approx((1.0, 8.0))
+    area.levels = (-2.0, 6.0)
+    assert area._color_settings.levels == pytest.approx((-2.0, 6.0))
+    area.lock_levels_act.trigger()
+    assert not area._color_settings.levels_locked
+    assert "levels" not in area.colormap_properties
+    area.lock_levels_act.trigger()
+    assert area._color_settings.levels_locked
+    assert area._color_settings.levels == pytest.approx(area.levels)
+    assert area.robust_levels_act.isEnabled() is False
+    win.close()
+
+
 def test_levels_preserve_requested_span_with_nonfinite_cached_limits(qtbot) -> None:
     win = itool(_TEST_DATA["2D"], execute=False)
     qtbot.addWidget(win)
@@ -2044,6 +2124,112 @@ def test_levels_preserve_requested_span_with_nonfinite_cached_limits(qtbot) -> N
     assert not win.slicer_area.levels_locked
     assert win.slicer_area.levels == pytest.approx((-1.0, 1.0))
 
+    win.close()
+
+
+def _assert_robust_visible_image_levels(
+    area: ImageSlicerArea,
+) -> list[tuple[float, float]]:
+    limits = []
+    for plot in area.images:
+        image = plot.slicer_data_items[area.current_cursor]
+        assert image.isVisible()
+        finite_values = image.image[np.isfinite(image.image)]
+        q_dtype = np.result_type(finite_values.dtype.type(0), 0.0)
+        expected = np.percentile(finite_values, np.array([2, 98], dtype=q_dtype))
+        np.testing.assert_array_equal(image.getLevels(), expected)
+        limits.append(tuple(expected))
+    return limits
+
+
+def test_itool_robust_levels_follow_slices_and_cursors(qtbot) -> None:
+    values = ((np.arange(12 * 10 * 4) * 37) % 503).astype(np.float32).reshape(12, 10, 4)
+    values *= np.arange(1, 5, dtype=np.float32)
+    values += np.arange(4, dtype=np.float32) * 1000
+    values[0, 0, 0] = np.nan
+    values[1, 1, 1] = np.inf
+    values[2, 2, 2] = -np.inf
+    values[3, 3, 3] = 1.0e6
+    data = xr.DataArray(
+        values,
+        dims=("alpha", "eV", "beta"),
+        coords={"alpha": np.arange(12), "eV": np.arange(10), "beta": np.arange(4)},
+    )
+    original = data.copy(deep=True)
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    win.show()
+    area = win.slicer_area
+
+    assert area.levels_robust is False
+    assert area.robust_levels_act.isCheckable()
+    assert not area.robust_levels_act.isChecked()
+    assert area.robust_levels_act.isEnabled()
+    actions = win.mnb.menu_dict["viewMenu"].actions()
+    assert actions[actions.index(area.lock_levels_act) + 1] is area.robust_levels_act
+
+    images_before = [plot.slicer_data_items[0].image.copy() for plot in area.images]
+    area.main_image.getViewBox().setRange(
+        xRange=(2.0, 5.0), yRange=(3.0, 6.0), padding=0.0
+    )
+    area.robust_levels_act.trigger()
+    assert area.levels_robust is True
+    initial_limits = _assert_robust_visible_image_levels(area)
+    for plot, before in zip(area.images, images_before, strict=True):
+        np.testing.assert_array_equal(plot.slicer_data_items[0].image, before)
+
+    area.set_index(2, 0)
+    first_cursor_limits = _assert_robust_visible_image_levels(area)
+    assert first_cursor_limits[0] != initial_limits[0]
+
+    area.add_cursor()
+    area.set_index(2, 3, cursor=1)
+    area.set_current_cursor(1)
+    second_cursor_limits = _assert_robust_visible_image_levels(area)
+    assert second_cursor_limits[0] != first_cursor_limits[0]
+    area.set_current_cursor(0)
+    assert _assert_robust_visible_image_levels(area) == first_cursor_limits
+    area.robust_levels_act.trigger()
+    assert area.levels_robust is False
+    for plot in area.images:
+        image = plot.slicer_data_items[0]
+        finite_values = image.image[np.isfinite(image.image)]
+        np.testing.assert_array_equal(
+            image.getLevels(), (finite_values.min(), finite_values.max())
+        )
+    xr.testing.assert_identical(data, original)
+    xr.testing.assert_identical(area.data, original)
+    win.close()
+
+
+def test_itool_robust_levels_keep_preference_while_locked(qtbot) -> None:
+    win = ImageTool(_TEST_DATA["3D"].astype(np.float32))
+    qtbot.addWidget(win)
+    win.show()
+    area = win.slicer_area
+    area.set_colormap(levels_robust=True)
+    _assert_robust_visible_image_levels(area)
+
+    area.lock_levels(True)
+    area.levels = (10.0, 100.0)
+    assert area.levels_robust is True
+    assert area.robust_levels_act.isChecked()
+    assert not area.robust_levels_act.isEnabled()
+    assert area.robust_levels_act.toolTip()
+
+    area.set_index(2, 0)
+    area.add_cursor()
+    area.set_index(1, 0, cursor=1)
+    area.set_current_cursor(1)
+    for plot in area.images:
+        for image in plot.slicer_data_items:
+            np.testing.assert_array_equal(image.getLevels(), (10.0, 100.0))
+
+    area.lock_levels(False)
+    assert area.levels_robust is True
+    assert area.robust_levels_act.isChecked()
+    assert area.robust_levels_act.isEnabled()
+    _assert_robust_visible_image_levels(area)
     win.close()
 
 
@@ -2216,7 +2402,7 @@ def test_figure_composer_image_preserves_axis_direction_and_aspect(
     operation = build_figure_composer_operation(image_plot, source_name="data")
     assert operation.invert_x is invert_x
     assert operation.invert_y is invert_y
-    assert operation.crop is (cursor_count == 2)
+    assert not operation.crop
     if cursor_count == 1:
         assert operation.aspect == ("equal" if equal_aspect else "auto")
         assert "aspect" not in operation.extra_kwargs
@@ -5356,6 +5542,7 @@ def test_itool_general(qtbot, move_and_compare_values, use_dask) -> None:
             "high_contrast": True,
             "zero_centered": True,
             "levels_locked": False,
+            "levels_robust": False,
         },
         "slice": {
             "dims": ("y", "x"),
@@ -8853,6 +9040,257 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
         lambda: not win.slicer_area.main_image.is_guidelines_visible, timeout=1000
     )
 
+    win.close()
+
+
+@pytest.mark.parametrize(
+    ("keep_colors", "keep_color_limits", "locked"),
+    [(True, True, False), (True, True, True), (True, False, True), (False, True, True)],
+)
+def test_rotation_child_keeps_color_preferences(
+    qtbot, accept_dialog, monkeypatch, keep_colors, keep_color_limits, locked
+) -> None:
+    values = np.arange(100, dtype=np.float32).reshape(10, 10)
+    values[0, 0] = -1.0e6
+    values[-1, -1] = 1.0e6
+    data = xr.DataArray(
+        values,
+        dims=("x", "y"),
+        coords={"x": np.arange(10) - 4.5, "y": np.arange(10) - 4.5},
+        name="scan",
+    )
+    original = data.copy(deep=True)
+    win = itool(data, execute=False, manager=False)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    area.set_colormap(
+        cmap="viridis",
+        gamma=0.7,
+        reverse=True,
+        high_contrast=True,
+        zero_centered=True,
+        levels_robust=True,
+    )
+    if locked:
+        area.lock_levels(True)
+        area.levels = (10.0, 90.0)
+    area.flush_history()
+    parent_color = area.colormap_properties
+    history_counts = (len(area._prev_states), len(area._next_states))
+    children: list[ImageTool] = []
+
+    def _open_child(**kwargs) -> ImageTool:
+        child = itool(**kwargs, manager=False)
+        qtbot.addWidget(child)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(erlab.interactive, "itool", _open_child)
+
+    def _configure(dialog: RotationDialog) -> None:
+        dialog.angle_spin.setValue(90.0)
+        dialog.order_spin.setValue(0)
+        dialog.reshape_check.setChecked(False)
+        dialog.keep_colors = keep_colors
+        dialog.keep_color_limits = keep_color_limits
+        dialog.launch_mode_combo.setCurrentIndex(
+            dialog.launch_mode_combo.findData("detach")
+        )
+
+    accept_dialog(win.mnb._rotate, pre_call=_configure)
+
+    assert len(children) == 1
+    child_area = children[0].slicer_area
+    expected = erlab.analysis.transform.rotate(
+        original,
+        angle=90.0,
+        axes=tuple(area.main_image.axis_dims),
+        center=(0.0, 0.0),
+        reshape=False,
+        order=0,
+    )
+    xr.testing.assert_identical(child_area.data, expected)
+    assert child_area.levels_robust is keep_colors
+    assert child_area.levels_locked is (keep_colors and keep_color_limits and locked)
+    if keep_colors:
+        for key in ("cmap", "gamma", "reverse", "high_contrast", "zero_centered"):
+            assert child_area.colormap_properties[key] == parent_color[key]
+        if child_area.levels_locked:
+            np.testing.assert_allclose(
+                child_area.main_image.slicer_data_items[0].getLevels(),
+                parent_color["levels"],
+            )
+        else:
+            _assert_robust_visible_image_levels(child_area)
+    else:
+        assert not child_area.reverse_act.isChecked()
+        assert not child_area.high_contrast_act.isChecked()
+        assert not child_area.zero_centered_act.isChecked()
+        image = child_area.main_image.slicer_data_items[0]
+        np.testing.assert_array_equal(
+            image.getLevels(), (np.nanmin(image.image), np.nanmax(image.image))
+        )
+    child_area.flush_history()
+    assert not child_area.undoable
+    area.flush_history()
+    assert (len(area._prev_states), len(area._next_states)) == history_counts
+    assert area.colormap_properties == parent_color
+    xr.testing.assert_identical(area.data, original)
+    xr.testing.assert_identical(data, original)
+    children[0].close()
+    win.close()
+
+
+@pytest.mark.parametrize("launch_mode", ["nest", "detach"])
+@pytest.mark.parametrize("batch", [False, True])
+def test_rotation_managed_children_keep_each_source_colors(
+    qtbot, accept_dialog, manager_context, launch_mode, batch
+) -> None:
+    values = np.arange(100, dtype=np.float32).reshape(10, 10)
+    values[0, 0] = -1.0e6
+    values[-1, -1] = 1.0e6
+    data = xr.DataArray(
+        values,
+        dims=("x", "y"),
+        coords={"x": np.arange(10) - 4.5, "y": np.arange(10) - 4.5},
+        name="scan",
+    )
+    with manager_context() as manager:
+        parents = []
+        for index in range(2 if batch else 1):
+            tool = itool(data + index, execute=False, manager=False)
+            qtbot.addWidget(tool)
+            manager.add_imagetool(tool, show=False)
+            area = tool.slicer_area
+            area.set_colormap(
+                cmap="viridis",
+                gamma=0.7 + index,
+                reverse=not bool(index),
+                levels_robust=not bool(index),
+            )
+            area.flush_history()
+            parents.append(tool)
+
+        if batch:
+            selection_model = manager.tree_view.selectionModel()
+            selection_model.clearSelection()
+            for index in range(len(parents)):
+                selection_model.select(
+                    manager.tree_view._model._row_index(index),
+                    QtCore.QItemSelectionModel.SelectionFlag.Select,
+                )
+
+        colors = [tool.slicer_area.colormap_properties for tool in parents]
+        history_counts = [len(tool.slicer_area._prev_states) for tool in parents]
+        dialog = RotationDialog(
+            parents[0].slicer_area, batch_manager=manager if batch else None
+        )
+        qtbot.addWidget(dialog)
+
+        def _configure(dialog: RotationDialog) -> None:
+            dialog.angle_spin.setValue(90.0)
+            dialog.order_spin.setValue(0)
+            dialog.reshape_check.setChecked(False)
+            dialog.launch_mode_combo.setCurrentIndex(
+                dialog.launch_mode_combo.findData(launch_mode)
+            )
+
+        accept_dialog(dialog.exec, pre_call=_configure)
+
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+        for index, parent in enumerate(parents):
+            if launch_mode == "nest":
+                child_ids = manager._tool_graph.root_wrappers[index]._childtool_indices
+                assert len(child_ids) == 1
+                child = manager.get_imagetool(child_ids[0])
+            else:
+                child = manager.get_imagetool(index + len(parents))
+            area = child.slicer_area
+            assert area.colormap_properties == colors[index]
+            if area.levels_robust:
+                _assert_robust_visible_image_levels(area)
+            else:
+                image = area.main_image.slicer_data_items[0]
+                np.testing.assert_array_equal(
+                    image.getLevels(), (np.nanmin(image.image), np.nanmax(image.image))
+                )
+            area.flush_history()
+            assert not area.undoable
+            parent.slicer_area.flush_history()
+            assert len(parent.slicer_area._prev_states) == history_counts[index]
+            xr.testing.assert_identical(parent.slicer_area.data, data + index)
+
+
+def test_rotation_child_cancel_keeps_source(qtbot, accept_dialog, monkeypatch) -> None:
+    win = itool(_TEST_DATA["2D"], execute=False, manager=False)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    area.set_colormap(levels_robust=True)
+    area.flush_history()
+    original = area.data.copy(deep=True)
+    color = area.colormap_properties
+    history_counts = (len(area._prev_states), len(area._next_states))
+    launched: list[dict[str, typing.Any]] = []
+    monkeypatch.setattr(
+        erlab.interactive, "itool", lambda **kwargs: launched.append(kwargs)
+    )
+
+    accept_dialog(
+        win.mnb._rotate,
+        pre_call=lambda dialog: dialog.angle_spin.setValue(90.0),
+        accept_call=lambda dialog: dialog.reject(),
+    )
+
+    assert not launched
+    assert area.colormap_properties == color
+    xr.testing.assert_identical(area.data, original)
+    area.flush_history()
+    assert (len(area._prev_states), len(area._next_states)) == history_counts
+    win.close()
+
+
+def test_child_colormap_kwargs_keep_reversed_custom_colormap(qtbot) -> None:
+    cmap = pg.ColorMap(
+        [0.0, 0.2, 0.7, 1.0],
+        [(0, 0, 0, 255), (128, 32, 16, 255), (16, 64, 128, 255), (255, 255, 255, 255)],
+        name="custom",
+    )
+    original_pos = cmap.pos.copy()
+    original_color = cmap.color.copy()
+    win = ImageTool(
+        _TEST_DATA["2D"],
+        cmap=cmap,
+        gamma=0.7,
+        high_contrast=True,
+        zero_centered=True,
+        levels_robust=True,
+    )
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    area.set_colormap(reverse=True)
+    area.flush_history()
+    history_count = len(area._prev_states)
+    parent_lut = area.main_image.slicer_data_items[0].lut.copy()
+    child = ImageTool(
+        area.data,
+        **imagetool_viewer_state._child_colormap_kwargs(area.colormap_properties),
+    )
+    qtbot.addWidget(child)
+    child_area = child.slicer_area
+    np.testing.assert_array_equal(
+        child_area.main_image.slicer_data_items[0].lut, parent_lut
+    )
+    np.testing.assert_array_equal(area.main_image.slicer_data_items[0].lut, parent_lut)
+    np.testing.assert_array_equal(cmap.pos, original_pos)
+    np.testing.assert_array_equal(cmap.color, original_color)
+    assert child_area.colormap is not cmap
+    assert child_area.levels_robust
+    _assert_robust_visible_image_levels(child_area)
+    child_area.flush_history()
+    assert not child_area.undoable
+    area.flush_history()
+    assert len(area._prev_states) == history_count
+    child.close()
     win.close()
 
 

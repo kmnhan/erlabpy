@@ -304,6 +304,14 @@ fitted reference edge to another measurement.
   min/max and display a colorbar alongside the image. Drag on the colorbar to update
   limits interactively or right-click to type exact bounds.
 
+- Enable {menuselection}`View --> Robust Levels` to set each image's automatic range
+  from its 2nd and 98th percentiles. This option applies while {guilabel}`Lock Levels`
+  is off and updates as you slice the data.
+
+- With levels locked, right-click the colorbar and choose {guilabel}`Remove Outliers`
+  to set fixed limits from the current main image's 2nd and 98th percentiles. The
+  resulting limits apply to all images until you change them or unlock levels.
+
 - {material-regular}`vertical_align_center` applies gamma scaling relative to the
   midpoint, which is handy for centered intensity scales such as spin-polarized or
   dichroic data.

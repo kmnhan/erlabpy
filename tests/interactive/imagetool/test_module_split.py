@@ -281,9 +281,12 @@ def test_plot_items_loads_figure_composer_only_for_action() -> None:
             _tool_source_singleton_indexers=lambda: {},
             n_cursors=1,
             manual_limits={},
+            levels_locked=False,
+            levels_robust=False,
             colormap_properties={
                 "cmap": "viridis",
                 "levels_locked": False,
+                "levels_robust": False,
                 "reverse": False,
                 "zero_centered": False,
                 "high_contrast": False,
@@ -299,10 +302,16 @@ def test_plot_items_loads_figure_composer_only_for_action() -> None:
             array_slicer=types.SimpleNamespace(
                 _nonuniform_axes=set(),
                 _nonuniform_axes_set=set(),
+                display_value_abs_limit=1.0e30,
                 physical_dims=("x", "y"),
                 qsel_args=lambda _cursor, _axes: {},
             ),
-            slicer_data_items=(),
+            slicer_data_items=(
+                types.SimpleNamespace(
+                    image=plot_items.np.arange(4.0).reshape(2, 2),
+                    getLevels=lambda: (0.0, 3.0),
+                ),
+            ),
             vb=types.SimpleNamespace(
                 state={
                     "autoRange": (True, True),

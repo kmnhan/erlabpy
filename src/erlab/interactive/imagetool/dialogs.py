@@ -79,6 +79,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     ThinOperation,
     UniformInterpolationOperation,
 )
+from erlab.interactive.imagetool.viewer_state import _child_colormap_kwargs
 
 __all__ = [
     "AggregateDialog",
@@ -118,7 +119,6 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.plot_items import ItoolPolyLineROI
     from erlab.interactive.imagetool.slicer import ArraySlicer
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
-    from erlab.interactive.imagetool.viewer_state import ColorMapState
 
 _GAUSSIAN_FWHM_FACTOR: float = 2 * math.sqrt(2 * math.log(2))
 
@@ -936,15 +936,11 @@ class DataTransformDialog(_DataManipulationDialog):
         itool_kw["options_model"] = getattr(slicer_area, "_options_model", None)
 
         if self.keep_colors:
-            color_props: ColorMapState = slicer_area.colormap_properties
-
-            itool_kw["cmap"] = color_props["cmap"]
-            itool_kw["gamma"] = color_props["gamma"]
-            itool_kw["high_contrast"] = color_props["high_contrast"]
-            itool_kw["zero_centered"] = color_props["zero_centered"]
-
-            if color_props["levels_locked"] and self.keep_color_limits:
-                itool_kw["vmin"], itool_kw["vmax"] = color_props["levels"]
+            itool_kw.update(
+                _child_colormap_kwargs(
+                    slicer_area.colormap_properties, keep_limits=self.keep_color_limits
+                )
+            )
         return itool_kw
 
     def _manager_target(

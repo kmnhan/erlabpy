@@ -662,7 +662,7 @@ def _plot_slices_code_lines(
 def _plot_slices_code_kwargs(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> dict[str, typing.Any]:
-    kwargs = _plot_slices_kwargs(tool, operation)
+    kwargs = _plot_slices_kwargs(tool, operation, code=True)
     is_line_plot = _plot_slices_shape(tool._document, operation).plot_ndim == 1
     slice_values_code = _all_coordinate_slice_values_code(operation)
     if operation.slice_dim and slice_values_code is not None:

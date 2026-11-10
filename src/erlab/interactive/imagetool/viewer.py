@@ -101,6 +101,7 @@ from erlab.interactive.imagetool.viewer_state import (
     ColorMapState,
     ImageSlicerState,
     PlotItemState,
+    _ColorMapSettings,
     _prepare_input_data,
     _processed_ndim,
 )
@@ -163,6 +164,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
         If `True` and `data` is not `None`, converts some known angle coordinates to
         degrees. If an iterable of strings is given, only the coordinates that
         correspond to the given strings are converted.
+    levels_robust
+        Use the 2nd and 98th percentiles for automatic color limits while levels are
+        unlocked.
+
+        .. versionadded:: 3.30.0
+
     transpose
         If `True`, the main image is transposed before being displayed.
     bench
@@ -297,6 +304,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         vmax: float | None = None,
         rad2deg: bool | Iterable[str] = False,
         *,
+        levels_robust: bool = False,
         transpose: bool = False,
         bench: bool = False,
         state: ImageSlicerState | None = None,
@@ -456,14 +464,17 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 cmap_reversed = True
             if cmap.startswith("cet_CET"):
                 cmap = cmap.removeprefix("cet_")
-        self._colormap_properties = {
-            "cmap": cmap,
-            "gamma": gamma,
-            "reverse": cmap_reversed,
-            "high_contrast": high_contrast,
-            "zero_centered": zero_centered,
-            "levels_locked": False,
-        }
+        self._color_settings = _ColorMapSettings(
+            cmap=cmap,
+            gamma=gamma,
+            reverse=cmap_reversed,
+            high_contrast=high_contrast,
+            zero_centered=zero_centered,
+        )
+        self._colorbar.cb._span.sigRegionChanged.connect(
+            self._sync_color_settings_levels
+        )
+        self.levels_robust = levels_robust
 
         self.manual_limits: dict[str, list[float]] = {}
         # Dictionary of current axes limits for each data dimension to ensure all plots
@@ -789,13 +800,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @property
     def colormap_properties(self) -> ColorMapState:
-        prop = copy.deepcopy(self._colormap_properties)
+        if self.levels_locked:
+            self._sync_color_settings_levels()
+        return self._color_settings.to_state(include_levels=self.levels_locked)
 
-        prop["levels_locked"] = self.levels_locked  # history handled by lock_levels()
-        if prop["levels_locked"]:
-            levels = self.levels
-            prop["levels"] = (float(levels[0]), float(levels[1]))
-        return typing.cast("ColorMapState", prop)
+    @QtCore.Slot()
+    def _sync_color_settings_levels(self) -> None:
+        self._color_settings = self._color_settings.updated({"levels": self.levels})
 
     @property
     def controls_visible(self) -> bool:
@@ -931,7 +942,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         with self._workspace_load_stage("imagetool state restore: color"):
             try:
-                self.set_colormap(**state.get("color", {}), update=False)
+                self.set_colormap(
+                    **{"levels_robust": False, **state.get("color", {})}, update=False
+                )
             except Exception:
                 erlab.utils.misc.emit_user_level_warning(
                     "Failed to restore colormap settings, skipping"
@@ -1160,16 +1173,25 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @property
     def levels_locked(self) -> bool:
-        if not erlab.interactive.utils.qt_is_valid(self.lock_levels_act):
-            return bool(self._colormap_properties["levels_locked"])
-        return self.lock_levels_act.isChecked()
+        return self._color_settings.levels_locked
 
     @levels_locked.setter
     def levels_locked(self, value: bool) -> None:
-        self._colormap_properties["levels_locked"] = bool(value)
+        self._color_settings = self._color_settings.updated({"levels_locked": value})
         if not erlab.interactive.utils.qt_is_valid(self.lock_levels_act):
             return
         self.lock_levels_act.setChecked(value)
+
+    @property
+    def levels_robust(self) -> bool:
+        return self._color_settings.levels_robust
+
+    @levels_robust.setter
+    def levels_robust(self, value: bool) -> None:
+        self._color_settings = self._color_settings.updated({"levels_robust": value})
+        if erlab.interactive.utils.qt_is_valid(self.robust_levels_act):
+            with QtCore.QSignalBlocker(self.robust_levels_act):
+                self.robust_levels_act.setChecked(value)
 
     @property
     def levels(self) -> tuple[float, float]:
@@ -1189,6 +1211,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         else:
             self._colorbar.cb.setLimits(requested_levels)
         self._colorbar.cb.setSpanRegion(requested_levels)
+        self._sync_color_settings_levels()
         if self.levels_locked:
             for im in self._materialized_imageitems():
                 im.setLevels(requested_levels, update=False)
@@ -2109,6 +2132,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.lock_levels_act.setCheckable(True)
         self.lock_levels_act.setToolTip("Lock the colormap levels and show a colorbar")
         self.lock_levels_act.toggled.connect(self.lock_levels)
+
+        self.robust_levels_act = QtWidgets.QAction("Robust Levels", self)
+        self.robust_levels_act.setObjectName("itoolRobustLevelsAction")
+        self.robust_levels_act.setCheckable(True)
+        self.robust_levels_act.setToolTip(
+            "Use the 2nd and 98th percentiles for each image "
+            "while levels are unlocked. "
+            "Turn off Lock Levels to change automatic scaling."
+        )
+        self.robust_levels_act.toggled.connect(self.refresh_colormap)
 
         self.ktool_act = QtWidgets.QAction("Open ktool", self)
         self.ktool_act.setObjectName("itoolOpenKtoolAction")
@@ -3914,74 +3947,57 @@ class ImageSlicerArea(QtWidgets.QWidget):
         levels_locked: bool | None = None,
         levels: tuple[float, float] | None = None,
         update: bool = True,
+        *,
+        levels_robust: bool | None = None,
     ) -> None:
-        action_values = gamma is None and levels_locked is None and levels is None
-        next_cmap = (
-            cmap
-            if cmap is not None
-            else typing.cast("str | pg.ColorMap", self._colormap_properties["cmap"])
+        previous_levels_robust = self.levels_robust
+        action_values = (
+            gamma is None
+            and levels_locked is None
+            and levels is None
+            and levels_robust is None
         )
-        next_gamma = (
-            float(gamma)
-            if gamma is not None
-            else float(self._colormap_properties["gamma"])
-        )
-
-        reverse_value = (
+        changes = locals()
+        changes["reverse"] = (
             self.reverse_act.isChecked()
             if reverse is None and action_values
             else reverse
         )
-        high_contrast_value = (
+        changes["high_contrast"] = (
             self.high_contrast_act.isChecked()
             if high_contrast is None and action_values
             else high_contrast
         )
-        zero_centered_value = (
+        changes["zero_centered"] = (
             self.zero_centered_act.isChecked()
             if zero_centered is None and action_values
             else zero_centered
         )
-
-        next_reverse = bool(self._colormap_properties["reverse"])
-        next_high_contrast = bool(self._colormap_properties["high_contrast"])
-        next_zero_centered = bool(self._colormap_properties["zero_centered"])
-        if reverse_value is not None:
-            next_reverse = bool(reverse_value)
-        if high_contrast_value is not None:
-            next_high_contrast = bool(high_contrast_value)
-        if zero_centered_value is not None:
-            next_zero_centered = bool(zero_centered_value)
+        next_settings = self._color_settings.updated(changes)
 
         pg_colormap = erlab.interactive.colors._pg_colormap_powernorm_lut(
-            next_cmap,
-            next_gamma,
-            next_reverse,
-            high_contrast=next_high_contrast,
-            zero_centered=next_zero_centered,
+            next_settings.cmap,
+            next_settings.gamma,
+            next_settings.reverse,
+            high_contrast=next_settings.high_contrast,
+            zero_centered=next_settings.zero_centered,
         )
 
-        self._colormap_properties.update(
-            {
-                "cmap": next_cmap,
-                "gamma": next_gamma,
-                "reverse": next_reverse,
-                "high_contrast": next_high_contrast,
-                "zero_centered": next_zero_centered,
-            }
-        )
+        self._color_settings = next_settings
         reverse_blocker = QtCore.QSignalBlocker(self.reverse_act)
         high_contrast_blocker = QtCore.QSignalBlocker(self.high_contrast_act)
         zero_centered_blocker = QtCore.QSignalBlocker(self.zero_centered_act)
         try:
-            self.reverse_act.setChecked(next_reverse)
-            self.high_contrast_act.setChecked(next_high_contrast)
-            self.zero_centered_act.setChecked(next_zero_centered)
+            self.reverse_act.setChecked(next_settings.reverse)
+            self.high_contrast_act.setChecked(next_settings.high_contrast)
+            self.zero_centered_act.setChecked(next_settings.zero_centered)
         finally:
             del reverse_blocker
             del high_contrast_blocker
             del zero_centered_blocker
 
+        if levels_robust is not None:
+            self.levels_robust = levels_robust
         if levels_locked is not None:
             self.levels_locked = levels_locked
         if levels is not None:
@@ -3989,6 +4005,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         for im in self._materialized_imageitems():
             im.set_pg_colormap(pg_colormap, update=update)
+            if update and self.levels_robust != previous_levels_robust:
+                im.updateImage()
         self.sigViewOptionChanged.emit()
 
     @QtCore.Slot()
@@ -3997,6 +4015,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             reverse=self.reverse_act.isChecked(),
             high_contrast=self.high_contrast_act.isChecked(),
             zero_centered=self.zero_centered_act.isChecked(),
+            levels_robust=self.robust_levels_act.isChecked(),
             update=True,
         )
         logger.debug("Colormap refreshed")
@@ -4007,6 +4026,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.sigWriteHistory.emit()
             self.levels_locked = lock
 
+        self.robust_levels_act.setEnabled(not self.levels_locked)
         if self.levels_locked:
             levels = self.array_slicer.limits
             self._colorbar.cb.setLimits(levels)

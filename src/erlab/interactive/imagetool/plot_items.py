@@ -18,6 +18,10 @@ from pyqtgraph.GraphicsScene import mouseEvents
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive.imagetool._colorlevels import (
+    finite_percentile_limits,
+    resolve_image_levels,
+)
 from erlab.interactive.imagetool._provenance._model import (
     ScriptInput,
     ToolProvenanceOperation,
@@ -39,6 +43,7 @@ from erlab.interactive.imagetool.viewer_state import (
     PlotItemState,
     _associated_coord_color,
     _associated_coord_icon,
+    _child_colormap_kwargs,
     _make_cursor_colors,
     _plotted_associated_coord_names,
     suppressnanwarning,
@@ -292,11 +297,39 @@ class ItoolImageItem(ItoolDisplayObject, erlab.interactive.colors.BetterImageIte
     """Display a 2D slice of data as an image."""
 
     def __init__(self, axes, cursor: int | None = None, **kargs) -> None:
+        ItoolDisplayObject.__init__(self, axes=axes, cursor=cursor)
         erlab.interactive.colors.BetterImageItem.__init__(
             self, axes=axes, cursor=cursor, **kargs
         )
-        ItoolDisplayObject.__init__(self, axes=axes, cursor=cursor)
         self.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
+
+    def setImage(
+        self,
+        image: npt.NDArray | None = None,
+        autoLevels: bool | None = None,
+        levelSamples: int = 65536,
+        **kwargs,
+    ) -> None:
+        if autoLevels is None:
+            autoLevels = False if "levels" in kwargs else self._defaultAutoLevels
+        if (
+            autoLevels
+            and self.slicer_area.levels_robust
+            and not self.slicer_area.levels_locked
+        ):
+            values = self.image if image is None else np.asarray(image)
+            if values is not None:
+                kwargs["levels"] = resolve_image_levels(values, robust=True).limits
+                autoLevels = False
+        super().setImage(
+            image=image, autoLevels=autoLevels, levelSamples=levelSamples, **kwargs
+        )
+
+    def _robust_levels(self, image: npt.NDArray | None = None) -> npt.NDArray | None:
+        values = self.image if image is None else image
+        if values is None:
+            return None
+        return finite_percentile_limits(values)
 
     @suppressnanwarning
     def quickMinMax(self, *args, **kwargs):
@@ -1548,20 +1581,10 @@ class ItoolPlotItem(pg.PlotItem):
         itool_kw: dict[str, typing.Any] = {"data": data, "execute": False}
 
         if use_parent_colormap:
-            color_props = self.slicer_area.colormap_properties
             itool_kw.update(
-                {
-                    "cmap": color_props["cmap"],
-                    "gamma": color_props["gamma"],
-                    "high_contrast": color_props["high_contrast"],
-                    "zero_centered": color_props["zero_centered"],
-                    "file_path": self.slicer_area._file_path,
-                }
+                _child_colormap_kwargs(self.slicer_area.colormap_properties)
             )
-            if color_props["levels_locked"]:
-                itool_kw["vmin"], itool_kw["vmax"] = color_props["levels"]
-            if color_props["reverse"] and isinstance(itool_kw["cmap"], str):
-                itool_kw["cmap"] = f"{itool_kw['cmap']}_r"
+            itool_kw["file_path"] = self.slicer_area._file_path
 
         if self.slicer_area._in_manager:
             manager = self.slicer_area._manager_instance
@@ -2020,7 +2043,7 @@ class ItoolPlotItem(pg.PlotItem):
                 **self._item_kw,
             )
             if self.slicer_area.levels_locked:
-                item.setLevels(self.array_slicer.limits, update=True)
+                item.setLevels(self.slicer_area.levels, update=True)
         else:
             item = self.plotdata_cls(
                 self,
@@ -2451,20 +2474,42 @@ class ItoolColorBarItem(erlab.interactive.colors.BetterColorBarItem):
         super().__init__(**kwargs)
 
         self._copy_limits_action: QtGui.QAction | None = None
+        self._percentile_limits_action: QtGui.QAction | None = None
         if isinstance(self.vb, ItoolViewBox):
             self.vb._itool_menu_populator = self._ensure_context_menu
             self.vb._itool_menu_resetters.append(self._reset_context_menu)
 
     def _ensure_context_menu(self) -> QtWidgets.QMenu | None:
         menu = super()._ensure_context_menu()
-        if menu is None or self._copy_limits_action is not None:
+        if menu is None:
             return menu
-        copy_action = typing.cast(
-            "QtGui.QAction", menu.addAction("Copy color limits to clipboard")
+        menu.setToolTipsVisible(True)
+        if self._percentile_limits_action is None:
+            percentile_action = typing.cast(
+                "QtGui.QAction", menu.addAction("Remove Outliers")
+            )
+            percentile_action.setObjectName("itool_percentile_color_limits_action")
+            percentile_action.triggered.connect(self._set_percentile_limits)
+            self._percentile_limits_action = percentile_action
+        slicer_area = self.slicer_area
+        image = slicer_area.main_image.slicer_data_items[slicer_area.current_cursor]
+        values = image.image
+        has_finite_data = values is not None and bool(np.isfinite(values).any())
+        self._percentile_limits_action.setEnabled(has_finite_data)
+        self._percentile_limits_action.setToolTip(
+            "Set and lock color limits to the 2nd and 98th percentiles of the "
+            "current main image."
+            if has_finite_data
+            else "The current main image has no finite values. "
+            "Select an image slice with finite values to set percentile limits."
         )
-        copy_action.setObjectName("itool_copy_color_limits_action")
-        copy_action.triggered.connect(self._copy_limits)
-        self._copy_limits_action = copy_action
+        if self._copy_limits_action is None:
+            copy_action = typing.cast(
+                "QtGui.QAction", menu.addAction("Copy color limits to clipboard")
+            )
+            copy_action.setObjectName("itool_copy_color_limits_action")
+            copy_action.triggered.connect(self._copy_limits)
+            self._copy_limits_action = copy_action
         return menu
 
     def _reset_context_menu(self) -> None:
@@ -2478,6 +2523,7 @@ class ItoolColorBarItem(erlab.interactive.colors.BetterColorBarItem):
         self._cmap_widget = None
         self._cmap_action = None
         self._copy_limits_action = None
+        self._percentile_limits_action = None
 
     @property
     def slicer_area(self) -> ImageSlicerArea:
@@ -2501,6 +2547,17 @@ class ItoolColorBarItem(erlab.interactive.colors.BetterColorBarItem):
     @QtCore.Slot()
     def _copy_limits(self) -> str:
         return erlab.interactive.utils.copy_to_clipboard(str(self.slicer_area.levels))
+
+    @QtCore.Slot()
+    @record_history
+    def _set_percentile_limits(self) -> None:
+        slicer_area = self.slicer_area
+        image = slicer_area.main_image.slicer_data_items[slicer_area.current_cursor]
+        levels = image._robust_levels()
+        if levels is None:
+            return
+        self.slicer_area.lock_levels(True)
+        self.slicer_area.levels = (float(levels[0]), float(levels[1]))
 
     def setImageItem(self, *args, **kwargs) -> None:
         self.slicer_area.sigViewOptionChanged.connect(self.limit_changed)
