@@ -31,9 +31,9 @@ import erlab.interactive.utils
 from erlab.interactive._fit1d import (
     Fit1DTool,
     _broadcast_uncertainty,
-    _FitCodeEditRejected,
     _FitJob,
     _FitRestoreState,
+    _FitSetup,
     _load_lmfit_for_ftool_restore,
     _SnapCursorLine,
     _State2D,
@@ -676,6 +676,9 @@ class Fit2DTool(Fit1DTool):
         self._current_idx: int = y_size // 2
         self._params_full = [None] * y_size
         self._initial_params_full = None
+        self._initial_params_template: lmfit.Parameters | None = None
+        self._initial_params_from_coord_template: dict[str, str] = {}
+        self._lazy_params_index_pending = False
         self._params_from_coord_full: list[dict[str, str]] = [{} for _ in range(y_size)]
         self._result_ds_full: list[xr.Dataset | None] = [None] * y_size
         self._data_name_full: str = data_name
@@ -1487,6 +1490,7 @@ class Fit2DTool(Fit1DTool):
                 (f"initial-parameters-full/{index}", params)
                 for index, params in enumerate(self._initial_params_full or ())
             ),
+            ("initial-parameters-template", self._initial_params_template),
         )
 
     def _parameter_expression_edit_locations(self) -> frozenset[str]:
@@ -1521,7 +1525,10 @@ class Fit2DTool(Fit1DTool):
     @property
     def tool_status(self) -> Fit1DTool.StateModel:
         state_dict = super().tool_status.model_dump()
-        param_plot_names = set(self._param_plot_names())
+        param_plot_names = {
+            self.param_plot_combo.itemText(index)
+            for index in range(self.param_plot_combo.count())
+        }
         state_dict["state2d"] = _State2D(
             current_idx=int(self._current_idx),
             data_name_full=str(self._data_name_full),
@@ -1535,6 +1542,12 @@ class Fit2DTool(Fit1DTool):
                 if self._initial_params_full is not None
                 else None
             ),
+            initial_params_template=(
+                None
+                if self._initial_params_template is None
+                else self._serialize_params(self._initial_params_template)
+            ),
+            initial_params_from_coord=self._initial_params_from_coord_template.copy(),
             params_from_coord_full=self._params_from_coord_full.copy(),
             fill_mode=typing.cast(
                 'typing.Literal["previous", "extrapolate", "none"]',
@@ -1555,22 +1568,61 @@ class Fit2DTool(Fit1DTool):
 
     @tool_status.setter
     def tool_status(self, status: Fit1DTool.StateModel) -> None:
-        try:
-            with self._tool_status_code_execution(status) as (
-                entries,
-                capability,
-                local_edit,
-            ):
-                self._apply_fit2d_tool_status(
-                    status,
-                    entries,
-                    capability,
-                    local_edit=local_edit,
-                )
-        except _FitCodeEditRejected:
-            return
+        self._restore_tool_status(status)
 
-    def _apply_fit2d_tool_status(
+    def _fit_setup_code_entries(self, setup: _FitSetup) -> tuple[typing.Any, ...]:
+        safe_expressions = self._safe_model_parameter_expressions(setup.model_state)
+        expressions = tuple((state[0], state[3]) for state in setup.params)
+        return (
+            *super()._fit_setup_code_entries(setup),
+            *self._parameter_code_trust_entries(
+                expressions,
+                location_prefix=f"parameters-full/{self._current_idx}",
+                safe_expressions=safe_expressions,
+            ),
+            *self._parameter_code_trust_entries(
+                expressions,
+                location_prefix="initial-parameters-template",
+                safe_expressions=safe_expressions,
+            ),
+        )
+
+    def _apply_imported_fit_setup(
+        self,
+        setup: _FitSetup,
+        model: lmfit.Model,
+        params: lmfit.Parameters,
+        initial_params: lmfit.Parameters,
+    ) -> None:
+        super()._apply_imported_fit_setup(setup, model, params, initial_params)
+        size = int(self._data_full.sizes[self._y_dim_name])
+        self._params_full = [None] * size
+        self._params_full[self._current_idx] = self._params
+        self._initial_params_full = None
+        self._initial_params_template = self._initial_params
+        self._initial_params_from_coord_template = setup.params_from_coord.copy()
+        self._params_from_coord_full = [
+            setup.params_from_coord.copy() for _ in range(size)
+        ]
+        self._params_from_coord_full[self._current_idx] = self._params_from_coord
+        self._lazy_params_index_pending = False
+
+    def _code_trust_changed(self) -> None:
+        self._fit_execution_capability = None
+        if (
+            self._lazy_params_index_pending
+            and self._pending_fit_status is None
+            and self._initial_params_template is not None
+            and self._current_fit_execution_allowed()
+        ):
+            self._refresh_contents_from_index(
+                emit_param_changed=False,
+                emit_info=False,
+                refresh_fit=False,
+            )
+        super()._code_trust_changed()
+
+    def _apply_fit_tool_status(
         self,
         status: Fit1DTool.StateModel,
         entries: tuple[typing.Any, ...],
@@ -1596,9 +1648,10 @@ class Fit2DTool(Fit1DTool):
         if state2d is not None:  # pragma: no branch
             y_size = int(self._data_full.sizes[self._y_dim_name])
             self._data_name_full = state2d.data_name_full
-            self._params_from_coord_full = [{} for _ in range(y_size)]
-            for i, mapping in enumerate(state2d.params_from_coord_full[:y_size]):
-                self._params_from_coord_full[i] = mapping.copy()
+            if not local_edit:
+                self._params_from_coord_full = [{} for _ in range(y_size)]
+                for i, mapping in enumerate(state2d.params_from_coord_full[:y_size]):
+                    self._params_from_coord_full[i] = mapping.copy()
 
             self.fill_mode_combo.setCurrentText(state2d.fill_mode.capitalize())
             self._apply_param_plot_overlay_states(state2d.param_plot_overlay_states)
@@ -1621,8 +1674,14 @@ class Fit2DTool(Fit1DTool):
 
         def restore_parameter_groups(repaired_bounds: list[str]) -> None:
             self._update_param_plot_options()
+            self._initial_params_template = None
+            self._initial_params_from_coord_template = {}
+            self._lazy_params_index_pending = False
             if state2d is not None:  # pragma: no branch
                 y_size = int(self._data_full.sizes[self._y_dim_name])
+                self._params_from_coord_full = [{} for _ in range(y_size)]
+                for i, mapping in enumerate(state2d.params_from_coord_full[:y_size]):
+                    self._params_from_coord_full[i] = mapping.copy()
                 restored_params_full = [
                     self._deserialize_params(params, repaired_bounds=repaired_bounds)
                     for params in state2d.params_full
@@ -1642,6 +1701,17 @@ class Fit2DTool(Fit1DTool):
                         )
                         if restored is not None:
                             self._initial_params_full[i] = restored
+                if state2d.initial_params_template is not None:
+                    self._initial_params_template = self._deserialize_params(
+                        state2d.initial_params_template,
+                        repaired_bounds=repaired_bounds,
+                    )
+                    self._initial_params_from_coord_template = (
+                        state2d.initial_params_from_coord.copy()
+                    )
+                    self._initial_params = self._initial_params_for_index(
+                        self._current_idx
+                    )
 
         repaired_bounds: list[str] = []
         previous_repaired_bounds = self._param_bounds_repair_names
@@ -1810,6 +1880,9 @@ class Fit2DTool(Fit1DTool):
         reset_params_from_coord: bool = False,
         refresh_views: bool = True,
     ) -> None:
+        self._initial_params_template = None
+        self._initial_params_from_coord_template = {}
+        self._lazy_params_index_pending = False
         old_model = self._model
         params_full = list(self._params_full)
         params_from_coord_full = [
@@ -2268,7 +2341,18 @@ class Fit2DTool(Fit1DTool):
         errbar.setData(x=param_values, y=plot_y, width=param_errors)
         scatter.setData(x=param_values, y=plot_y)
 
-    def _load_contents_from_index(self) -> None:
+    def _initial_params_for_index(self, index: int) -> lmfit.Parameters:
+        if self._initial_params_full is not None:
+            return self._initial_params_full[index]
+        if self._initial_params_template is None:
+            return self._initial_params
+        params = self._initial_params_template.copy()
+        data = self._data_full.isel({self._y_dim_name: index})
+        for name, coord_name in self._initial_params_from_coord_template.items():
+            params[name].value = float(data.coords[coord_name].item())
+        return params
+
+    def _load_contents_from_index(self) -> bool:
         self._data = self._data_full.isel({self._y_dim_name: self._current_idx})
         self._direct_weights = self._current_direct_weights()
         self._uncertainty = self._current_uncertainty()
@@ -2277,7 +2361,13 @@ class Fit2DTool(Fit1DTool):
         params_from_coord = self._params_from_coord_full[self._current_idx]
         last_ds = self._result_ds_full[self._current_idx]
         self._last_result_ds = last_ds
-        if self._initial_params_full is not None:
+        if self._initial_params_template is not None:
+            if not self._current_fit_execution_allowed():
+                self._params_from_coord = params_from_coord
+                self._lazy_params_index_pending = True
+                return False
+            self._initial_params = self._initial_params_for_index(self._current_idx)
+        elif self._initial_params_full is not None:
             self._initial_params = self._initial_params_full[self._current_idx]
         if params is None:
             params = self._initial_params.copy()
@@ -2290,6 +2380,8 @@ class Fit2DTool(Fit1DTool):
 
         self._params = params
         self._params_from_coord = params_from_coord
+        self._lazy_params_index_pending = False
+        return True
 
     def _refresh_contents_from_index(
         self,
@@ -2299,8 +2391,10 @@ class Fit2DTool(Fit1DTool):
         elapsed: float | None = None,
         emit_info: bool = True,
         emit_param_changed: bool = True,
+        refresh_fit: bool = True,
     ) -> None:
-        self._load_contents_from_index()
+        if not self._load_contents_from_index():
+            return
         if not update_widgets:
             return
 
@@ -2310,7 +2404,8 @@ class Fit2DTool(Fit1DTool):
             emit_changed=emit_param_changed,
         )
         if not emit_param_changed:
-            self._update_fit_curve()
+            if refresh_fit:
+                self._update_fit_curve()
             self._refresh_slider_from_model()
         self._populate_data_curve()
 
@@ -2630,11 +2725,20 @@ class Fit2DTool(Fit1DTool):
             case _:
                 pass
 
-        source_params_full = (
-            list(self._initial_params_full)
-            if self._initial_params_full is not None
-            else [self._initial_params] * len(self._params_full)
-        )
+        source_params_full: list[lmfit.Parameters | None]
+        if self._initial_params_template is not None:
+            if not self._current_fit_execution_allowed(focus_on_block=True):
+                return
+            source_params_full = [None] * len(self._params_full)
+            source_params_full[self._current_idx] = self._initial_params_for_index(
+                self._current_idx
+            )
+        else:
+            source_params_full = (
+                list(self._initial_params_full)
+                if self._initial_params_full is not None
+                else [self._initial_params] * len(self._params_full)
+            )
         candidate_entries = self._fit_code_entries_with_params_full(source_params_full)
         safe_expressions = self._safe_model_parameter_expressions(
             self._serialized_model_state
@@ -2648,6 +2752,7 @@ class Fit2DTool(Fit1DTool):
             *(
                 entry
                 for index, params in enumerate(source_params_full)
+                if params is not None
                 for entry in self._parameter_code_trust_entries(
                     self._live_parameter_expressions(params),
                     location_prefix=f"evaluation/{index}",
@@ -2659,7 +2764,10 @@ class Fit2DTool(Fit1DTool):
         self._invalidate_fit_result_payload()
 
         def apply_change() -> None:
-            params_full = [params.copy() for params in source_params_full]
+            params_full = [
+                None if params is None else params.copy()
+                for params in source_params_full
+            ]
             self._params_full = params_full
             self._params_from_coord_full = [{} for _ in range(len(params_full))]
             self._result_ds_full = [None] * len(params_full)
@@ -3036,9 +3144,26 @@ class Fit2DTool(Fit1DTool):
         return True
 
     def _update_full_fit_saveable(self) -> None:
-        can_save: bool = self._fit_is_current and not any(
-            ds is None for ds in self._result_ds_full[self._y_range_slice()]
-        )
+        y_slice = self._y_range_slice()
+        datasets = self._result_ds_full[y_slice]
+        can_save = self._fit_is_current and all(ds is not None for ds in datasets)
+        if can_save:
+            results = [
+                self._extract_fit_result(ds) for ds in datasets if ds is not None
+            ]
+            can_save = self._models_match(
+                self._model, (result.model for result in results)
+            ) and all(
+                params is not None
+                and {state[0]: state[1:7] for state in self._serialize_params(params)}
+                == {
+                    state[0]: state[1:7]
+                    for state in self._serialize_params(result.params)
+                }
+                for params, result in zip(
+                    self._params_full[y_slice], results, strict=True
+                )
+            )
         self.save_full_button.setEnabled(can_save)
         self.copy_full_button.setEnabled(can_save)
 

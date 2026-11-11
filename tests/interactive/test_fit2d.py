@@ -293,6 +293,233 @@ def _make_2d_data() -> xr.DataArray:
     return xr.DataArray(data, dims=("y", "x"), coords={"y": y, "x": x}, name="map")
 
 
+@pytest.mark.parametrize(
+    ("source_2d", "target_2d"), [(False, True), (True, False), (True, True)]
+)
+def test_import_fit_setup_between_curve_and_stack(qtbot, source_2d, target_2d) -> None:
+    model = lmfit.models.LinearModel()
+    params = model.make_params(slope=1.5, intercept=20.0)
+    params["slope"].set(min=-3.0, max=3.0)
+    params["intercept"].set(vary=False)
+    source_data = (
+        _make_2d_data().assign_coords(temp=("y", [10.0, 20.0, 30.0]))
+        if source_2d
+        else _make_1d_data().assign_coords(temp=20.0)
+    )
+    source = erlab.interactive.ftool(
+        source_data, model=model, params=params, execute=False
+    )
+    qtbot.addWidget(source)
+    if source_2d:
+        source._set_current_index(1)
+    source._params["slope"].value = 2.5
+    source._params_from_coord["intercept"] = "temp"
+    if source_2d:
+        source._update_params_full()
+    source.param_model.set_params(source._params, source._params_from_coord)
+    source._refresh_fit_code_entries()
+    source_state = source.tool_status
+    target_data = (
+        _make_2d_data().assign_coords(temp=("y", [100.0, 110.0, 120.0]))
+        if target_2d
+        else _make_1d_data().assign_coords(temp=150.0)
+    )
+    uncertainty = xr.full_like(target_data, 0.2)
+    target = erlab.interactive.ftool(
+        target_data, uncertainty=uncertainty, execute=False
+    )
+    qtbot.addWidget(target)
+    target.domain_min_spin.setValue(-0.5)
+    target.domain_max_spin.setValue(0.5)
+    target._flush_pending_history_write()
+    previous = target.tool_status
+
+    assert target._import_fit_setup(source)
+    target._flush_pending_history_write()
+
+    target.undo()
+    assert target.tool_status.model_state == previous.model_state
+    assert target.tool_status.params == previous.params
+    target.redo()
+    assert isinstance(target._model, lmfit.models.LinearModel)
+    assert target._model is not source._model
+    assert target._fit_domain() == previous.domain
+    xr.testing.assert_identical(target.tool_data, target_data)
+    assert source.tool_status == source_state
+
+    if target_2d:
+        assert isinstance(target, Fit2DTool)
+        assert target._initial_params_full is None
+        assert target._initial_params_template is not None
+        assert sum(params is not None for params in target._params_full) == 1
+        assert len({id(mapping) for mapping in target._params_from_coord_full}) == 3
+        xr.testing.assert_identical(target._uncertainty_full, uncertainty)
+        for index, value in enumerate([100.0, 110.0, 120.0]):
+            target._set_current_index(index)
+            assert target._params["intercept"].value == pytest.approx(value)
+            assert target._params["slope"].value == pytest.approx(2.5)
+            assert target._params["slope"].min == -3.0
+            assert target._params["slope"].max == 3.0
+            assert target._params_from_coord == {"intercept": "temp"}
+            assert not target._params["intercept"].vary
+            assert target._initial_params["slope"].value == pytest.approx(2.5)
+            assert target._initial_params["intercept"].value == pytest.approx(value)
+            assert not target._fit_is_current
+        assert len({id(params) for params in target._params_full}) == 3
+        target._params["slope"].value = 0.5
+        assert target._params_full[0]["slope"].value == pytest.approx(2.5)
+    else:
+        xr.testing.assert_identical(target._uncertainty, uncertainty)
+        assert target._params["intercept"].value == pytest.approx(150.0)
+        assert target._params["slope"].value == pytest.approx(2.5)
+        assert target._params_from_coord == {"intercept": "temp"}
+
+
+def test_fit2d_import_setup_keeps_unvisited_parameters_lazy(qtbot, monkeypatch) -> None:
+    model = lmfit.models.PolynomialModel(degree=2)
+    params = model.make_params(c0=20.0, c1=2.5, c2=5.0)
+    params["c0"].set(vary=False)
+    params["c2"].set(expr="2 * c1")
+    source = erlab.interactive.ftool(
+        _make_1d_data().assign_coords(temp=20.0),
+        model=model,
+        params=params,
+        execute=False,
+    )
+    source._params_from_coord["c0"] = "temp"
+    qtbot.addWidget(source)
+    count = 256
+    data = _make_1d_data().expand_dims(y=np.arange(count))
+    data = data.assign_coords(temp=("y", np.arange(count, dtype=float) + 100.0))
+    target = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(target)
+    target._flush_pending_history_write()
+
+    def unexpected_restore(*args, **kwargs):
+        pytest.fail("Setup import restored full tool state or scanned old results")
+
+    monkeypatch.setattr(target, "_restore_tool_status", unexpected_restore)
+    monkeypatch.setattr(target, "_param_plot_names", unexpected_restore)
+    monkeypatch.setattr(target, "_update_param_plot", unexpected_restore)
+
+    assert target._import_fit_setup(source)
+    target._flush_pending_history_write()
+
+    assert sum(params is not None for params in target._params_full) == 1
+    assert target._initial_params_full is None
+    assert target._initial_params_template is not None
+    assert target._initial_params_template is not source._params
+    assert target._params["c0"].value == pytest.approx(100.0 + target._current_idx)
+    assert target._params["c2"].value == pytest.approx(5.0)
+    status = target.tool_status
+    assert status.state2d.initial_params_template is not None
+    assert sum(params is not None for params in status.state2d.params_full) == 1
+
+
+def test_fit2d_import_setup_lazy_defaults_survive_save_and_reset(qtbot, monkeypatch):
+    model = lmfit.models.PolynomialModel(degree=2)
+    params = model.make_params(c0=20.0, c1=2.5, c2=5.0)
+    params["c0"].set(vary=False)
+    params["c2"].set(expr="2 * c1")
+    source = erlab.interactive.ftool(
+        _make_1d_data().assign_coords(temp=20.0),
+        model=model,
+        params=params,
+        execute=False,
+    )
+    source._params_from_coord["c0"] = "temp"
+    qtbot.addWidget(source)
+    data = _make_2d_data().assign_coords(temp=("y", [100.0, 110.0, 120.0]))
+    target = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(target)
+    assert target._import_fit_setup(source)
+    target._params["c1"].value = 0.5
+    target._update_params_full()
+    target._set_current_index(0)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        target.to_dataset(), _code_trust=new_document_trust()
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, Fit2DTool)
+    assert restored._initial_params_template is not None
+    assert restored._initial_params_full is None
+    restored._set_current_index(1)
+    assert restored._params["c1"].value == pytest.approx(0.5)
+    assert restored._initial_params["c1"].value == pytest.approx(2.5)
+    assert restored._initial_params["c0"].value == pytest.approx(110.0)
+
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "question",
+        lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.Yes,
+    )
+    restored._reset_params()
+    assert restored._params["c1"].value == pytest.approx(2.5)
+    assert restored._params["c0"].value == pytest.approx(110.0)
+    assert restored._params["c2"].value == pytest.approx(5.0)
+    assert restored._params_from_coord == {}
+    restored._params["c1"].value = -1.0
+    restored._update_params_full()
+    restored._reset_params_all()
+
+    assert sum(params is not None for params in restored._params_full) == 1
+    for index, value in enumerate([100.0, 110.0, 120.0]):
+        restored._set_current_index(index)
+        assert restored._params["c0"].value == pytest.approx(value)
+        assert restored._params["c1"].value == pytest.approx(2.5)
+        assert restored._params["c2"].value == pytest.approx(5.0)
+        assert restored._params_from_coord == {}
+
+
+def test_fit2d_import_setup_lazy_navigation_waits_for_code_approval(
+    qtbot, monkeypatch
+) -> None:
+    model = lmfit.models.PolynomialModel(degree=2)
+    params = model.make_params(c0=20.0, c1=2.5, c2=5.0)
+    params["c0"].set(vary=False)
+    params["c2"].set(expr="2 * c1")
+    source = erlab.interactive.ftool(
+        _make_1d_data().assign_coords(temp=20.0),
+        model=model,
+        params=params,
+        execute=False,
+    )
+    source._params_from_coord["c0"] = "temp"
+    qtbot.addWidget(source)
+    data = _make_2d_data().assign_coords(temp=("y", [100.0, 110.0, 120.0]))
+    target = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(target)
+    assert target._import_fit_setup(source)
+    template = target._initial_params_template
+    assert template is not None
+    copied = []
+    original_copy = template.copy
+
+    def tracked_copy():
+        copied.append(True)
+        return original_copy()
+
+    monkeypatch.setattr(template, "copy", tracked_copy)
+    target.set_document_trust(untrusted_document_trust())
+    target._set_current_index(0)
+
+    assert copied == []
+    assert target._lazy_params_index_pending
+    assert target._params_full[0] is None
+    target.set_document_trust(new_document_trust())
+
+    assert copied
+    assert not target._lazy_params_index_pending
+    assert target._current_idx == 0
+    assert target._params["c0"].value == pytest.approx(100.0)
+    assert target._params["c1"].value == pytest.approx(2.5)
+    assert target._params["c2"].value == pytest.approx(5.0)
+    assert target._initial_params["c0"].value == pytest.approx(100.0)
+    assert target._params_from_coord == {"c0": "temp"}
+    assert target.param_model._params is target._params
+
+
 def test_fit2d_pinned_figure_refresh_keeps_each_recorded_range_and_normalization(
     qtbot,
     tmp_path,
@@ -6954,3 +7181,40 @@ def test_fit2d_source_replacement_discards_pending_result_retry(qtbot) -> None:
     assert tool._pending_persisted_fit_is_current is None
     assert all(result is None for result in tool._result_ds_full)
     assert tool._PERSISTED_FIT_RESULT_VAR not in tool.to_dataset()
+
+
+def test_fit2d_import_setup_requires_refitting_all_curves_for_full_export(
+    qtbot,
+) -> None:
+    tool, model, params = _make_linear_fit2d_tool(qtbot)
+    _seed_fit2d_full_results(tool, model, params)
+    assert tool.save_full_button.isEnabled()
+    previous_results = tuple(tool._result_ds_full)
+    imported_model = lmfit.models.PolynomialModel(degree=2)
+    source = erlab.interactive.ftool(
+        tool.tool_data.isel(y=0),
+        model=imported_model,
+        params=imported_model.make_params(c0=1.0, c1=2.0, c2=0.5),
+        execute=False,
+    )
+    qtbot.addWidget(source)
+
+    assert tool._import_fit_setup(source)
+    assert all(
+        result is previous
+        for result, previous in zip(tool._result_ds_full, previous_results, strict=True)
+    )
+    assert not tool.save_full_button.isEnabled()
+    assert not tool.copy_full_button.isEnabled()
+
+    fit_ds = (
+        tool._fit_data()
+        .xlm.modelfit(tool._coord_name, model=tool._model, params=tool._params)
+        .load()
+    )
+    tool._set_fit_ds(fit_ds, 0.0)
+
+    assert tool._fit_is_current
+    assert tool.save_button.isEnabled()
+    assert not tool.save_full_button.isEnabled()
+    assert not tool.copy_full_button.isEnabled()
