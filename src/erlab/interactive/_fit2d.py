@@ -3086,12 +3086,29 @@ class Fit2DTool(Fit1DTool):
         super()._mark_fit_fresh(emit_info=emit_info)
         self._update_full_fit_saveable()
 
+    def _validate_initial_params_coordinates(self, data: xr.DataArray) -> None:
+        template = self._initial_params_template
+        if template is None or not self._initial_params_from_coord_template:
+            return
+        if set(data.dims) == set(self._data_full.dims):
+            data = data.transpose(*self._data_full.dims)
+        setup = self._fit_setup().model_copy(
+            update={
+                "params": self._serialize_params(template),
+                "params_from_coord": self._initial_params_from_coord_template,
+            }
+        )
+        reason = self._fit_setup_import_error(setup, data=data)
+        if reason is not None:
+            raise ValueError(reason)
+
     def validate_update_inputs(
         self, inputs: Mapping[str, xr.DataArray]
     ) -> Mapping[str, xr.DataArray]:
         data = erlab.interactive.utils.parse_data(inputs["data"])
         if data.ndim != 2:
             raise ValueError("`data` must be a 2D DataArray")
+        self._validate_initial_params_coordinates(data)
         validated = {"data": data}
         if "uncertainty" in inputs:
             uncertainty = inputs["uncertainty"]
@@ -3104,6 +3121,7 @@ class Fit2DTool(Fit1DTool):
         return validated
 
     def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
+        self._validate_initial_params_coordinates(inputs["data"])
         had_fit = self._last_result_ds is not None
         status = self._saved_tool_status()
         old_geom = self.saveGeometry()

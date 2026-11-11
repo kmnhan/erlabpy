@@ -472,6 +472,108 @@ def test_fit2d_import_setup_lazy_defaults_survive_save_and_reset(qtbot, monkeypa
         assert restored._params_from_coord == {}
 
 
+def _make_imported_coordinate_fit2d_tool(qtbot) -> Fit2DTool:
+    model = lmfit.models.LinearModel()
+    params = model.make_params(slope=2.5, intercept=20.0)
+    params["intercept"].set(vary=False)
+    source = erlab.interactive.ftool(
+        _make_1d_data().assign_coords(temp=20.0),
+        model=model,
+        params=params,
+        execute=False,
+    )
+    qtbot.addWidget(source)
+    source._params_from_coord["intercept"] = "temp"
+    data = _make_2d_data().assign_coords(temp=("y", [100.0, 110.0, 120.0]))
+    target = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(target)
+    assert isinstance(target, Fit2DTool)
+    assert target._import_fit_setup(source)
+    target._params["slope"].value = 0.5
+    target._update_params_full()
+    target._set_current_index(0)
+    target._flush_pending_history_write()
+    return target
+
+
+@pytest.mark.parametrize("coordinate", ["missing", "fit_axis", "nonnumeric"])
+def test_fit2d_import_setup_rejects_incompatible_refresh_before_replacement(
+    qtbot, coordinate
+) -> None:
+    target = _make_imported_coordinate_fit2d_tool(qtbot)
+    previous_data = target.tool_data
+    replacement = (previous_data * 2.0).drop_vars("temp")
+    if coordinate == "fit_axis":
+        replacement = replacement.assign_coords(
+            temp=("x", np.arange(replacement.sizes["x"], dtype=float))
+        )
+    elif coordinate == "nonnumeric":
+        replacement = replacement.assign_coords(temp=("y", ["a", "b", "c"]))
+    previous_status = target.tool_status
+    previous_central = target.centralWidget()
+    previous_model = target._model
+    previous_params = target._params
+    previous_template = target._initial_params_template
+    previous_params_full = tuple(target._params_full)
+
+    for update in (target.validate_update_inputs, target.update_inputs):
+        with pytest.raises(ValueError, match="temp"):
+            update({"data": replacement})
+
+        assert target.tool_data is previous_data
+        assert target.centralWidget() is previous_central
+        assert target._model is previous_model
+        assert target._params is previous_params
+        assert target._initial_params_template is previous_template
+        assert all(
+            current is previous
+            for current, previous in zip(
+                target._params_full, previous_params_full, strict=True
+            )
+        )
+        assert target.tool_status == previous_status
+        assert target._params_full[2] is None
+
+
+@pytest.mark.parametrize("transpose", [False, True])
+def test_fit2d_import_setup_refresh_updates_coordinate_values_and_reset(
+    qtbot, monkeypatch, transpose
+) -> None:
+    target = _make_imported_coordinate_fit2d_tool(qtbot)
+    replacement = (target.tool_data * 2.0).assign_coords(
+        temp=("y", [200.0, 210.0, 220.0])
+    )
+    if transpose:
+        replacement = replacement.transpose()
+    validated = target.validate_update_inputs({"data": replacement})
+    assert target.update_inputs(validated)
+
+    xr.testing.assert_identical(target.tool_data, replacement.transpose("y", "x"))
+    assert target._initial_params_template is not None
+    assert target._params_full[2] is None
+    for index, value in enumerate([200.0, 210.0, 220.0]):
+        target._set_current_index(index)
+        assert target._params["intercept"].value == pytest.approx(value)
+        assert target._initial_params["intercept"].value == pytest.approx(value)
+        assert target._params_from_coord == {"intercept": "temp"}
+        assert not target._params["intercept"].vary
+        assert target._params["slope"].value == pytest.approx(
+            0.5 if index == 1 else 2.5
+        )
+
+    target._set_current_index(1)
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "question",
+        lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.Yes,
+    )
+    target._reset_params()
+
+    assert target._params["slope"].value == pytest.approx(2.5)
+    assert target._params["intercept"].value == pytest.approx(210.0)
+    assert target._params_from_coord == {}
+
+
 def test_fit2d_import_setup_lazy_navigation_waits_for_code_approval(
     qtbot, monkeypatch
 ) -> None:

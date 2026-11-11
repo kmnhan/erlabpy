@@ -3198,7 +3198,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             slider_widths=dict(self._slider_widths),
         )
 
-    def _fit_setup_import_error(self, source: Fit1DTool | _FitSetup) -> str | None:
+    def _fit_setup_import_error(
+        self, source: Fit1DTool | _FitSetup, *, data: xr.DataArray | None = None
+    ) -> str | None:
         if source is self:
             return "Select another ftool."
         if isinstance(source, Fit1DTool):
@@ -3213,8 +3215,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             setup = source._fit_setup()
         else:
             setup = source
-        data = self.tool_data
-        sequence_dims = set(data.dims).difference({self._coord_name})
+        if data is None:
+            data = self.tool_data
+        sequence_dims = set(data.dims[:-1])
         params = {state[0]: state for state in setup.params}
         for name, coord_name in setup.params_from_coord.items():
             if name not in params:
