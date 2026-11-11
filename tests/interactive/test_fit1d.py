@@ -53,6 +53,695 @@ def _make_1d_data() -> xr.DataArray:
     return xr.DataArray(data, dims=("x",), coords={"x": x}, name="spec")
 
 
+def test_fit1d_import_fit_setup_copies_constraints_and_preserves_input(
+    qtbot, monkeypatch
+) -> None:
+    import dask.array as da
+    from dask import delayed
+
+    model = lmfit.models.PolynomialModel(degree=2)
+    params = model.make_params(c0=300.0, c1=1.5, c2=3.0)
+    params["c0"].set(vary=False)
+    params["c1"].set(min=-3.0, max=3.0)
+    params["c1"].stderr = 0.2
+    params["c1"].correl = {"c0": 0.5}
+    params["c2"].set(expr="2 * c1")
+    source = erlab.interactive.ftool(
+        _make_1d_data().assign_coords(temp=300.0),
+        model=model,
+        params=params,
+        execute=False,
+    )
+    qtbot.addWidget(source)
+    source._params_from_coord["c0"] = "temp"
+    source.param_model.set_params(source._params, source._params_from_coord)
+    source._refresh_fit_code_entries()
+    source_state = source.tool_status
+
+    data = (2.0 * _make_1d_data()).assign_coords(temp=100.0)
+    uncertainty = xr.full_like(data, 0.2)
+    target = erlab.interactive.ftool(data, uncertainty=uncertainty, execute=False)
+    qtbot.addWidget(target)
+    target.domain_min_spin.setValue(-0.6)
+    target.domain_max_spin.setValue(0.8)
+    target.method_combo.setCurrentText("least_squares")
+    target._flush_pending_history_write()
+    previous = target.tool_status
+
+    def unexpected_work(*_args, **_kwargs):
+        pytest.fail("Import must copy settings without fitting or restoring a tool")
+
+    lazy_source_data = xr.DataArray(
+        da.from_delayed(
+            delayed(unexpected_work)(),
+            shape=source._data.shape,
+            dtype=source._data.dtype,
+        ),
+        dims=source._data.dims,
+        coords=source._data.coords,
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(source, "_data", lazy_source_data)
+        patch.setattr(target, "_restore_tool_status", unexpected_work)
+        patch.setattr(lmfit.Model, "fit", unexpected_work)
+        assert target._import_fit_setup(source)
+    target._flush_pending_history_write()
+
+    assert isinstance(target._model, lmfit.models.PolynomialModel)
+    assert target._model is not source._model
+    assert target._params is not source._params
+    assert set(target._params) == {"c0", "c1", "c2"}
+    assert target._params["c0"].value == pytest.approx(100.0)
+    assert not target._params["c0"].vary
+    assert target._params_from_coord == {"c0": "temp"}
+    assert target._params["c1"].value == pytest.approx(1.5)
+    assert target._params["c1"].min == -3.0
+    assert target._params["c1"].max == 3.0
+    assert target._params["c1"].vary
+    assert target._params["c1"].stderr is None
+    assert target._params["c1"].correl is None
+    assert target._params["c2"].expr == "2 * c1"
+    np.testing.assert_allclose(
+        target._model.eval(params=target._params, x=data.x.values),
+        100.0 + 1.5 * data.x.values + 3.0 * data.x.values**2,
+    )
+    assert target._initial_params["c1"].value == pytest.approx(1.5)
+    assert target._last_result_ds is None
+    assert not target._fit_is_current
+    xr.testing.assert_identical(target._data, data)
+    xr.testing.assert_identical(target._uncertainty, uncertainty)
+    assert target._fit_domain() == previous.domain
+    assert target.method_combo.currentText() == previous.method
+    assert source.tool_status == source_state
+
+    target.undo()
+    assert target.tool_status.model_state == previous.model_state
+    assert target.tool_status.params == previous.params
+    assert target.tool_status.params_from_coord == previous.params_from_coord
+    target.redo()
+    assert target._params["c1"].value == pytest.approx(1.5)
+    assert target._params["c2"].expr == "2 * c1"
+    assert target._params_from_coord == {"c0": "temp"}
+
+    source._params["c1"].value = 2.5
+    source._params_from_coord.clear()
+    assert target._params["c1"].value == pytest.approx(1.5)
+    assert target._params_from_coord == {"c0": "temp"}
+
+
+@pytest.mark.parametrize("coordinate", [None, [100.0] * 11, np.nan, "warm", 400.0])
+def test_fit1d_import_fit_setup_rejects_incompatible_coordinate(
+    qtbot, monkeypatch, coordinate
+) -> None:
+    model = lmfit.models.LinearModel()
+    params = model.make_params(slope=1.0, intercept=300.0)
+    params["intercept"].set(vary=False, min=0.0, max=350.0)
+    source = erlab.interactive.ftool(
+        _make_1d_data().assign_coords(temp=300.0),
+        model=model,
+        params=params,
+        execute=False,
+    )
+    qtbot.addWidget(source)
+    source._params_from_coord["intercept"] = "temp"
+    data = _make_1d_data()
+    if coordinate is not None:
+        data = data.assign_coords(
+            temp=("x", coordinate) if isinstance(coordinate, list) else coordinate
+        )
+    target = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(target)
+    previous = target.tool_status
+    warnings = []
+    monkeypatch.setattr(target, "_show_warning", lambda *args: warnings.append(args))
+
+    assert not target._import_fit_setup(source)
+
+    assert warnings
+    assert target.tool_status == previous
+
+
+@pytest.mark.parametrize("accept", [False, True])
+def test_fit1d_import_fit_setup_menu_dialog(
+    qtbot, manager_context, accept_dialog, accept
+) -> None:
+    data = _make_1d_data()
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        model = lmfit.models.LinearModel()
+        source = erlab.interactive.ftool(
+            data,
+            model=model,
+            params=model.make_params(slope=2.5, intercept=3.0),
+            execute=False,
+        )
+        target = erlab.interactive.ftool(data, execute=False)
+        for tool in (source, target):
+            tool.set_script_inputs(
+                (ScriptInput(name="data", data_role="source"),), primary_input="data"
+            )
+        source_uid = manager.add_childtool(
+            source, script_inputs={"data": index}, show=False
+        )
+        target_uid = manager.add_childtool(
+            target, script_inputs={"data": index}, show=False
+        )
+        previous = target.tool_status
+        assert target.import_fit_setup_action in target._tool_file_menu.actions()
+
+        def select_source(dialog):
+            assert isinstance(dialog, fit1d._ImportFitSetupDialog)
+            selector = dialog.source_selector
+            assert selector.candidate_uids == (source_uid,)
+            assert target_uid not in selector.candidate_uids
+            button = dialog.button_box.button(
+                QtWidgets.QDialogButtonBox.StandardButton.Ok
+            )
+            assert button is dialog.import_button
+            assert button.text() == "Import"
+            assert button.isDefault()
+            assert (
+                dialog.button_box.buttonRole(button)
+                == QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole
+            )
+            assert dialog.source_label.buddy() is selector
+            assert dialog.focusWidget() is selector.focusProxy()
+            assert dialog.windowModality() == QtCore.Qt.WindowModality.WindowModal
+            assert selector.isEnabled()
+            assert not button.isEnabled()
+            assert dialog.status_label.isHidden()
+            assert not button.toolTip()
+            selector.set_current_uid(source_uid)
+            assert button.isEnabled()
+            assert dialog.status_label.isHidden()
+
+        accept_dialog(
+            target.import_fit_setup_action.trigger,
+            pre_call=select_source,
+            accept_call=None if accept else lambda dialog: dialog.reject(),
+        )
+
+        if accept:
+            assert isinstance(target._model, lmfit.models.LinearModel)
+            assert target._params["slope"].value == pytest.approx(2.5)
+            assert target._params["intercept"].value == pytest.approx(3.0)
+        else:
+            assert target.tool_status == previous
+
+
+def test_fit1d_import_fit_setup_dialog_rechecks_sources(
+    qtbot, manager_context, monkeypatch
+) -> None:
+    data = _make_1d_data()
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        source = erlab.interactive.ftool(data.assign_coords(temp=300.0), execute=False)
+        target = erlab.interactive.ftool(data, execute=False)
+        source._params_from_coord["p0_center"] = "temp"
+        for tool in (source, target):
+            tool.set_script_inputs(
+                (ScriptInput(name="data", data_role="source"),), primary_input="data"
+            )
+        source_uid = manager.add_childtool(
+            source, script_inputs={"data": index}, show=False
+        )
+        manager.add_childtool(target, script_inputs={"data": index}, show=False)
+        previous = target.tool_status
+        dialog = fit1d._ImportFitSetupDialog(target)
+        qtbot.addWidget(dialog)
+        button = dialog.button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+        assert source_uid in dialog.source_selector.candidate_uids
+        dialog.source_selector.set_current_uid(source_uid)
+        assert not button.isEnabled()
+        assert "temp" in dialog.status_label.text()
+        assert not dialog.status_label.isHidden()
+
+        source._params_from_coord.clear()
+        dialog.source_selector.refresh()
+        assert button.isEnabled()
+        assert dialog.status_label.isHidden()
+        source_node = manager._child_node(source_uid)
+        with monkeypatch.context() as patch:
+            patch.setattr(source_node, "_tool_window", None)
+            dialog.source_selector.refresh()
+            assert source_uid not in dialog.source_selector.candidate_uids
+            assert not button.isEnabled()
+        dialog.source_selector.refresh()
+        dialog.source_selector.set_current_uid(source_uid)
+        assert button.isEnabled()
+
+        manager._remove_childtool(source_uid)
+        dialog.accept()
+
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+        assert not button.isEnabled()
+        assert not dialog.source_selector.isEnabled()
+        assert not dialog.status_label.isHidden()
+        assert target.tool_status == previous
+
+
+def test_fit1d_import_fit_setup_dialog_requires_managed_target(qtbot) -> None:
+    target = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(target)
+    previous = target.tool_status
+    dialog = fit1d._ImportFitSetupDialog(target)
+    qtbot.addWidget(dialog)
+    assert not dialog.source_selector.candidate_uids
+    assert not dialog.source_selector.isEnabled()
+    assert not dialog.button_box.button(
+        QtWidgets.QDialogButtonBox.StandardButton.Ok
+    ).isEnabled()
+    assert dialog.status_label.text()
+    assert not dialog.status_label.isHidden()
+
+    dialog.accept()
+
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+    assert target.tool_status == previous
+
+
+@pytest.mark.parametrize("source_2d", [False, True])
+def test_fit1d_import_fit_setup_from_deferred_workspace_tool(
+    qtbot, manager_context, tmp_path, monkeypatch, source_2d
+) -> None:
+    data = _make_1d_data().assign_coords(temp=300.0)
+    model = lmfit.models.PolynomialModel(degree=2)
+    params = model.make_params(c0=300.0, c1=1.5, c2=3.0)
+    params["c0"].set(vary=False)
+    params["c1"].set(min=-3.0, max=3.0)
+    params["c2"].set(expr="2 * c1")
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        source = erlab.interactive.ftool(
+            data.expand_dims(y=[0.0, 1.0]) if source_2d else data,
+            model=model,
+            params=params,
+            execute=False,
+        )
+        if source_2d:
+            source._set_current_index(1)
+            source._params["c1"].value = 2.5
+        source._params_from_coord["c0"] = "temp"
+        source.param_model.set_params(source._params, source._params_from_coord)
+        other = erlab.interactive.ftool(data, execute=False)
+        saved_uids = []
+        for tool in (source, other):
+            tool.set_script_inputs(
+                (ScriptInput(name="data", data_role="source"),), primary_input="data"
+            )
+            saved_uids.append(
+                manager.add_childtool(tool, script_inputs={"data": index}, show=False)
+            )
+            tool.hide()
+        path = tmp_path / "deferred-ftool-import.itws"
+        manager._workspace_controller.saving._save_workspace_document(path)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            path, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        source_node, other_node = [manager._child_node(uid) for uid in saved_uids]
+        root_node = manager._tool_graph.root_wrappers[index]
+        assert root_node.pending_workspace_memory_payload is not None
+        for node in (source_node, other_node):
+            assert node.pending_workspace_tool_payload is not None
+            assert node.tool_window is None
+
+        target_data = data.assign_coords(temp=100.0)
+        target = erlab.interactive.ftool(target_data, execute=False)
+        target.set_script_inputs(
+            (ScriptInput(name="data", data_role="source"),), primary_input="data"
+        )
+        manager.add_childtool(target, script_inputs={"data": index}, show=False)
+        previous = target.tool_status
+
+        def unexpected_source_load(*_args, **_kwargs):
+            pytest.fail("Import must read cached setup metadata without loading a tool")
+
+        monkeypatch.setattr(
+            manager, "_materialize_pending_workspace_payload", unexpected_source_load
+        )
+        monkeypatch.setattr(
+            manager._workspace_controller.loading,
+            "_read_workspace_tool_payload_dataset",
+            unexpected_source_load,
+        )
+        monkeypatch.setattr(
+            erlab.interactive.utils.ToolWindow,
+            "from_dataset",
+            classmethod(unexpected_source_load),
+        )
+        dialog = fit1d._ImportFitSetupDialog(target)
+        qtbot.addWidget(dialog)
+        assert set(dialog.source_selector.candidate_uids) == set(saved_uids)
+        dialog.source_selector.refresh()
+        dialog.source_selector.set_current_uid(source_node.uid)
+        assert dialog.import_button.isEnabled()
+        dialog.reject()
+        assert target.tool_status == previous
+        assert source_node.tool_window is None
+        assert other_node.tool_window is None
+        assert root_node.pending_workspace_memory_payload is not None
+
+        saved_attrs = source_node.pending_workspace_payload_attrs
+        assert saved_attrs is not None
+        invalid_state = json.loads(saved_attrs["tool_state"])
+        invalid_state.pop("model_state")
+        invalid_states = [invalid_state]
+        for invalid_bound in (None, "invalid"):
+            invalid_state = json.loads(saved_attrs["tool_state"])
+            next(state for state in invalid_state["params"] if state[0] == "c0")[4] = (
+                invalid_bound
+            )
+            invalid_states.append(invalid_state)
+        for invalid_state in invalid_states:
+            source_node.update_pending_workspace_payload_attrs(
+                {**saved_attrs, "tool_state": json.dumps(invalid_state)}
+            )
+            invalid_dialog = fit1d._ImportFitSetupDialog(target)
+            qtbot.addWidget(invalid_dialog)
+            invalid_dialog.source_selector.set_current_uid(source_node.uid)
+            assert not invalid_dialog.import_button.isEnabled()
+            assert not invalid_dialog.status_label.isHidden()
+            invalid_dialog.accept()
+            assert invalid_dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+            assert target.tool_status == previous
+            assert source_node.tool_window is None
+            assert source_node.pending_workspace_tool_payload is not None
+        source_node.update_pending_workspace_payload_attrs(saved_attrs)
+
+        trust = manager._workspace_state.code_trust
+        manager._workspace_controller._set_workspace_code_trust(
+            untrusted_document_trust()
+        )
+        blocked_dialog = fit1d._ImportFitSetupDialog(target)
+        qtbot.addWidget(blocked_dialog)
+        blocked_dialog.source_selector.set_current_uid(source_node.uid)
+        assert not blocked_dialog.import_button.isEnabled()
+        assert not blocked_dialog.status_label.isHidden()
+        blocked_dialog.accept()
+        assert blocked_dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+        assert target.tool_status == previous
+        assert source_node.tool_window is None
+        assert source_node.pending_workspace_tool_payload is not None
+        manager._workspace_controller._set_workspace_code_trust(trust)
+
+        dialog = fit1d._ImportFitSetupDialog(target)
+        qtbot.addWidget(dialog)
+        dialog.source_selector.set_current_uid(source_node.uid)
+        dialog.accept()
+
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+        assert source_node.tool_window is None
+        assert source_node.pending_workspace_tool_payload is not None
+        assert isinstance(target._model, lmfit.models.PolynomialModel)
+        assert target._params["c0"].value == pytest.approx(100.0)
+        assert target._params_from_coord == {"c0": "temp"}
+        assert not target._params["c0"].vary
+        assert target._params["c1"].value == pytest.approx(2.5 if source_2d else 1.5)
+        assert target._params["c1"].min == -3.0
+        assert target._params["c1"].max == 3.0
+        assert target._params["c2"].expr == "2 * c1"
+        xr.testing.assert_identical(target.tool_data, target_data)
+        assert other_node.tool_window is None
+        assert other_node.pending_workspace_tool_payload is not None
+        assert root_node.pending_workspace_memory_payload is not None
+
+        previous = target.tool_status
+        dialog = fit1d._ImportFitSetupDialog(target)
+        qtbot.addWidget(dialog)
+        dialog.source_selector.set_current_uid(other_node.uid)
+        manager._remove_childtool(other_node.uid)
+        dialog.accept()
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+        assert target.tool_status == previous
+
+
+@pytest.mark.parametrize("target_2d", [False, True])
+def test_fit1d_import_fit_setup_dialog_scope_tooltip(
+    qtbot, manager_context, target_2d
+) -> None:
+    data = _make_1d_data()
+    data_2d = data.expand_dims(y=[0.0, 1.0])
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data_2d, _in_manager=True),
+            show=False,
+        )
+        source_1d = erlab.interactive.ftool(data, execute=False)
+        source_2d = erlab.interactive.ftool(data_2d, execute=False)
+        target = erlab.interactive.ftool(data_2d if target_2d else data, execute=False)
+        source_uids = []
+        for tool in (source_1d, source_2d, target):
+            tool.set_script_inputs(
+                (ScriptInput(name="data", data_role="source"),), primary_input="data"
+            )
+            uid = manager.add_childtool(tool, script_inputs={"data": index}, show=False)
+            source_uids.append(uid)
+        dialog = fit1d._ImportFitSetupDialog(target)
+        qtbot.addWidget(dialog)
+        assert bool(dialog.import_button.toolTip()) is target_2d
+
+        dialog.source_selector.set_current_uid(source_uids[0])
+        assert bool(dialog.import_button.toolTip()) is target_2d
+        target_scope = dialog.import_button.toolTip()
+        assert dialog.import_button.isEnabled()
+        assert dialog.status_label.isHidden()
+
+        dialog.source_selector.set_current_uid(source_uids[1])
+        assert dialog.import_button.toolTip()
+        assert dialog.import_button.toolTip() != target_scope
+        assert dialog.import_button.isEnabled()
+        assert dialog.status_label.isHidden()
+
+        dialog.source_selector.set_current_uid(source_uids[0])
+        assert bool(dialog.import_button.toolTip()) is target_2d
+        assert dialog.import_button.toolTip() == target_scope
+
+
+@pytest.mark.parametrize("accept", [False, True])
+def test_fit1d_import_fit_setup_dialog_keyboard(
+    qtbot, manager_context, accept_dialog, monkeypatch, accept
+) -> None:
+    data = _make_1d_data()
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        source = erlab.interactive.ftool(data, execute=False)
+        target = erlab.interactive.ftool(data, execute=False)
+        source_uids = []
+        for tool in (source, target):
+            tool.set_script_inputs(
+                (ScriptInput(name="data", data_role="source"),), primary_input="data"
+            )
+            source_uids.append(
+                manager.add_childtool(tool, script_inputs={"data": index}, show=False)
+            )
+        imported_sources = []
+
+        def import_setup(selected_source):
+            imported_sources.append(selected_source)
+            return True
+
+        monkeypatch.setattr(target, "_import_fit_setup", import_setup)
+        dialog = fit1d._ImportFitSetupDialog(target)
+        qtbot.addWidget(dialog)
+
+        def press_key(dialog):
+            dialog.source_selector.set_current_uid(source_uids[0])
+            assert dialog.import_button.isEnabled()
+            if accept:
+                dialog.import_button.setFocus()
+                qtbot.keyClick(dialog.import_button, QtCore.Qt.Key.Key_Return)
+            else:
+                qtbot.keyClick(dialog, QtCore.Qt.Key.Key_Escape)
+
+        accept_dialog(dialog.exec, accept_call=press_key)
+
+        assert dialog.result() == (
+            QtWidgets.QDialog.DialogCode.Accepted
+            if accept
+            else QtWidgets.QDialog.DialogCode.Rejected
+        )
+        assert imported_sources == ([source] if accept else [])
+
+
+def test_fit1d_import_fit_setup_rejected_code_edit_keeps_state(
+    qtbot, monkeypatch
+) -> None:
+    model = lmfit.models.ExpressionModel("a * x + b")
+    source = erlab.interactive.ftool(
+        _make_1d_data(),
+        model=model,
+        params=model.make_params(a=1.0, b=0.0),
+        execute=False,
+    )
+    target = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(source)
+    qtbot.addWidget(target)
+    previous = target.tool_status
+
+    @contextlib.contextmanager
+    def blocked_edit(*_args, **_kwargs):
+        yield None
+
+    monkeypatch.setattr(target, "_local_code_edit", blocked_edit)
+
+    assert not target._import_fit_setup(source)
+
+    assert target.tool_status == previous
+
+
+@pytest.mark.parametrize("source_state", ["pending", "untrusted"])
+def test_fit1d_import_fit_setup_requires_source_execution_permission(
+    qtbot, monkeypatch, source_state
+) -> None:
+    model = lmfit.models.ExpressionModel("a * x + b")
+    source = erlab.interactive.ftool(
+        _make_1d_data(),
+        model=model,
+        params=model.make_params(a=1.0, b=0.0),
+        execute=False,
+    )
+    target = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(source)
+    qtbot.addWidget(target)
+    if source_state == "pending":
+        source._pending_fit_status = source.tool_status
+    else:
+        source.set_document_trust(untrusted_document_trust())
+        assert source._pending_fit_status is None
+        assert not source._current_fit_execution_allowed()
+    previous = target.tool_status
+    warnings = []
+    monkeypatch.setattr(target, "_show_warning", lambda *args: warnings.append(args))
+
+    assert not target._import_fit_setup(source)
+
+    assert warnings
+    assert target.tool_status == previous
+
+
+@pytest.mark.parametrize("target_2d", [False, True])
+def test_fit_setup_import_model_decode_failure_keeps_destination(
+    qtbot, monkeypatch, target_2d
+) -> None:
+    data = _make_1d_data().assign_coords(temp=200.0, existing=0.2)
+    model = lmfit.models.LinearModel()
+    source = erlab.interactive.ftool(
+        data,
+        model=model,
+        params=model.make_params(slope=1.5, intercept=200.0),
+        model_name="imported_model",
+        execute=False,
+    )
+    source._params_from_coord["intercept"] = "temp"
+    source._slider_widths["slope"] = 4.0
+    target_data = data.expand_dims(y=[0.0, 1.0]) if target_2d else data
+    target_model = lmfit.models.ExpressionModel("a * x + b")
+    target = erlab.interactive.ftool(
+        target_data,
+        model=target_model,
+        params=target_model.make_params(a=1.0, b=0.2),
+        execute=False,
+    )
+    qtbot.addWidget(source)
+    qtbot.addWidget(target)
+    target._params_from_coord["b"] = "existing"
+    if target_2d:
+        target._update_params_full()
+    _set_signed_fit_trust(target)
+    previous = target.tool_status
+    previous_model = target._model
+    previous_trust = target._current_document_trust()
+    source_model = source._serialized_model_state[1]
+    loads_model = fit_serialization.loads_model
+    errors = []
+
+    def reject_source_model(serialized, *args, **kwargs):
+        if serialized == source_model:
+            raise ValueError("Cannot decode the source model")
+        return loads_model(serialized, *args, **kwargs)
+
+    monkeypatch.setattr(fit_serialization, "loads_model", reject_source_model)
+    monkeypatch.setattr(target, "_show_error", lambda *args: errors.append(args))
+
+    assert not target._import_fit_setup(source)
+
+    assert errors
+    assert target.tool_status == previous
+    assert target._model is previous_model
+    assert target._current_document_trust() == previous_trust
+    xr.testing.assert_identical(target.tool_data, target_data)
+
+
+@pytest.mark.parametrize("target_2d", [False, True])
+def test_fit_setup_import_expression_failure_keeps_destination(
+    qtbot, monkeypatch, target_2d
+) -> None:
+    model = lmfit.models.LinearModel()
+    params = model.make_params(slope=1.0, intercept=300.0)
+    params["intercept"].set(vary=False)
+    params["slope"].set(expr="1 / intercept")
+    source = erlab.interactive.ftool(
+        _make_1d_data().assign_coords(temp=300.0),
+        model=model,
+        params=params,
+        execute=False,
+    )
+    source._params_from_coord["intercept"] = "temp"
+    target_data = _make_1d_data().assign_coords(temp=0.0)
+    if target_2d:
+        target_data = target_data.expand_dims(y=[0.0, 1.0])
+    target_model = lmfit.models.ExpressionModel("a * x + b")
+    target = erlab.interactive.ftool(
+        target_data,
+        model=target_model,
+        params=target_model.make_params(a=1.0, b=0.2),
+        execute=False,
+    )
+    qtbot.addWidget(source)
+    qtbot.addWidget(target)
+    _set_signed_fit_trust(target)
+    previous = target.tool_status
+    previous_model = target._model
+    previous_trust = target._current_document_trust()
+    errors = []
+    monkeypatch.setattr(target, "_show_error", lambda *args: errors.append(args))
+
+    assert not target._import_fit_setup(source)
+
+    assert errors
+    assert target.tool_status == previous
+    assert target._model is previous_model
+    assert target._current_document_trust() == previous_trust
+    xr.testing.assert_identical(target.tool_data, target_data)
+
+
+def test_fit1d_import_fit_setup_rejects_self_and_invalid_parameter_binding(
+    qtbot, monkeypatch
+) -> None:
+    source = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    target = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(source)
+    qtbot.addWidget(target)
+    previous = target.tool_status
+    warnings = []
+    monkeypatch.setattr(target, "_show_warning", lambda *args: warnings.append(args))
+
+    assert not target._import_fit_setup(target)
+
+    source._params_from_coord["missing_parameter"] = "x"
+    assert not target._import_fit_setup(source)
+    assert len(warnings) == 2
+    assert target.tool_status == previous
+
+
 def test_fit1d_figure_snapshot_records_fit_data_and_weights(qtbot, tmp_path) -> None:
     data = _make_1d_data()
     uncertainty = xr.full_like(data, 0.2)

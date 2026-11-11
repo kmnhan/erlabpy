@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import dataclasses
 import functools
 import hashlib
@@ -47,6 +48,8 @@ if typing.TYPE_CHECKING:
     )
     from erlab.interactive._figurecomposer._providers import FigureSourceProvider
     from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
+    from erlab.interactive.imagetool.manager import ImageToolManager
+    from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
 else:
     import lazy_loader as _lazy
 
@@ -69,6 +72,227 @@ _PythonCodeEditor = erlab.interactive.utils.PythonCodeEditor
 
 class _FitCodeEditRejected(Exception):
     """Abort one local fit-code edit without committing its trust transition."""
+
+
+class _FitSetup(pydantic.BaseModel):
+    """Model and current parameter settings, without source data or fit results."""
+
+    model_name: str
+    model_state: tuple[str, str]
+    model_load_path: str | None = None
+    params: list[tuple[typing.Any, ...]]
+    params_from_coord: dict[str, str]
+    slider_widths: dict[str, float] = pydantic.Field(default_factory=dict)
+
+    @pydantic.field_validator("params")
+    @classmethod
+    def _validate_params(
+        cls, params: list[tuple[typing.Any, ...]]
+    ) -> list[tuple[typing.Any, ...]]:
+        names = []
+        for state in params:
+            if len(state) != 11 or not isinstance(state[0], str):
+                raise ValueError("Invalid saved parameter settings")
+            names.append(state[0])
+        if len(set(names)) != len(names):
+            raise ValueError("Duplicate saved parameter names")
+        return params
+
+    def code_entries(self) -> tuple[typing.Any, ...]:
+        model_entry = Fit1DTool._model_code_trust_entry(self.model_state)
+        return (
+            *((model_entry,) if model_entry is not None else ()),
+            *Fit1DTool._parameter_code_trust_entries(
+                ((state[0], state[3]) for state in self.params),
+                location_prefix="parameters",
+                safe_expressions=Fit1DTool._safe_model_parameter_expressions(
+                    self.model_state
+                ),
+            ),
+        )
+
+
+class _ImportFitSetupDialog(QtWidgets.QDialog):
+    def __init__(self, target: Fit1DTool) -> None:
+        super().__init__(target)
+        from erlab.interactive.imagetool.manager._source_selector import (
+            ManagerSourceSelector,
+        )
+
+        self.setWindowTitle("Import fit setup")
+        self.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+        self._target = target
+        self._pending_setup_cache: tuple[str, object, _FitSetup] | None = None
+        manager, uid = target._managed_output_imagetool_parent()
+        self._manager: ImageToolManager | None = manager if uid is not None else None
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetFixedSize)
+        self._form = QtWidgets.QFormLayout()
+        self._form.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
+        layout.addLayout(self._form)
+        self.source_selector = ManagerSourceSelector(
+            self._manager, eligibility=self._candidate_error, parent=self
+        )
+        self.source_selector.setMinimumWidth(320)
+        self.source_label = QtWidgets.QLabel("Source ftool", self)
+        self.source_label.setBuddy(self.source_selector)
+        self._form.addRow(self.source_label, self.source_selector)
+        self.status_label = QtWidgets.QLabel(self)
+        self.status_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self.status_label.setWordWrap(True)
+        self.status_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Ignored,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
+        self._form.addRow("", self.status_label)
+        self.button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        self.import_button = typing.cast(
+            "QtWidgets.QPushButton",
+            self.button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok),
+        )
+        self.import_button.setText("Import")
+        self.import_button.setDefault(True)
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        layout.addWidget(self.button_box)
+        self.source_selector.refreshed.connect(self._refresh_status)
+        self.source_selector.selectionChanged.connect(self._refresh_status)
+        self._refresh_status()
+        self.source_selector.setFocus()
+
+    def _candidate_error(self, node: _ManagedWindowNode) -> str | None:
+        from erlab.interactive._fit2d import Fit2DTool
+
+        source = node.tool_window
+        if source is self._target:
+            return "Select another ftool."
+        if isinstance(source, Fit1DTool) or (
+            source is None
+            and node.pending_workspace_tool_payload is not None
+            and node.type_badge_text in {Fit1DTool.tool_name, Fit2DTool.tool_name}
+        ):
+            return None
+        return "Open another ftool in this Manager to use it as a source."
+
+    def _source_node(self) -> _ManagedWindowNode | None:
+        manager = self._manager
+        if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
+            return None
+        if manager._node_uid_from_window(self._target) is None:
+            return None
+        uid = self.source_selector.current_uid
+        node = manager._tool_graph.nodes.get(uid) if uid is not None else None
+        if node is None or self._candidate_error(node) is not None:
+            return None
+        return node
+
+    def _source(self) -> Fit1DTool | None:
+        node = self._source_node()
+        source = None if node is None else node.tool_window
+        return source if isinstance(source, Fit1DTool) else None
+
+    def _pending_setup(self, node: _ManagedWindowNode) -> _FitSetup:
+        attrs = node.pending_workspace_payload_attrs or {}
+        state = attrs.get("tool_state")
+        if not isinstance(state, (str, bytes, bytearray)):
+            raise TypeError("Missing saved ftool settings")
+        cached = self._pending_setup_cache
+        if cached is not None and cached[0] == node.uid and cached[1] == state:
+            return cached[2]
+        setup = _FitSetup.model_validate_json(state)
+        self._pending_setup_cache = (node.uid, state, setup)
+        return setup
+
+    def _pending_setup_allowed(
+        self, node: _ManagedWindowNode, setup: _FitSetup
+    ) -> bool:
+        manager = typing.cast("ImageToolManager", self._manager)
+        controller = manager._workspace_controller
+        entries = controller._locate_tool_code_trust_entries(
+            setup.code_entries(),
+            location_getter=lambda: controller.saving._workspace_node_path_for_node(
+                node
+            ),
+        )
+        return controller.issue_code_execution_capability(entries) is not None
+
+    def _refresh_status(self) -> None:
+        from erlab.interactive._fit2d import Fit2DTool
+
+        node = self._source_node()
+        source = self._source()
+        manager = self._manager
+        available = (
+            manager is not None
+            and erlab.interactive.utils.qt_is_valid(manager)
+            and manager._node_uid_from_window(self._target) is not None
+        )
+        if not available:
+            reason = "Open this ftool in ImageTool Manager to import a setup."
+        elif not self.source_selector.candidate_uids:
+            reason = "Open another ftool in this Manager to import its setup."
+        elif source is None:
+            reason = None
+            if node is not None:
+                try:
+                    setup = self._pending_setup(node)
+                    reason = self._target._fit_setup_import_error(setup)
+                except (TypeError, ValueError):
+                    reason = (
+                        "The saved ftool settings are invalid. Select another ftool."
+                    )
+                else:
+                    if reason is None and not self._pending_setup_allowed(node, setup):
+                        reason = (
+                            "Review and allow the source model and expressions "
+                            "in ImageTool Manager first."
+                        )
+        else:
+            reason = self._target._fit_setup_import_error(source)
+        self.source_selector.setEnabled(
+            available and bool(self.source_selector.candidate_uids)
+        )
+        context = []
+        if isinstance(source, Fit2DTool):
+            context.append(f"Uses source curve {source._current_idx}.")
+        elif node is not None and node.type_badge_text == Fit2DTool.tool_name:
+            context.append("Uses the current source curve.")
+        if isinstance(self._target, Fit2DTool):
+            count = self._target.tool_data.sizes[self._target._y_dim_name]
+            context.append(f"Applies to all {count} destination curves.")
+        self.import_button.setToolTip(" ".join(context))
+        self.status_label.setText(reason or "")
+        self._form.setRowVisible(self.status_label, bool(reason))
+        self.import_button.setEnabled(node is not None and reason is None)
+
+    def accept(self) -> None:
+        self.source_selector.refresh()
+        node = self._source_node()
+        if node is None:
+            self._refresh_status()
+            return
+        source: Fit1DTool | _FitSetup | None = self._source()
+        if source is None:
+            try:
+                setup = self._pending_setup(node)
+                reason = self._target._fit_setup_import_error(setup)
+            except (TypeError, ValueError):
+                self._refresh_status()
+                return
+            if reason is not None or not self._pending_setup_allowed(node, setup):
+                self._refresh_status()
+                return
+            source = setup
+        if self._target._import_fit_setup(source):
+            super().accept()
+        else:
+            self._refresh_status()
 
 
 class _StandaloneFigureOwner(QtCore.QObject):
@@ -785,6 +1009,8 @@ class _State2D(pydantic.BaseModel):
     data_dims_full: tuple[typing.Any, ...] | None = None
     params_full: list[list[tuple[typing.Any, ...]] | None]
     initial_params_full: list[list[tuple[typing.Any, ...]] | None] | None = None
+    initial_params_template: list[tuple[typing.Any, ...]] | None = None
+    initial_params_from_coord: dict[str, str] = pydantic.Field(default_factory=dict)
     params_from_coord_full: list[dict[str, str]]
     fill_mode: typing.Literal["previous", "extrapolate", "none"]
     y_limits: tuple[int, int] | None = None
@@ -1213,6 +1439,12 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 (f"initial-parameters-full/{index}", params or ())
                 for index, params in enumerate(status.state2d.initial_params_full or ())
             )
+            parameter_groups.append(
+                (
+                    "initial-parameters-template",
+                    status.state2d.initial_params_template or (),
+                )
+            )
         safe_expressions = cls._safe_model_parameter_expressions(status.model_state)
         entries = [
             entry
@@ -1355,6 +1587,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         )
 
         self._build_ui()
+        self.import_fit_setup_action = QtGui.QAction("Import fit setup…", self)
+        self.import_fit_setup_action.setObjectName("ftoolImportFitSetupAction")
+        self.import_fit_setup_action.triggered.connect(self._show_import_fit_setup)
+        self._tool_file_menu.addAction(self.import_fit_setup_action)
         self._update_fit_curve()
         self._write_history: bool = True
         self._write_state()
@@ -2909,28 +3145,238 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     @tool_status.setter
     def tool_status(self, status: StateModel) -> None:
+        self._restore_tool_status(status)
+
+    def _restore_tool_status(
+        self, status: StateModel, *, as_local_edit: bool = False
+    ) -> bool:
+        """Restore state and report whether its executable settings were applied."""
         try:
-            with self._tool_status_code_execution(status) as (
+            with self._tool_status_code_execution(
+                status, as_local_edit=as_local_edit
+            ) as (
                 entries,
                 capability,
                 local_edit,
             ):
-                self._apply_fit1d_tool_status(
+                self._apply_fit_tool_status(
                     status,
                     entries,
                     capability,
                     local_edit=local_edit,
                 )
         except _FitCodeEditRejected:
-            return
+            return False
+        return self._pending_fit_status is None
+
+    def _apply_fit_tool_status(
+        self,
+        status: StateModel,
+        entries: tuple[typing.Any, ...],
+        capability: object | None,
+        *,
+        local_edit: bool,
+    ) -> None:
+        self._apply_fit1d_tool_status(
+            status, entries, capability, local_edit=local_edit
+        )
+
+    @QtCore.Slot()
+    def _show_import_fit_setup(self) -> None:
+        dialog = _ImportFitSetupDialog(self)
+        dialog.exec()
+        if erlab.interactive.utils.qt_is_valid(dialog):
+            dialog.deleteLater()
+
+    def _fit_setup(self) -> _FitSetup:
+        return _FitSetup(
+            model_name=self._model_name,
+            model_state=self._serialized_model_state,
+            model_load_path=self._model_load_path,
+            params=self._serialize_params(self._params),
+            params_from_coord=self._params_from_coord.copy(),
+            slider_widths=dict(self._slider_widths),
+        )
+
+    def _fit_setup_import_error(
+        self, source: Fit1DTool | _FitSetup, *, data: xr.DataArray | None = None
+    ) -> str | None:
+        if source is self:
+            return "Select another ftool."
+        if isinstance(source, Fit1DTool):
+            if (
+                source._pending_fit_status is not None
+                or not source._current_fit_execution_allowed()
+            ):
+                return (
+                    "Review and allow the model and expressions "
+                    "in the source ftool first."
+                )
+            setup = source._fit_setup()
+        else:
+            setup = source
+        if data is None:
+            data = self.tool_data
+        sequence_dims = set(data.dims[:-1])
+        params = {state[0]: state for state in setup.params}
+        for name, coord_name in setup.params_from_coord.items():
+            if name not in params:
+                return (
+                    f"Remove the invalid coordinate binding for {name!r} "
+                    "in the source ftool."
+                )
+            if coord_name not in data.coords:
+                return (
+                    f"Missing coordinate {coord_name!r} for {name!r}. "
+                    "Add it to the destination or change the source binding."
+                )
+            coord = data.coords[coord_name]
+            if coord.size != 1 and not set(coord.dims).issubset(sequence_dims):
+                return (
+                    f"Coordinate {coord_name!r} must have one value "
+                    "per destination curve. "
+                    "Change the source binding or the destination coordinate."
+                )
+            values = np.asarray(coord.values)
+            if (
+                not np.issubdtype(values.dtype, np.number)
+                or np.iscomplexobj(values)
+                or not np.isfinite(values).all()
+            ):
+                return f"Coordinate {coord_name!r} must contain finite real numbers."
+            state = params[name]
+            if np.any(values < state[4]) or np.any(values > state[5]):
+                return (
+                    f"Coordinate {coord_name!r} is outside the bounds "
+                    f"for parameter {name!r}. "
+                    "Adjust the bounds in the source ftool."
+                )
+        return None
+
+    @staticmethod
+    def _fit_setup_params_for_data(
+        params: list[tuple[typing.Any, ...]],
+        bindings: Mapping[str, str],
+        data: xr.DataArray,
+    ) -> list[tuple[typing.Any, ...]]:
+        imported = []
+        for state in copy.deepcopy(params):
+            value = (
+                float(data.coords[bindings[state[0]]].item())
+                if state[0] in bindings
+                else state[1]
+            )
+            imported.append(
+                (state[0], value, *state[2:7], None, None, value, state[10])
+            )
+        return imported
+
+    def _fit_setup_code_entries(self, setup: _FitSetup) -> tuple[typing.Any, ...]:
+        return setup.code_entries()
+
+    def _apply_imported_fit_setup(
+        self,
+        setup: _FitSetup,
+        model: lmfit.Model,
+        params: lmfit.Parameters,
+        initial_params: lmfit.Parameters,
+    ) -> None:
+        self._model = model
+        self._serialized_model_state = setup.model_state
+        self._model_name = setup.model_name
+        self._model_load_path = setup.model_load_path
+        self._params = params
+        self._initial_params = initial_params
+        self._params_from_coord = setup.params_from_coord.copy()
+        self._slider_widths = dict(setup.slider_widths)
+        self._pending_fit_status = None
+        self._figure_fit_restore_configuration = None
+        self._figure_fit_restored_indices.clear()
+        self._invalidate_fit_result_payload()
+        self._fit_configuration_changed()
+
+    def _finish_fit_setup_import(self, *, refresh_fit: bool) -> None:
+        if refresh_fit:
+            self._update_fit_curve()
+        self._refresh_slider_from_model()
+        self._mark_fit_stale()
+        self._write_state()
+
+    def _import_fit_setup(self, source: Fit1DTool | _FitSetup) -> bool:
+        reason = self._fit_setup_import_error(source)
+        if reason is not None:
+            self._show_warning("Cannot import fit setup", reason)
+            return False
+        setup = source._fit_setup() if isinstance(source, Fit1DTool) else source
+        entries = self._fit_setup_code_entries(setup)
+        previous_trust = self._current_document_trust()
+        repaired_bounds: list[str] = []
+        try:
+            with self._local_code_edit(
+                entries,
+                edited_entries=self._new_fit_code_entries(
+                    self._fit_code_entries, entries
+                ),
+                focus_on_block=True,
+            ) as capability:
+                if not execution_capability_allows(capability, entries):
+                    return False
+                try:
+                    params = typing.cast(
+                        "lmfit.Parameters",
+                        self._deserialize_params(
+                            self._fit_setup_params_for_data(
+                                setup.params, setup.params_from_coord, self._data
+                            ),
+                            repaired_bounds=repaired_bounds,
+                        ),
+                    )
+                    cls_info, model_state = setup.model_state
+                    model = _load_lmfit_for_ftool_restore(
+                        lambda: fit_serialization.loads_model(model_state),
+                        params=params,
+                    )
+                    model_class = _REGISTERED_MODEL_CLASSES.get(cls_info)
+                    if model_class is not None and (
+                        type(model) is lmfit.Model
+                        or issubclass(model_class, type(model))
+                    ):
+                        with contextlib.suppress(TypeError):
+                            model.__class__ = model_class
+                    self._sanitize_model_convolution_for_x(model)
+                    initial_params = params.copy()
+                except Exception:
+                    self._show_error(
+                        "Model restore failed", "Failed to import model settings."
+                    )
+                    _reject_fit_code_edit()
+                if self._fit_running():
+                    self._cancel_fit_for_state_change()
+                with self._history_suppressed():
+                    self._apply_imported_fit_setup(setup, model, params, initial_params)
+                    self._refresh_fit_code_entries()
+                    if self._fit_code_entries == entries:
+                        self._fit_execution_capability = capability
+                    self._sync_model_display()
+                    self._sync_model_specific_controls()
+                    self.param_model.set_params(
+                        self._params, self._params_from_coord, emit_changed=False
+                    )
+        except _FitCodeEditRejected:
+            return False
+        self._finish_fit_setup_import(
+            refresh_fit=self._current_document_trust() == previous_trust
+        )
+        self._show_repaired_parameter_bounds_warning(repaired_bounds)
+        return True
 
     @contextlib.contextmanager
     def _tool_status_code_execution(
-        self, status: StateModel
+        self, status: StateModel, *, as_local_edit: bool = False
     ) -> Iterator[tuple[tuple[typing.Any, ...], object | None, bool]]:
         """Authorize status decoding as stored content or one explicit edit."""
         entries = tuple(type(self)._code_trust_entries_from_status(status))
-        local_edit = (
+        local_edit = as_local_edit or (
             entries != getattr(self, "_fit_code_entries", ())
             and not self._restoring_from_dataset
             and status is not self._pending_fit_status
@@ -2963,11 +3409,14 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._cancel_fit_for_state_change()
         with self._history_suppressed():
             self._data_name = status.data_name
-            self._model_name = status.model_name
-            self._figure_fit_restore_configuration = (
-                status.figure_fit_restore_configuration
-            )
-            self._figure_fit_restored_indices = set(status.figure_fit_restored_indices)
+            if not local_edit:
+                self._model_name = status.model_name
+                self._figure_fit_restore_configuration = (
+                    status.figure_fit_restore_configuration
+                )
+                self._figure_fit_restored_indices = set(
+                    status.figure_fit_restored_indices
+                )
             self.components_check.setChecked(status.show_components)
             self.refit_on_source_update_check.setChecked(status.refit_on_source_update)
             self.timeout_spin.setValue(status.timeout)
@@ -2976,7 +3425,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             with QtCore.QSignalBlocker(self.normalize_check):
                 self.normalize_check.setChecked(status.normalize_mean)
 
-            self._slider_widths = dict(status.slider_widths)
+            if not local_edit:
+                self._slider_widths = dict(status.slider_widths)
             if status.domain is not None:
                 with (
                     QtCore.QSignalBlocker(self.domain_min_spin),
@@ -3035,6 +3485,13 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 )
 
             def apply_restored_model() -> None:
+                self._model_name = status.model_name
+                self._figure_fit_restore_configuration = (
+                    status.figure_fit_restore_configuration
+                )
+                self._figure_fit_restored_indices = set(
+                    status.figure_fit_restored_indices
+                )
                 if restored_params is None or len(restored_params) == 0:
                     self._apply_model(
                         model,

@@ -32,6 +32,31 @@ store the result with {func}`xarray_lmfit.save_fit`.
 Use {ref}`how-to-gui-fit-stack-with-ftool` for a stack of curves and
 {ref}`how-to-gui-reopen-saved-fit` to continue work from a saved result.
 
+(how-to-gui-reuse-fit-setup)=
+
+## Reusing a fit setup on new data
+
+1. Open the destination ftool in the same Manager as the source.
+2. Set the model and parameters in the source ftool. For a two-dimensional source,
+   select the curve whose settings you want to reuse.
+3. In the destination ftool, choose {guilabel}`File` →
+   {guilabel}`Import fit setup…`.
+4. Select the source ftool and import its setup.
+5. Inspect the imported parameters, then start the fit.
+
+The import copies the source model, current parameter values, bounds, fixed or free
+settings, expressions, and coordinate bindings. A completed source fit is not required.
+In a two-dimensional destination, the setup applies to all curves. Each parameter that
+follows a coordinate reads the matching coordinate in the destination data, separately
+for each curve. If a required coordinate is missing or incompatible, correct the source
+binding or the destination coordinates before importing.
+
+A source ftool restored from a workspace can remain closed. Import reads its saved
+settings without loading its data or fit results.
+
+The destination keeps its fit range and weighting. Later source edits do not change
+the imported setup. Use {guilabel}`Edit` → {guilabel}`Undo` to reverse an import.
+
 (how-to-gui-plot-fit)=
 
 ## Adding a completed fit to a figure
