@@ -66,6 +66,37 @@ def test_dntool_controls_and_processing_status(qtbot):
     assert tool.images[1]._imagetool_data() is None
 
 
+def test_dntool_uses_automatic_provider(qtbot, monkeypatch):
+    data = xr.DataArray(np.ones((4, 5)), dims=("eV", "beta"))
+    calls = []
+
+    def denoise(data, *, provider="auto", **kwargs):
+        calls.append((provider, kwargs))
+        return data * 2
+
+    monkeypatch.setattr(erlab.analysis.image.ml, "denoise", denoise)
+    tool = DenoiseTool(data, data_name="data")
+    qtbot.addWidget(tool)
+    tool.denoise()
+    qtbot.waitUntil(tool.open_btn.isEnabled)
+    operation = tool._result_provenance()[0]
+    assert operation.provider == "auto"
+    assert calls == [("auto", operation.kwargs)]
+    namespace = {"era": erlab.analysis, "data": data}
+    exec(tool.copy_code(), namespace, namespace)  # noqa: S102
+    xr.testing.assert_identical(namespace["result"], tool.result)
+    assert calls == [("auto", operation.kwargs), ("auto", operation.kwargs)]
+
+    tool.energy_spin.setValue(320)
+    assert tool._result_provenance()[0] == operation
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(tool.to_dataset())
+    qtbot.addWidget(restored)
+    assert restored.tool_status == tool.tool_status
+    assert restored._result_provenance()[0] == operation
+    xr.testing.assert_identical(restored.result, tool.result)
+    assert len(calls) == 2
+
+
 def test_dntool_model_picker_cancel_select_restore_and_reset(
     qtbot, monkeypatch, tmp_path
 ):

@@ -1,10 +1,12 @@
 """Denoise angle-energy slices of ARPES data with the bundled ONNX model."""
 
 __all__ = ["denoise"]
+import concurrent.futures
 import copy
 import functools
 import os
 import pathlib
+import platform
 import threading
 import typing
 import warnings
@@ -233,37 +235,53 @@ def _output_coordinates(
 # ---------------------------------------------------------------------------
 
 
-@functools.lru_cache(maxsize=2)
+@functools.lru_cache(maxsize=8)
 def _cached_session(
-    path: str, mtime_ns: int, size: int, num_threads: int
+    path: str,
+    mtime_ns: int,
+    size: int,
+    num_threads: int,
+    provider: str,
+    shape: tuple[int, int] | None,
 ) -> "ort.InferenceSession":
-    """Create a CPU ONNX Runtime session.
+    """Create an ONNX Runtime session with an optional accelerator.
 
     ``mtime_ns`` and ``size`` are unused here; they are part of the cache key
     so that a modified model file is reloaded.
     """
-    try:
-        import onnxruntime as ort
-    except ImportError as e:
-        raise ImportError(
-            "The `onnxruntime` package is required for denoising. "
-            'Install it with `pip install "erlab[ml]"`.'
-        ) from e
+    import onnxruntime as ort
 
     options = ort.SessionOptions()
     options.intra_op_num_threads = num_threads
     options.inter_op_num_threads = 1
     options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    return ort.InferenceSession(
-        path, sess_options=options, providers=["CPUExecutionProvider"]
-    )
+    providers: list[str | tuple[str, dict[str, str]]] = ["CPUExecutionProvider"]
+    if provider != "CPUExecutionProvider":
+        providers.insert(0, provider)
+    if shape is not None:
+        options.add_free_dimension_override_by_name("height", shape[0])
+        options.add_free_dimension_override_by_name("width", shape[1])
+        providers[0] = (
+            provider,
+            {
+                "ModelFormat": "MLProgram",
+                "MLComputeUnits": "ALL",
+                "RequireStaticInputShapes": "1",
+                "AllowLowPrecisionAccumulationOnGPU": "0",
+            },
+        )
+    return ort.InferenceSession(path, sess_options=options, providers=providers)
 
 
 def _load_session(
-    model_path: str | os.PathLike[str] | None, num_threads: int
+    model_path: str | os.PathLike[str] | None,
+    num_threads: int,
+    provider: str,
+    *,
+    shape: tuple[int, int] | None = None,
 ) -> tuple[pathlib.Path, "ort.InferenceSession"]:
-    """Resolve the model file and return ``(path, session)``."""
+    """Resolve the model and cache its session, specializing CoreML by shape."""
     if model_path is None:
         path = pathlib.Path(__file__).with_name("_data") / DEFAULT_MODEL_NAME
     else:
@@ -272,9 +290,43 @@ def _load_session(
         ).expanduser()  # relative paths use the working directory
     path = path.resolve(strict=True)
     stat = path.stat()
+    try:
+        import onnxruntime as ort
+    except ImportError as e:
+        raise ImportError(
+            "The `onnxruntime` package is required for denoising. "
+            'Install it with `pip install "erlab[ml]"`.'
+        ) from e
+
+    available = ort.get_available_providers()
+    accelerators = {
+        "cuda": "CUDAExecutionProvider",
+        "coreml": "CoreMLExecutionProvider",
+    }
+    selected = "CPUExecutionProvider"
+    if provider == "auto":
+        for accelerator in accelerators.values():
+            if accelerator in available:
+                selected = accelerator
+                break
+    elif provider != "cpu":
+        accelerator = accelerators[provider]
+        if accelerator not in available:
+            raise ValueError(
+                f"{accelerator} is not available in the installed ONNX Runtime. "
+                "Use provider='auto' or 'cpu', or install a runtime that supports it."
+            )
+        selected = accelerator
+
+    if model_path is None and selected == "CoreMLExecutionProvider":
+        major = platform.mac_ver()[0].partition(".")[0]
+        if not major or int(major) < 12:
+            shape = None
+    else:
+        shape = None
     with _SESSION_LOCK:
         session = _cached_session(
-            str(path), stat.st_mtime_ns, stat.st_size, int(num_threads)
+            str(path), stat.st_mtime_ns, stat.st_size, int(num_threads), selected, shape
         )
     return path, session
 
@@ -320,21 +372,40 @@ def _tta_transforms(tta: bool) -> list[tuple[bool, tuple[int, ...]]]:
     ]
 
 
+@functools.lru_cache(maxsize=1)
+def _cached_tta_executor(pid: int) -> concurrent.futures.ThreadPoolExecutor:
+    """Share a bounded pool within each process, including after a fork."""
+    return concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(4, os.cpu_count() or 1), thread_name_prefix="erlab-denoise"
+    )
+
+
 def _predict(
-    session: "ort.InferenceSession", image: "npt.NDArray[np.floating]", tta: bool
+    session: "ort.InferenceSession",
+    image: "npt.NDArray[np.floating]",
+    tta: bool,
+    *,
+    parallel: bool = False,
+    transposed_session: "ort.InferenceSession | None" = None,
 ) -> "npt.NDArray[np.float64]":
     """Run the model on ``image`` and return the TTA-averaged prediction.
 
     The prediction is on the model's native output grid, which may be coarser
     than ``image`` (e.g. a stride-2 network).
     """
-    input_name, output_name = _check_model_io(session, image.shape, tta)
+    session_info = {False: (session, *_check_model_io(session, image.shape, False))}
+    if tta:
+        other = session if transposed_session is None else transposed_session
+        session_info[True] = (other, *_check_model_io(other, image.shape[::-1], False))
 
-    aligned = []
-    for transpose, flip_axes in _tta_transforms(tta):
+    def predict_one(
+        transform: tuple[bool, tuple[int, ...]],
+    ) -> "npt.NDArray[np.float64]":
+        transpose, flip_axes = transform
+        active, input_name, output_name = session_info[transpose]
         augmented = np.flip(image.T if transpose else image, axis=flip_axes)
         tensor = np.ascontiguousarray(augmented[None, None], dtype=np.float32)
-        prediction = np.asarray(session.run([output_name], {input_name: tensor})[0])
+        prediction = np.asarray(active.run([output_name], {input_name: tensor})[0])
         if (
             prediction.ndim != 4
             or prediction.shape[:2] != (1, 1)
@@ -346,7 +417,15 @@ def _predict(
 
         # Undo the augmentation so every prediction lines up with the input.
         prediction = np.flip(prediction[0, 0].astype(np.float64), axis=flip_axes)
-        aligned.append(prediction.T if transpose else prediction)
+        return prediction.T if transpose else prediction
+
+    transforms = _tta_transforms(tta)
+    if parallel:
+        with _SESSION_LOCK:
+            executor = _cached_tta_executor(os.getpid())
+        aligned = list(executor.map(predict_one, transforms))
+    else:
+        aligned = [predict_one(transform) for transform in transforms]
     return np.stack(aligned).mean(axis=0)
 
 
@@ -355,6 +434,7 @@ def _denoise_2d(
     *,
     model_path: pathlib.Path | None,
     num_threads: int,
+    provider: str,
     shape: tuple[int, int],
     tta: bool,
     restore_scale: bool,
@@ -380,8 +460,28 @@ def _denoise_2d(
         raise FloatingPointError("Normalized data cannot be represented as float32.")
 
     # Load in the executing process; ONNX sessions cannot be sent to Dask workers.
-    _, session = _load_session(model_path, num_threads)
-    native = _predict(session, normalized, tta)
+    _, session = _load_session(model_path, num_threads, provider, shape=shape)
+    transposed_session = None
+    if model_path is None and tta and shape != shape[::-1]:
+        _check_model_io(session, shape, False)
+        if session.get_inputs()[0].shape[2:] == list(shape):
+            # CoreML specializes each orientation of the same bundled graph.
+            _, transposed_session = _load_session(
+                model_path, num_threads, provider, shape=shape[::-1]
+            )
+    parallel = False
+    if model_path is None and tta and num_threads == 0:
+        parallel = session.get_providers()[0] in (
+            "CPUExecutionProvider",
+            "CoreMLExecutionProvider",
+        )
+    native = _predict(
+        session,
+        normalized,
+        tta,
+        parallel=parallel,
+        transposed_session=transposed_session,
+    )
     # Scale the area rebin by the pixel-count ratio to keep the intensity level.
     result = _area_rebin(native, shape) * (np.prod(shape) / native.size)
     if restore_scale:
@@ -409,6 +509,7 @@ def denoise(
     restore_scale: bool = True,
     restore_size: bool = True,
     num_threads: int = 0,
+    provider: typing.Literal["auto", "cpu", "cuda", "coreml"] = "auto",
 ) -> xr.DataArray:
     """Denoise angle-energy slices of ARPES data.
 
@@ -463,10 +564,14 @@ def denoise(
         ``resize``. If ``False``, only ``"eV"`` and ``along`` are resized, with
         coordinates resampled over the same pixel-edge extent.
     num_threads
-        ONNX Runtime intra-op thread count for unchunked data. The default, ``0``, lets
-        ONNX Runtime choose the thread count. This parameter is ignored for chunked
-        input since chunked data always uses one thread to avoid nested parallelism with
+        ONNX Runtime intra-op thread count. ``0`` lets the runtime choose and allows
+        up to four concurrent TTA passes for the bundled model on CPU or CoreML.
+        Chunked input always uses one ONNX thread per task and leaves parallelism to
         Dask.
+    provider
+        ONNX Runtime backend. ``"auto"`` selects CUDA, then CoreML, then CPU,
+        according to availability. Accelerators require a compatible runtime and
+        can fall back to CPU.
 
     Returns
     -------
@@ -474,15 +579,18 @@ def denoise(
         The denoised image, named ``"<name>_denoised"`` (or ``"denoised"``), with the
         input attributes plus ``denoising_*`` attributes recording the settings used.
         Chunked input produces a lazy result. Computation and scheduling remain under
-        the caller's control.
+        the caller's control. ``denoising_provider`` records the requested provider;
+        the runtime can use CPU fallback, and Dask workers can select different devices.
 
     Notes
     -----
     This function uses the pretrained denoising model from :cite:t:`kim2021denoise`.
 
     ONNX sessions are cached within each process by model path, modification time, file
-    size and thread count. For chunked input, intensity validation and model loading
-    occur when the result is computed.
+    size, thread count, provider, and CoreML input shape. For chunked input, validation,
+    selection, and model loading occur on each worker when the result is computed.
+    CoreML compiles the model when a session is created, so the first call can take
+    longer than later calls.
     """
     if not isinstance(data, xr.DataArray):
         raise TypeError("data must be an xarray.DataArray.")
@@ -500,6 +608,8 @@ def denoise(
         raise TypeError("tta, restore_scale, and restore_size must be booleans.")
     if not _is_int(num_threads) or num_threads < 0:
         raise ValueError("num_threads must be an integer >= 0.")
+    if provider not in ("auto", "cpu", "cuda", "coreml"):
+        raise ValueError("provider must be 'auto', 'cpu', 'cuda', or 'coreml'.")
 
     if min(data.shape) == 0:
         raise ValueError("data must be nonempty.")
@@ -532,6 +642,7 @@ def denoise(
         kwargs={
             "model_path": model_file,
             "num_threads": 1 if data.chunks is not None else int(num_threads),
+            "provider": provider,
             "shape": shape,
             "tta": tta,
             "restore_scale": restore_scale,
@@ -547,6 +658,7 @@ def denoise(
         denoising_tta=int(tta),
         denoising_restore_scale=int(restore_scale),
         denoising_restore_size=int(restore_size),
+        denoising_provider=provider,
     )
     return xr.DataArray(
         result,

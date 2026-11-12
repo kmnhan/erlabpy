@@ -638,10 +638,12 @@ def _representative_structured_operations() -> tuple[ToolProvenanceOperation, ..
 
 
 @pytest.mark.parametrize("resize", [32, (32, 48)])
+@pytest.mark.parametrize("provider", ["auto", "cpu", "cuda", "coreml"])
 def test_denoise_operation_round_trip_and_public_code(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
     resize: int | tuple[int, int],
+    provider: typing.Literal["auto", "cpu", "cuda", "coreml"],
 ) -> None:
     calls: list[dict[str, typing.Any]] = []
 
@@ -658,6 +660,7 @@ def test_denoise_operation_round_trip_and_public_code(
         restore_scale=False,
         restore_size=False,
         num_threads=3,
+        provider=provider,
     )
     restored = parse_tool_provenance_operation(operation.model_dump(mode="json"))
     assert restored == operation
@@ -668,21 +671,37 @@ def test_denoise_operation_round_trip_and_public_code(
     xr.testing.assert_identical(namespace["result"], expected)
     assert calls == [operation.kwargs, operation.kwargs]
     assert operation.derivation_label().startswith("Denoise(")
+    assert ("provider" in operation.kwargs) == (provider != "auto")
 
 
-def test_denoise_console_capture() -> None:
+@pytest.mark.parametrize("provider", ["auto", "cpu", "cuda", "coreml"])
+def test_denoise_console_capture(
+    provider: typing.Literal["auto", "cpu", "cuda", "coreml"],
+) -> None:
     operation = operation_from_console_call(
         ConsoleCall(
             func=erlab.analysis.image.ml.denoise,
             args=((32, 48),),
-            kwargs={"along": "beta", "tta": False, "num_threads": 2},
+            kwargs={
+                "along": "beta",
+                "tta": False,
+                "num_threads": 2,
+                "provider": provider,
+            },
             display_code="era.image.ml.denoise(data, (32, 48), along='beta')",
             has_extra_tracked_inputs=False,
         )
     )
     assert operation == DenoiseOperation(
-        resize=(32, 48), along="beta", tta=False, num_threads=2
+        resize=(32, 48), along="beta", tta=False, num_threads=2, provider=provider
     )
+
+
+def test_denoise_legacy_operation_uses_automatic_provider() -> None:
+    operation = parse_tool_provenance_operation({"op": "denoise"})
+    assert isinstance(operation, DenoiseOperation)
+    assert operation.provider == "auto"
+    assert "provider" not in operation.kwargs
 
 
 @pytest.mark.parametrize(

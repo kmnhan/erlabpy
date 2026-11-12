@@ -134,6 +134,7 @@ def test_manager_denoise_provenance_editor_restores_and_copies_parameters(
         restore_scale=False,
         restore_size=False,
         num_threads=3,
+        provider="coreml",
     )
     spec = full_data(operation)
     node = _fake_edit_node(spec)
@@ -151,10 +152,12 @@ def test_manager_denoise_provenance_editor_restores_and_copies_parameters(
         dialog, (operation,), None
     )
     assert dialog.provenance_edit_operations() == [operation]
+    assert dialog.provider_combo.currentData() == "coreml"
 
     dialog.energy_spin.setValue(12)
     dialog.angle_spin.setValue(14)
     dialog.threads_spin.setValue(2)
+    dialog.provider_combo.setCurrentIndex(dialog.provider_combo.findData("cpu"))
     dialog.tta_check.setChecked(True)
     dialog.scale_check.setChecked(True)
     dialog.size_check.setChecked(True)
@@ -167,6 +170,7 @@ def test_manager_denoise_provenance_editor_restores_and_copies_parameters(
             "restore_scale": True,
             "restore_size": True,
             "num_threads": 2,
+            "provider": "cpu",
         }
     )
     assert dialog.provenance_edit_operations() == [expected]
