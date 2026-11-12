@@ -140,6 +140,7 @@ class DenoiseOperation(ToolProvenanceOperation):
                 "restore_scale": True,
                 "restore_size": True,
                 "num_threads": 0,
+                "provider": "auto",
             },
         ),
     )
@@ -150,6 +151,7 @@ class DenoiseOperation(ToolProvenanceOperation):
     restore_scale: pydantic.StrictBool = True
     restore_size: pydantic.StrictBool = True
     num_threads: typing.Annotated[pydantic.StrictInt, pydantic.Field(ge=0)] = 0
+    provider: typing.Literal["auto", "cpu", "cuda", "coreml"] = "auto"
 
     @pydantic.field_validator("resize", mode="before")
     @classmethod
@@ -166,7 +168,7 @@ class DenoiseOperation(ToolProvenanceOperation):
 
     @property
     def kwargs(self) -> dict[str, typing.Any]:
-        return {
+        kwargs: dict[str, typing.Any] = {
             "resize": self.resize,
             "along": self.along,
             "model_path": self.model_path,
@@ -175,6 +177,9 @@ class DenoiseOperation(ToolProvenanceOperation):
             "restore_size": self.restore_size,
             "num_threads": self.num_threads,
         }
+        if self.provider != "auto":
+            kwargs["provider"] = self.provider
+        return kwargs
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
         return erlab.analysis.image.ml.denoise(data, **self.kwargs)

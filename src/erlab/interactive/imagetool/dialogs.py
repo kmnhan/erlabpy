@@ -3910,6 +3910,19 @@ class _DenoiseDialog(DataTransformDialog):
         self.threads_spin.setSpecialValueText("Automatic")
         self.layout_.addRow("# of threads", self.threads_spin)
 
+        self.provider_combo = QtWidgets.QComboBox()
+        for label, provider in (
+            ("Automatic", "auto"),
+            ("CPU", "cpu"),
+            ("CUDA", "cuda"),
+            ("CoreML", "coreml"),
+        ):
+            self.provider_combo.addItem(label, userData=provider)
+        self.provider_combo.setToolTip(
+            "Automatic uses CUDA, then CoreML, then CPU, when available."
+        )
+        self.layout_.addRow("Execution provider", self.provider_combo)
+
         self._model_path: str | None = None
         self.model_label = QtWidgets.QLabel()
         self.model_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
@@ -3966,6 +3979,7 @@ class _DenoiseDialog(DataTransformDialog):
             restore_scale=self.scale_check.isChecked(),
             restore_size=self.size_check.isChecked(),
             num_threads=self.threads_spin.value(),
+            provider=self.provider_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
         )
 
     def restore_transform_operation(self, operation: ToolProvenanceOperation) -> None:
@@ -3983,6 +3997,7 @@ class _DenoiseDialog(DataTransformDialog):
         _set_spin_value(
             self.threads_spin, operation.num_threads, label="Number of threads"
         )
+        _set_combo_data(self.provider_combo, operation.provider)
         self._model_path = operation.model_path
         self._update_model_label()
         self.tta_check.setChecked(operation.tta)

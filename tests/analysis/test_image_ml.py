@@ -20,6 +20,7 @@ class _IdentitySession:
     def __init__(self):
         self.inputs = []
         self.loaded_threads = []
+        self.loaded_providers = []
 
     def get_inputs(self):
         return [
@@ -56,8 +57,9 @@ class _AsymmetricSession(_IdentitySession):
 def identity_session(monkeypatch):
     session = _IdentitySession()
 
-    def load_session(model_path, num_threads):
+    def load_session(model_path, num_threads, provider):
         session.loaded_threads.append(num_threads)
+        session.loaded_providers.append(provider)
         return pathlib.Path("identity.onnx"), session
 
     monkeypatch.setattr(_denoise, "_load_session", load_session)
@@ -68,8 +70,9 @@ def identity_session(monkeypatch):
 def asymmetric_session(monkeypatch):
     session = _AsymmetricSession()
 
-    def load_session(model_path, num_threads):
+    def load_session(model_path, num_threads, provider):
         session.loaded_threads.append(num_threads)
+        session.loaded_providers.append(provider)
         return pathlib.Path("asymmetric.onnx"), session
 
     monkeypatch.setattr(_denoise, "_load_session", load_session)
@@ -108,6 +111,144 @@ def deferred_image(image):
     ]
     lazy = eager.copy(data=da.stack(planes).transpose(2, 0, 1))
     return lazy, eager, reads
+
+
+@pytest.fixture
+def onnx_runtime(monkeypatch):
+    sessions = []
+
+    def create_session(path, *, sess_options, providers):
+        session = _IdentitySession()
+        session.path = path
+        session.options = sess_options
+        session.providers = providers
+        sessions.append(session)
+        return session
+
+    runtime = types.SimpleNamespace(
+        SessionOptions=types.SimpleNamespace,
+        ExecutionMode=types.SimpleNamespace(ORT_SEQUENTIAL=object()),
+        GraphOptimizationLevel=types.SimpleNamespace(ORT_ENABLE_ALL=object()),
+        InferenceSession=create_session,
+        get_available_providers=lambda: ["CPUExecutionProvider"],
+        sessions=sessions,
+    )
+    monkeypatch.setitem(sys.modules, "onnxruntime", runtime)
+    _denoise._cached_session.cache_clear()
+    yield runtime
+    _denoise._cached_session.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("available", "provider", "expected"),
+    [
+        (["CPUExecutionProvider"], "auto", ["CPUExecutionProvider"]),
+        (
+            ["AzureExecutionProvider", "CPUExecutionProvider"],
+            "auto",
+            ["CPUExecutionProvider"],
+        ),
+        (
+            ["CoreMLExecutionProvider", "CPUExecutionProvider"],
+            "auto",
+            ["CoreMLExecutionProvider", "CPUExecutionProvider"],
+        ),
+        (
+            [
+                "CoreMLExecutionProvider",
+                "CPUExecutionProvider",
+                "CUDAExecutionProvider",
+            ],
+            "auto",
+            ["CUDAExecutionProvider", "CPUExecutionProvider"],
+        ),
+        (
+            [
+                "CoreMLExecutionProvider",
+                "CUDAExecutionProvider",
+                "CPUExecutionProvider",
+            ],
+            "cpu",
+            ["CPUExecutionProvider"],
+        ),
+        (
+            [
+                "CoreMLExecutionProvider",
+                "CUDAExecutionProvider",
+                "CPUExecutionProvider",
+            ],
+            "coreml",
+            ["CoreMLExecutionProvider", "CPUExecutionProvider"],
+        ),
+        (
+            ["CUDAExecutionProvider", "CPUExecutionProvider"],
+            "cuda",
+            ["CUDAExecutionProvider", "CPUExecutionProvider"],
+        ),
+    ],
+)
+def test_denoise_selects_execution_provider(
+    onnx_runtime, available, provider, expected
+):
+    onnx_runtime.get_available_providers = lambda: available
+    _, session = _denoise._load_session(None, 3, provider)
+
+    assert session.providers == expected
+    assert session.options.intra_op_num_threads == 3
+    assert session.options.inter_op_num_threads == 1
+
+
+@pytest.mark.parametrize("provider", ["cuda", "coreml"])
+def test_denoise_rejects_unavailable_provider(onnx_runtime, provider):
+    with pytest.raises(ValueError, match="not available"):
+        _denoise._load_session(None, 0, provider)
+    assert onnx_runtime.sessions == []
+
+
+def test_denoise_session_cache_tracks_provider_and_model(onnx_runtime, tmp_path):
+    path = tmp_path / "model.onnx"
+    path.write_bytes(b"original")
+    _, automatic = _denoise._load_session(path, 0, "auto")
+    assert _denoise._load_session(path, 0, "auto")[1] is automatic
+    path.write_bytes(b"replacement model")
+    _, replacement = _denoise._load_session(path, 0, "auto")
+    assert replacement is not automatic
+    assert _denoise._load_session(path, 0, "cpu")[1] is not replacement
+    assert _denoise._load_session(path, 1, "auto")[1] is not replacement
+    assert len(onnx_runtime.sessions) == 4
+
+
+@pytest.mark.parametrize("provider", ["auto", "cpu", "cuda", "coreml"])
+def test_denoise_passes_provider_to_dask_workers(image, identity_session, provider):
+    result = era.image.ml.denoise(
+        image.chunk({"eV": -1, "alpha": -1}),
+        resize=image.shape,
+        provider=provider,
+        tta=False,
+    )
+    assert identity_session.loaded_providers == []
+    result = result.compute(scheduler="synchronous")
+    assert identity_session.loaded_providers == [provider]
+    assert result.attrs["denoising_provider"] == provider
+    np.testing.assert_allclose(result.values, image.values, rtol=1e-6)
+
+
+def test_denoise_dask_discovers_providers_when_computed(image, onnx_runtime):
+    result = era.image.ml.denoise(
+        image.chunk({"eV": -1, "alpha": -1}), resize=image.shape, tta=False
+    )
+    assert onnx_runtime.sessions == []
+    onnx_runtime.get_available_providers = lambda: [
+        "CoreMLExecutionProvider",
+        "CPUExecutionProvider",
+    ]
+    computed = result.compute(scheduler="synchronous")
+    assert len(onnx_runtime.sessions) == 1
+    assert onnx_runtime.sessions[0].providers == [
+        "CoreMLExecutionProvider",
+        "CPUExecutionProvider",
+    ]
+    np.testing.assert_allclose(computed.values, image.values, rtol=1e-6)
 
 
 def test_denoise_imports_do_not_require_onnxruntime():
@@ -414,7 +555,10 @@ def test_denoise_coarse_prediction_preserves_predicted_intensity(
     monkeypatch.setattr(
         _denoise,
         "_load_session",
-        lambda model_path, num_threads: (pathlib.Path("coarse.onnx"), session),
+        lambda model_path, num_threads, provider: (
+            pathlib.Path("coarse.onnx"),
+            session,
+        ),
     )
     image = xr.DataArray(np.full((3, 4), 2.0), dims=("eV", "alpha"))
     result = era.image.ml.denoise(
@@ -445,6 +589,8 @@ def test_denoise_coarse_prediction_preserves_predicted_intensity(
         ({"num_threads": True}, ValueError),
         ({"num_threads": -1}, ValueError),
         ({"along": 1}, TypeError),
+        ({"provider": "invalid"}, ValueError),
+        ({"provider": None}, ValueError),
     ],
 )
 def test_denoise_rejects_invalid_options(image, kwargs, exception):
@@ -480,18 +626,34 @@ def test_denoise_rejects_nonuniform_coordinates_even_when_restoring(image):
 
 
 @pytest.mark.parametrize("tta", [False, True])
-def test_denoise_bundled_model(image, tta):
+@pytest.mark.parametrize("provider", ["auto", "cpu"])
+def test_denoise_bundled_model(image, tta, provider):
     pytest.importorskip("onnxruntime", exc_type=ModuleNotFoundError)
     original = image.copy(deep=True)
 
-    result = era.image.ml.denoise(image, resize=(32, 48), tta=tta, num_threads=1)
+    result = era.image.ml.denoise(
+        image, resize=(32, 48), tta=tta, num_threads=1, provider=provider
+    )
 
     assert result.shape == image.shape
     assert result.dims == image.dims
     assert np.isfinite(result.values).all()
     assert result.attrs["denoising_model"] == "arpes-denoiser.onnx"
+    assert result.attrs["denoising_provider"] == provider
     xr.testing.assert_identical(result.coords.to_dataset(), image.coords.to_dataset())
     xr.testing.assert_identical(image, original)
+
+
+@pytest.mark.parametrize("tta", [False, True])
+def test_denoise_bundled_model_with_dask_threads(image, tta):
+    pytest.importorskip("onnxruntime", exc_type=ModuleNotFoundError)
+    data = image * xr.DataArray([1.0, 2.0, 3.0, 4.0], dims="beta")
+    expected = era.image.ml.denoise(data, resize=(32, 48), tta=tta, num_threads=1)
+    lazy = era.image.ml.denoise(data.chunk({"beta": 1}), resize=(32, 48), tta=tta)
+
+    result = lazy.compute(scheduler="threads", num_workers=4)
+
+    xr.testing.assert_allclose(result, expected)
 
 
 def test_denoise_bundled_model_with_dask_processes():
