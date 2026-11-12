@@ -1,3 +1,4 @@
+import json
 import threading
 
 import numpy as np
@@ -29,6 +30,7 @@ def test_dntool_controls_and_processing_status(qtbot):
     assert tool.plots[0].getAxis("left").labelText == "eV"
     assert tool.plots[0].getAxis("bottom").labelText == "beta"
     assert tool.threads_spin.value() == 0
+    assert tool.provider_combo.currentData() == "auto"
     assert "Ready to denoise" in tool.status_label.text()
     assert "eight" in tool.tta_check.toolTip()
     assert "10,000" in tool.scale_check.toolTip()
@@ -66,35 +68,237 @@ def test_dntool_controls_and_processing_status(qtbot):
     assert tool.images[1]._imagetool_data() is None
 
 
-def test_dntool_uses_automatic_provider(qtbot, monkeypatch):
+@pytest.mark.parametrize("provider", ["cpu", "auto", "coreml", "cuda"])
+def test_dntool_provider_execution_code_replay_and_persistence(
+    qtbot, monkeypatch, provider
+):
+    from erlab.interactive.imagetool.dialogs import _DenoiseDialog
+
     data = xr.DataArray(np.ones((4, 5)), dims=("eV", "beta"))
     calls = []
 
-    def denoise(data, *, provider="auto", **kwargs):
-        calls.append((provider, kwargs))
-        return data * 2
+    def denoise(data, **kwargs):
+        calls.append(kwargs)
+        scale = {"cpu": 2, "auto": 3, "coreml": 4, "cuda": 5}[
+            kwargs.get("provider", "auto")
+        ]
+        return data * scale
 
     monkeypatch.setattr(erlab.analysis.image.ml, "denoise", denoise)
     tool = DenoiseTool(data, data_name="data")
     qtbot.addWidget(tool)
+    assert tool.parameters.provider == "auto"
+    assert {
+        tool.provider_combo.itemData(index)
+        for index in range(tool.provider_combo.count())
+    } == {"cpu", "auto", "coreml", "cuda"}
+    tool.provider_combo.setCurrentIndex(tool.provider_combo.findData(provider))
     tool.denoise()
     qtbot.waitUntil(tool.open_btn.isEnabled)
     operation = tool._result_provenance()[0]
-    assert operation.provider == "auto"
-    assert calls == [("auto", operation.kwargs)]
+    assert operation.provider == provider
+    assert calls == [operation.kwargs]
+    if provider == "cpu":
+        assert calls[0]["provider"] == "cpu"
     namespace = {"era": erlab.analysis, "data": data}
     exec(tool.copy_code(), namespace, namespace)  # noqa: S102
     xr.testing.assert_identical(namespace["result"], tool.result)
-    assert calls == [("auto", operation.kwargs), ("auto", operation.kwargs)]
+    replayed = DenoiseOperation.model_validate_json(operation.model_dump_json()).apply(
+        data
+    )
+    xr.testing.assert_identical(replayed, tool.result)
+    assert calls == [operation.kwargs] * 3
 
-    tool.energy_spin.setValue(320)
+    # The Manager's native editor restores the provider captured by dntool.
+    image_tool = erlab.interactive.imagetool.ImageTool(data)
+    qtbot.addWidget(image_tool)
+    dialog = _DenoiseDialog(image_tool.slicer_area, provenance_edit_mode=True)
+    qtbot.addWidget(dialog)
+    dialog.restore_transform_operation(operation)
+    assert dialog.provider_combo.currentData() == provider
+    assert dialog.source_transform_operation() == operation
+
+    pending_provider = "auto" if provider != "auto" else "cpu"
+    tool.provider_combo.setCurrentIndex(tool.provider_combo.findData(pending_provider))
+    assert tool.parameters.provider == pending_provider
     assert tool._result_provenance()[0] == operation
+    exec(tool.copy_code(), namespace, namespace)  # noqa: S102
+    xr.testing.assert_identical(namespace["result"], tool.result)
+    assert calls[-1] == operation.kwargs
     restored = erlab.interactive.utils.ToolWindow.from_dataset(tool.to_dataset())
     qtbot.addWidget(restored)
     assert restored.tool_status == tool.tool_status
+    assert restored.provider_combo.currentData() == pending_provider
     assert restored._result_provenance()[0] == operation
     xr.testing.assert_identical(restored.result, tool.result)
-    assert len(calls) == 2
+    assert len(calls) == 4
+
+
+def test_dntool_legacy_provider_defaults_to_auto(qtbot, monkeypatch):
+    data = xr.DataArray(np.ones((4, 5)), dims=("eV", "beta"))
+    calls = []
+
+    def denoise(data, **kwargs):
+        calls.append(kwargs)
+        return data * 2
+
+    monkeypatch.setattr(erlab.analysis.image.ml, "denoise", denoise)
+    tool = DenoiseTool(data)
+    qtbot.addWidget(tool)
+    tool.denoise()
+    qtbot.waitUntil(tool.open_btn.isEnabled)
+    saved = tool.to_dataset()
+    status = json.loads(saved.attrs["tool_state"])
+    status["parameters"].pop("provider")
+    status["applied"].pop("provider")
+    saved.attrs["tool_state"] = json.dumps(status)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
+    qtbot.addWidget(restored)
+    assert restored.parameters.provider == "auto"
+    assert restored.provider_combo.currentData() == "auto"
+    assert restored._result_provenance()[0].provider == "auto"
+    xr.testing.assert_identical(restored.result, tool.result)
+    assert len(calls) == 1
+    restored.denoise()
+    qtbot.waitUntil(lambda: len(calls) == 2 and not restored._busy)
+    assert (
+        calls[0].get("provider", "auto") == calls[1].get("provider", "auto") == "auto"
+    )
+
+
+@pytest.mark.parametrize(
+    ("recorded_provider", "explicit_provider", "expected_provider"),
+    [
+        ("auto", None, "auto"),
+        ("cpu", None, "cpu"),
+        ("coreml", None, "coreml"),
+        ("cuda", None, "cuda"),
+        ("auto", "cpu", "cpu"),
+        ("unknown", None, "auto"),
+        (None, None, "auto"),
+    ],
+)
+def test_dntool_legacy_completed_provider_restores_from_result(
+    qtbot, monkeypatch, recorded_provider, explicit_provider, expected_provider
+):
+    data = xr.DataArray(np.ones((4, 5)), dims=("eV", "beta"))
+    calls = []
+
+    def denoise(data, **kwargs):
+        provider = kwargs.get("provider", "auto")
+        calls.append(provider)
+        result = data * {"cpu": 2, "auto": 3, "coreml": 4, "cuda": 5}[provider]
+        if recorded_provider is not None:
+            result.attrs["denoising_provider"] = recorded_provider
+        return result
+
+    monkeypatch.setattr(erlab.analysis.image.ml, "denoise", denoise)
+    tool = DenoiseTool(data, data_name="data")
+    qtbot.addWidget(tool)
+    tool.provider_combo.setCurrentIndex(tool.provider_combo.findData(expected_provider))
+    tool.denoise()
+    qtbot.waitUntil(tool.open_btn.isEnabled)
+    saved = tool.to_dataset()
+    status = json.loads(saved.attrs["tool_state"])
+    status["parameters"].pop("provider")
+    if explicit_provider is None:
+        status["applied"].pop("provider")
+    else:
+        status["applied"]["provider"] = explicit_provider
+    saved.attrs["tool_state"] = json.dumps(status)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
+    qtbot.addWidget(restored)
+    assert restored.parameters.provider == "auto"
+    assert restored._result_provenance()[0].provider == expected_provider
+    xr.testing.assert_identical(restored.result, tool.result)
+    assert calls == [expected_provider]
+    namespace = {"era": erlab.analysis, "data": data}
+    exec(restored.copy_code(), namespace, namespace)  # noqa: S102
+    xr.testing.assert_identical(namespace["result"], restored.result)
+    assert calls[-1] == expected_provider
+
+    resaved = erlab.interactive.utils.ToolWindow.from_dataset(restored.to_dataset())
+    qtbot.addWidget(resaved)
+    assert resaved._result_provenance()[0].provider == expected_provider
+    restored.denoise()
+    qtbot.waitUntil(lambda: len(calls) == 3 and not restored._busy)
+    assert calls[-1] == "auto"
+    assert restored._result_provenance()[0].provider == "auto"
+
+
+@pytest.mark.parametrize("restore_saved", [False, True], ids=["live", "restored"])
+def test_dntool_provider_edits_reuse_completed_result(
+    qtbot, monkeypatch, restore_saved
+):
+    data = xr.DataArray(np.ones((4, 5)), dims=("eV", "beta"))
+    calls = []
+
+    def denoise(data, **kwargs):
+        calls.append(kwargs)
+        return data * 2
+
+    monkeypatch.setattr(erlab.analysis.image.ml, "denoise", denoise)
+    tool = DenoiseTool(data)
+    qtbot.addWidget(tool)
+    tool.denoise()
+    qtbot.waitUntil(tool.open_btn.isEnabled)
+    tool._flush_pending_history_write()
+    if restore_saved:
+        tool = erlab.interactive.utils.ToolWindow.from_dataset(tool.to_dataset())
+        qtbot.addWidget(tool)
+    previous = tool.result.copy(deep=True)
+    operation = tool._result_provenance()
+    tool.provider_combo.setCurrentIndex(tool.provider_combo.findData("coreml"))
+    tool._flush_pending_history_write()
+    tool.undo()
+    assert tool.parameters.provider == "auto"
+    assert not tool._busy
+    assert len(calls) == 1
+    xr.testing.assert_identical(tool.result, previous)
+    assert tool._result_provenance() == operation
+    tool.redo()
+    assert tool.parameters.provider == "coreml"
+    assert not tool._busy
+    assert len(calls) == 1
+    xr.testing.assert_identical(tool.result, previous)
+    assert tool._result_provenance() == operation
+
+
+def test_dntool_unavailable_provider_preserves_choice_and_allows_cpu(
+    qtbot, monkeypatch
+):
+    data = xr.DataArray(np.ones((4, 5)), dims=("eV", "beta"))
+    calls = []
+    messages = []
+
+    def denoise(data, **kwargs):
+        calls.append(kwargs["provider"])
+        if kwargs["provider"] == "cuda":
+            raise ValueError("CUDA is unavailable. Use CPU or Automatic.")
+        return data * 2
+
+    monkeypatch.setattr(erlab.analysis.image.ml, "denoise", denoise)
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, "critical", lambda *args: messages.append(args)
+    )
+    tool = DenoiseTool(data)
+    qtbot.addWidget(tool)
+    tool.provider_combo.setCurrentIndex(tool.provider_combo.findData("cuda"))
+    tool.denoise()
+    qtbot.waitUntil(lambda: len(messages) == 1)
+    assert calls == ["cuda"]
+    assert "CUDA is unavailable" in messages[0][2]
+    assert tool.parameters.provider == "cuda"
+    assert not tool._busy
+    assert not tool.open_btn.isEnabled()
+    tool.provider_combo.setCurrentIndex(tool.provider_combo.findData("cpu"))
+    tool.denoise()
+    qtbot.waitUntil(tool.open_btn.isEnabled)
+    assert calls == ["cuda", "cpu"]
+    assert tool._result_provenance()[0].provider == "cpu"
+    xr.testing.assert_identical(tool.result, data * 2)
 
 
 def test_dntool_model_picker_cancel_select_restore_and_reset(

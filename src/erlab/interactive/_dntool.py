@@ -43,6 +43,7 @@ class _Parameters(pydantic.BaseModel):
     restore_scale: bool = True
     restore_size: bool = True
     num_threads: int = 0
+    provider: typing.Literal["auto", "cpu", "cuda", "coreml"] = "auto"
 
 
 class _DenoiseImageItem(erlab.interactive.utils.xImageItem):
@@ -251,6 +252,19 @@ class DenoiseTool(erlab.interactive.utils.ToolWindow):
             "orientations with the bundled model."
         )
         thread_form.addRow("# of threads", self.threads_spin)
+        self.provider_combo = QtWidgets.QComboBox()
+        for label, provider in (
+            ("Automatic", "auto"),
+            ("CPU", "cpu"),
+            ("CoreML", "coreml"),
+            ("CUDA", "cuda"),
+        ):
+            self.provider_combo.addItem(label, userData=provider)
+        self.provider_combo.setToolTip(
+            "Automatic uses CUDA, then CoreML, then CPU, when available. "
+            "If an accelerator is unavailable, select CPU or Automatic."
+        )
+        thread_form.addRow("Execution provider", self.provider_combo)
         controls.addWidget(options_group)
 
         model_group = QtWidgets.QGroupBox("Model")
@@ -314,6 +328,7 @@ class DenoiseTool(erlab.interactive.utils.ToolWindow):
             spin.valueChanged.connect(self._parameters_changed)
         for check in (self.tta_check, self.scale_check, self.size_check):
             check.toggled.connect(self._parameters_changed)
+        self.provider_combo.currentIndexChanged.connect(self._parameters_changed)
         self.choose_model_btn.clicked.connect(self._choose_model)
         self.use_bundled_model_btn.clicked.connect(self._use_bundled_model)
         self.plots[0].autoRange()
@@ -430,6 +445,7 @@ class DenoiseTool(erlab.interactive.utils.ToolWindow):
             restore_scale=self.scale_check.isChecked(),
             restore_size=self.size_check.isChecked(),
             num_threads=self.threads_spin.value(),
+            provider=self.provider_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
         )
 
     @property
@@ -455,6 +471,7 @@ class DenoiseTool(erlab.interactive.utils.ToolWindow):
             self.scale_check,
             self.size_check,
             self.threads_spin,
+            self.provider_combo,
         )
         blockers = [QtCore.QSignalBlocker(widget) for widget in widgets]
         params = status.parameters
@@ -466,6 +483,9 @@ class DenoiseTool(erlab.interactive.utils.ToolWindow):
         self.scale_check.setChecked(params.restore_scale)
         self.size_check.setChecked(params.restore_size)
         self.threads_spin.setValue(params.num_threads)
+        self.provider_combo.setCurrentIndex(
+            self.provider_combo.findData(params.provider)
+        )
         del blockers
         self._failed = False
         if self._restoring_from_dataset:
@@ -636,7 +656,20 @@ class DenoiseTool(erlab.interactive.utils.ToolWindow):
         if self._applied is None:
             self._clear_result(notify=False)
         elif "denoised" in data_items:
-            self._show_result(self._validate_data(data_items["denoised"]), notify=False)
+            result = self._validate_data(data_items["denoised"])
+            if "provider" not in self._applied.model_fields_set:
+                # Older states omitted the provider, but completed results record it.
+                provider = result.attrs.get("denoising_provider")
+                if isinstance(provider, str) and provider in (
+                    "auto",
+                    "cpu",
+                    "cuda",
+                    "coreml",
+                ):
+                    self._applied = self._applied.model_copy(
+                        update={"provider": provider}
+                    )
+            self._show_result(result, notify=False)
         else:
             self._run_or_defer_restore_work(self._recompute_applied, run_on_show=True)
 
