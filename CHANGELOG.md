@@ -1,3 +1,57 @@
+## Unreleased
+
+### ✨ Features
+
+- **ftool:** import model and parameter settings from another `ftool` (#673) ([9586ac6](https://github.com/kmnhan/erlabpy/commit/9586ac6a53d4103cfe063a89cf4257e76bd555b9))
+
+  Adds a context menu action that enables reusing model and parameter settings from another `ftool` in the same ImageTool Manager.
+
+- **imagetool:** add robust color levels (#672) ([307c92c](https://github.com/kmnhan/erlabpy/commit/307c92cbae4a2fc90b392263fc6e02ff04cb29f1))
+
+  Adds `View > Robust Levels` that enables the use of 2nd and 98th percentiles for automatic color limits instead of the entire range. This is applied when the colorbar is hidden. When using the colorbar, a similar option named `Remove Outliers` in the colorbar's context menu can be used.
+
+- **plotting:** add robust color limits to `eplt.plot_array` (#671) ([86256ff](https://github.com/kmnhan/erlabpy/commit/86256ff1b4188e113dc69cc1710c3700e7cf2ee1))
+
+  Adds a `robust` argument to `eplt.plot_array` to compute automatic color limits from the 2nd and 98th percentiles, analogous to `xarray.plot.imshow`.
+
+- **manager:** interpolate to another ImageTool's coordinates (#670) ([93d75f3](https://github.com/kmnhan/erlabpy/commit/93d75f30f3c997667696fc43716999dcbdf14233))
+
+  Extends the interpolate dialog so that the target coordinates can be chosen from coordinates with the same label in another ImageTool.
+
+- **figurecomposer:** add custom label completions (#668) ([f4244c5](https://github.com/kmnhan/erlabpy/commit/f4244c5c1e8c7dbb854616f239389b3656c868ed))
+
+- **manager:** allow disabling unused loader plugins (#666) ([ff54e25](https://github.com/kmnhan/erlabpy/commit/ff54e254e8b3e3c53bc502e041304e8074fa2431))
+
+  Adds an Enabled plugins checklist in Settings to hide unused loaders from file dialogs and Data Explorer.
+
+- **manager:** improve controls that select other tools (#661) ([3c23e9e](https://github.com/kmnhan/erlabpy/commit/3c23e9e4e92b1b5b0c562a9be9d07f4d55667421))
+
+  Adds a detailed dropdown control dedicated to selecting data in the manager. One example is the Shift dialog.
+
+- **figurecomposer:** extend text completion to axes and color controls (#660) ([a1680ad](https://github.com/kmnhan/erlabpy/commit/a1680adb5a2c53928646f51b5da01ccaebc5a39f))
+
+  Adds label completion to Customize Axes and suggestions for aspect ratios and Matplotlib colors.
+
+### 🐞 Bug Fixes
+
+- **manager:** paint reload progress on Windows (#667) ([12f56d8](https://github.com/kmnhan/erlabpy/commit/12f56d8f1994c912efa9306b1610ead219355294))
+
+  Fixes an issue where the progress dialog stays blank when reloading a multi-file scan on Windows.
+
+- **figurecomposer:** respect defaults and defer hidden control work (#665) ([3d047c6](https://github.com/kmnhan/erlabpy/commit/3d047c6566a4118aa3cc7806a213c3b19d4d45bc))
+
+  Fixes some controls that displayed incorrect Matplotlib defaults or colors. Also slightly improves drawing performance by limiting updates for hidden controls.
+
+- **manager:** preserve figure names when duplicating (#662) ([edecb97](https://github.com/kmnhan/erlabpy/commit/edecb977fd7dd5d956f9fdb47ca5cfa1c4b839cb))
+
+  Duplicating a figure now keeps its name with a lowercase copy suffix, such as `Figure 1 copy`.
+
+### ♻️ Code Refactor
+
+- **figurecomposer:** plot parameters directly from `ftool` (#663) ([12f02f8](https://github.com/kmnhan/erlabpy/commit/12f02f8a10c3d64917ebc9fbca86127a636fb211))
+
+  When plotting parameters from `ftool`, directly add `ftool` as a source instead of creating intermediate ImageTool windows.
+
 ## v3.29.1 (2026-11-05)
 
 ### 🐞 Bug Fixes
