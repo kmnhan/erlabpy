@@ -6,6 +6,7 @@ import copy
 import functools
 import os
 import pathlib
+import platform
 import threading
 import typing
 import warnings
@@ -234,54 +235,53 @@ def _output_coordinates(
 # ---------------------------------------------------------------------------
 
 
-@functools.lru_cache(maxsize=2)
+@functools.lru_cache(maxsize=8)
 def _cached_session(
-    path: str, mtime_ns: int, size: int, num_threads: int, provider: str
+    path: str,
+    mtime_ns: int,
+    size: int,
+    num_threads: int,
+    provider: str,
+    shape: tuple[int, int] | None,
 ) -> "ort.InferenceSession":
     """Create an ONNX Runtime session with an optional accelerator.
 
     ``mtime_ns`` and ``size`` are unused here; they are part of the cache key
     so that a modified model file is reloaded.
     """
-    try:
-        import onnxruntime as ort
-    except ImportError as e:
-        raise ImportError(
-            "The `onnxruntime` package is required for denoising. "
-            'Install it with `pip install "erlab[ml]"`.'
-        ) from e
+    import onnxruntime as ort
 
     options = ort.SessionOptions()
     options.intra_op_num_threads = num_threads
     options.inter_op_num_threads = 1
     options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    available = ort.get_available_providers()
-    accelerators = {
-        "cuda": "CUDAExecutionProvider",
-        "coreml": "CoreMLExecutionProvider",
-    }
-    providers = ["CPUExecutionProvider"]
-    if provider == "auto":
-        for accelerator in accelerators.values():
-            if accelerator in available:
-                providers.insert(0, accelerator)
-                break
-    elif provider != "cpu":
-        accelerator = accelerators[provider]
-        if accelerator not in available:
-            raise ValueError(
-                f"{accelerator} is not available in the installed ONNX Runtime. "
-                "Use provider='auto' or 'cpu', or install a runtime that supports it."
-            )
-        providers.insert(0, accelerator)
+    providers: list[str | tuple[str, dict[str, str]]] = ["CPUExecutionProvider"]
+    if provider != "CPUExecutionProvider":
+        providers.insert(0, provider)
+    if shape is not None:
+        options.add_free_dimension_override_by_name("height", shape[0])
+        options.add_free_dimension_override_by_name("width", shape[1])
+        providers[0] = (
+            provider,
+            {
+                "ModelFormat": "MLProgram",
+                "MLComputeUnits": "ALL",
+                "RequireStaticInputShapes": "1",
+                "AllowLowPrecisionAccumulationOnGPU": "0",
+            },
+        )
     return ort.InferenceSession(path, sess_options=options, providers=providers)
 
 
 def _load_session(
-    model_path: str | os.PathLike[str] | None, num_threads: int, provider: str
+    model_path: str | os.PathLike[str] | None,
+    num_threads: int,
+    provider: str,
+    *,
+    shape: tuple[int, int] | None = None,
 ) -> tuple[pathlib.Path, "ort.InferenceSession"]:
-    """Resolve the model file and return ``(path, session)``."""
+    """Resolve the model and cache its session, specializing CoreML by shape."""
     if model_path is None:
         path = pathlib.Path(__file__).with_name("_data") / DEFAULT_MODEL_NAME
     else:
@@ -290,9 +290,43 @@ def _load_session(
         ).expanduser()  # relative paths use the working directory
     path = path.resolve(strict=True)
     stat = path.stat()
+    try:
+        import onnxruntime as ort
+    except ImportError as e:
+        raise ImportError(
+            "The `onnxruntime` package is required for denoising. "
+            'Install it with `pip install "erlab[ml]"`.'
+        ) from e
+
+    available = ort.get_available_providers()
+    accelerators = {
+        "cuda": "CUDAExecutionProvider",
+        "coreml": "CoreMLExecutionProvider",
+    }
+    selected = "CPUExecutionProvider"
+    if provider == "auto":
+        for accelerator in accelerators.values():
+            if accelerator in available:
+                selected = accelerator
+                break
+    elif provider != "cpu":
+        accelerator = accelerators[provider]
+        if accelerator not in available:
+            raise ValueError(
+                f"{accelerator} is not available in the installed ONNX Runtime. "
+                "Use provider='auto' or 'cpu', or install a runtime that supports it."
+            )
+        selected = accelerator
+
+    if model_path is None and selected == "CoreMLExecutionProvider":
+        major = platform.mac_ver()[0].partition(".")[0]
+        if not major or int(major) < 12:
+            shape = None
+    else:
+        shape = None
     with _SESSION_LOCK:
         session = _cached_session(
-            str(path), stat.st_mtime_ns, stat.st_size, int(num_threads), provider
+            str(path), stat.st_mtime_ns, stat.st_size, int(num_threads), selected, shape
         )
     return path, session
 
@@ -352,21 +386,26 @@ def _predict(
     tta: bool,
     *,
     parallel: bool = False,
+    transposed_session: "ort.InferenceSession | None" = None,
 ) -> "npt.NDArray[np.float64]":
     """Run the model on ``image`` and return the TTA-averaged prediction.
 
     The prediction is on the model's native output grid, which may be coarser
     than ``image`` (e.g. a stride-2 network).
     """
-    input_name, output_name = _check_model_io(session, image.shape, tta)
+    session_info = {False: (session, *_check_model_io(session, image.shape, False))}
+    if tta:
+        other = session if transposed_session is None else transposed_session
+        session_info[True] = (other, *_check_model_io(other, image.shape[::-1], False))
 
     def predict_one(
         transform: tuple[bool, tuple[int, ...]],
     ) -> "npt.NDArray[np.float64]":
         transpose, flip_axes = transform
+        active, input_name, output_name = session_info[transpose]
         augmented = np.flip(image.T if transpose else image, axis=flip_axes)
         tensor = np.ascontiguousarray(augmented[None, None], dtype=np.float32)
-        prediction = np.asarray(session.run([output_name], {input_name: tensor})[0])
+        prediction = np.asarray(active.run([output_name], {input_name: tensor})[0])
         if (
             prediction.ndim != 4
             or prediction.shape[:2] != (1, 1)
@@ -421,14 +460,28 @@ def _denoise_2d(
         raise FloatingPointError("Normalized data cannot be represented as float32.")
 
     # Load in the executing process; ONNX sessions cannot be sent to Dask workers.
-    _, session = _load_session(model_path, num_threads, provider)
+    _, session = _load_session(model_path, num_threads, provider, shape=shape)
+    transposed_session = None
+    if model_path is None and tta and shape != shape[::-1]:
+        _check_model_io(session, shape, False)
+        if session.get_inputs()[0].shape[2:] == list(shape):
+            # CoreML specializes each orientation of the same bundled graph.
+            _, transposed_session = _load_session(
+                model_path, num_threads, provider, shape=shape[::-1]
+            )
     parallel = False
     if model_path is None and tta and num_threads == 0:
         parallel = session.get_providers()[0] in (
             "CPUExecutionProvider",
             "CoreMLExecutionProvider",
         )
-    native = _predict(session, normalized, tta, parallel=parallel)
+    native = _predict(
+        session,
+        normalized,
+        tta,
+        parallel=parallel,
+        transposed_session=transposed_session,
+    )
     # Scale the area rebin by the pixel-count ratio to keep the intensity level.
     result = _area_rebin(native, shape) * (np.prod(shape) / native.size)
     if restore_scale:
@@ -534,7 +587,7 @@ def denoise(
     This function uses the pretrained denoising model from :cite:t:`kim2021denoise`.
 
     ONNX sessions are cached within each process by model path, modification time, file
-    size, thread count, and provider. For chunked input, intensity validation, provider
+    size, thread count, provider, and CoreML input shape. For chunked input, validation,
     selection, and model loading occur on each worker when the result is computed.
     CoreML compiles the model when a session is created, so the first call can take
     longer than later calls.

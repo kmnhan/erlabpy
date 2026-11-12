@@ -24,6 +24,9 @@ class _IdentitySession:
         self.loaded_threads = []
         self.loaded_providers = []
         self.providers = ["CPUExecutionProvider"]
+        self.input_shape = [1, 1, "height", "width"]
+        self.input_name = "image"
+        self.output_name = "prediction"
 
     def get_providers(self):
         return self.providers
@@ -31,23 +34,27 @@ class _IdentitySession:
     def get_inputs(self):
         return [
             types.SimpleNamespace(
-                name="image", type="tensor(float)", shape=[1, 1, "height", "width"]
+                name=self.input_name, type="tensor(float)", shape=self.input_shape
             )
         ]
 
     def get_outputs(self):
         return [
             types.SimpleNamespace(
-                name="prediction", type="tensor(float)", shape=[1, 1, "h", "w"]
+                name=self.output_name, type="tensor(float)", shape=[1, 1, "h", "w"]
             )
         ]
 
     def run(self, output_names, input_feed):
-        assert output_names == ["prediction"]
-        assert set(input_feed) == {"image"}
-        image = input_feed["image"]
+        assert output_names == [self.output_name]
+        assert set(input_feed) == {self.input_name}
+        image = input_feed[self.input_name]
         assert image.dtype == np.float32
         assert image.flags.c_contiguous
+        assert all(
+            not isinstance(expected, int) or actual == expected
+            for actual, expected in zip(image.shape, self.input_shape, strict=True)
+        )
         self.inputs.append(image.copy())
         return [image.copy()]
 
@@ -63,7 +70,7 @@ class _AsymmetricSession(_IdentitySession):
 def identity_session(monkeypatch):
     session = _IdentitySession()
 
-    def load_session(model_path, num_threads, provider):
+    def load_session(model_path, num_threads, provider, *, shape=None):
         session.loaded_threads.append(num_threads)
         session.loaded_providers.append(provider)
         return pathlib.Path("identity.onnx"), session
@@ -76,7 +83,7 @@ def identity_session(monkeypatch):
 def asymmetric_session(monkeypatch):
     session = _AsymmetricSession()
 
-    def load_session(model_path, num_threads, provider):
+    def load_session(model_path, num_threads, provider, *, shape=None):
         session.loaded_threads.append(num_threads)
         session.loaded_providers.append(provider)
         return pathlib.Path("asymmetric.onnx"), session
@@ -123,16 +130,27 @@ def deferred_image(image):
 def onnx_runtime(monkeypatch):
     sessions = []
 
+    class SessionOptions:
+        def __init__(self):
+            self.overrides = {}
+
+        def add_free_dimension_override_by_name(self, name, value):
+            self.overrides[name] = value
+
     def create_session(path, *, sess_options, providers):
         session = _IdentitySession()
         session.path = path
         session.options = sess_options
-        session.providers = providers
+        session.providers = [p[0] if isinstance(p, tuple) else p for p in providers]
+        session.provider_options = dict(p for p in providers if isinstance(p, tuple))
+        session.input_shape = [
+            sess_options.overrides.get(n, n) for n in session.input_shape
+        ]
         sessions.append(session)
         return session
 
     runtime = types.SimpleNamespace(
-        SessionOptions=types.SimpleNamespace,
+        SessionOptions=SessionOptions,
         ExecutionMode=types.SimpleNamespace(ORT_SEQUENTIAL=object()),
         GraphOptimizationLevel=types.SimpleNamespace(ORT_ENABLE_ALL=object()),
         InferenceSession=create_session,
@@ -212,6 +230,10 @@ def test_denoise_rejects_unavailable_provider(onnx_runtime, provider):
 
 
 def test_denoise_session_cache_tracks_provider_and_model(onnx_runtime, tmp_path):
+    onnx_runtime.get_available_providers = lambda: [
+        "CoreMLExecutionProvider",
+        "CPUExecutionProvider",
+    ]
     path = tmp_path / "model.onnx"
     path.write_bytes(b"original")
     _, automatic = _denoise._load_session(path, 0, "auto")
@@ -222,6 +244,112 @@ def test_denoise_session_cache_tracks_provider_and_model(onnx_runtime, tmp_path)
     assert _denoise._load_session(path, 0, "cpu")[1] is not replacement
     assert _denoise._load_session(path, 1, "auto")[1] is not replacement
     assert len(onnx_runtime.sessions) == 4
+
+
+@pytest.mark.parametrize(
+    ("provider", "mac_version", "custom"),
+    [
+        ("cpu", "27.2", False),
+        ("cuda", "27.2", False),
+        ("coreml", "11.7", False),
+        ("coreml", "", False),
+        ("coreml", "27.2", True),
+    ],
+)
+def test_denoise_keeps_dynamic_sessions(
+    monkeypatch, onnx_runtime, tmp_path, provider, mac_version, custom
+):
+    onnx_runtime.get_available_providers = lambda: [
+        "CUDAExecutionProvider",
+        "CoreMLExecutionProvider",
+        "CPUExecutionProvider",
+    ]
+    monkeypatch.setattr(_denoise.platform, "mac_ver", lambda: (mac_version, (), ""))
+    path = None
+    if custom:
+        path = tmp_path / "custom.onnx"
+        path.write_bytes(b"custom")
+    _, session = _denoise._load_session(path, 1, provider, shape=(9, 11))
+    _, resized = _denoise._load_session(path, 1, provider, shape=(11, 9))
+
+    assert resized is session
+    assert session.options.overrides == {}
+    assert session.provider_options == {}
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_denoise_coreml_specializes_both_orientations(
+    monkeypatch, onnx_runtime, image, fallback
+):
+    onnx_runtime.get_available_providers = lambda: [
+        "CoreMLExecutionProvider",
+        "CPUExecutionProvider",
+    ]
+    monkeypatch.setattr(_denoise.platform, "mac_ver", lambda: ("27.2", (), ""))
+    if fallback:
+        create_session = onnx_runtime.InferenceSession
+
+        def cpu_fallback(*args, **kwargs):
+            session = create_session(*args, **kwargs)
+            session.providers = ["CPUExecutionProvider"]
+            return session
+
+        onnx_runtime.InferenceSession = cpu_fallback
+    options = {"resize": (9, 12), "num_threads": 1, "provider": "auto"}
+    result = era.image.ml.denoise(image, **options)
+    sessions = onnx_runtime.sessions
+
+    assert len(sessions) == 2
+    for session, shape in zip(sessions, [(9, 12), (12, 9)], strict=True):
+        assert session.input_shape == [1, 1, *shape]
+        assert len(session.inputs) == 4
+        assert all(tensor.shape == (1, 1, *shape) for tensor in session.inputs)
+        assert session.provider_options["CoreMLExecutionProvider"] == {
+            "ModelFormat": "MLProgram",
+            "MLComputeUnits": "ALL",
+            "RequireStaticInputShapes": "1",
+            "AllowLowPrecisionAccumulationOnGPU": "0",
+        }
+    xr.testing.assert_allclose(result, image.rename("spectrum_denoised"))
+    repeated = era.image.ml.denoise(image, **options)
+    lazy = era.image.ml.denoise(image.chunk(), **options)
+    assert len(sessions) == 2
+    xr.testing.assert_identical(lazy.compute(scheduler="threads"), repeated)
+    assert len(sessions) == 2
+    era.image.ml.denoise(image, **(options | {"resize": (9, 9)}))
+    assert len(sessions) == 3
+    assert len(sessions[-1].inputs) == 8
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+def test_denoise_static_tta_uses_each_session_signature(tta_executor, parallel):
+    image = np.arange(99, dtype=np.float32).reshape(9, 11)
+    primary, transposed = _AsymmetricSession(), _AsymmetricSession()
+    primary.input_shape = [1, 1, 9, 11]
+    transposed.input_shape = [1, 1, 11, 9]
+    transposed.input_name = "transposed_image"
+    transposed.output_name = "transposed_prediction"
+
+    result = _denoise._predict(
+        primary, image, True, parallel=parallel, transposed_session=transposed
+    )
+    expected = _denoise._predict(_AsymmetricSession(), image, True)
+
+    np.testing.assert_array_equal(result, expected)
+    assert len(primary.inputs) == len(transposed.inputs) == 4
+
+
+def test_denoise_custom_static_model_rejects_rectangular_tta(monkeypatch, image):
+    session = _IdentitySession()
+    session.input_shape = [1, 1, 9, 11]
+    monkeypatch.setattr(
+        _denoise,
+        "_load_session",
+        lambda *args, **kwargs: (pathlib.Path("custom.onnx"), session),
+    )
+    with pytest.raises(ValueError, match="does not accept"):
+        era.image.ml.denoise(image, resize=(9, 11), model_path="custom.onnx")
+    assert session.inputs == []
 
 
 @pytest.fixture
@@ -337,7 +465,7 @@ def test_denoise_parallel_tta_eligibility(
     monkeypatch.setattr(
         _denoise,
         "_load_session",
-        lambda *args: (pathlib.Path("model.onnx"), session),
+        lambda *args, **kwargs: (pathlib.Path("model.onnx"), session),
     )
     requests = []
 
@@ -762,7 +890,7 @@ def test_denoise_coarse_prediction_preserves_predicted_intensity(
     monkeypatch.setattr(
         _denoise,
         "_load_session",
-        lambda model_path, num_threads, provider: (
+        lambda model_path, num_threads, provider, *, shape=None: (
             pathlib.Path("coarse.onnx"),
             session,
         ),
@@ -851,6 +979,58 @@ def test_denoise_bundled_model(image, tta, provider):
     xr.testing.assert_identical(image, original)
 
 
+@pytest.mark.parametrize("provider", ["cpu", "coreml", "cuda"])
+@pytest.mark.parametrize(
+    ("shape", "expected"),
+    [
+        (
+            (5, 7),
+            [
+                [315.4223328, 318.5719299, 323.4724121, 325.0528259],
+                [318.4394836, 321.5350952, 326.4729309, 328.0229797],
+                [320.9434204, 324.0326843, 329.0254211, 330.6137390],
+            ],
+        ),
+        ((1, 1), [[10027.3759766]]),
+        ((1, 7), [[1212.8768311, 1512.5834961, 1944.8887939, 2146.7272949]]),
+        ((3, 3), [[1201.9035645, 1201.9089355], [1201.9049072, 1201.9106445]]),
+        ((4, 4), [[504.1811218, 504.1822205], [504.1805725, 504.1817322]]),
+    ],
+)
+def test_denoise_optimized_model_preserves_original_predictions(
+    provider, shape, expected
+):
+    ort = pytest.importorskip("onnxruntime", exc_type=ModuleNotFoundError)
+    if provider != "cpu":
+        accelerator = {
+            "cuda": "CUDAExecutionProvider",
+            "coreml": "CoreMLExecutionProvider",
+        }[provider]
+        if accelerator not in ort.get_available_providers():
+            pytest.skip(f"{accelerator} is unavailable")
+    # CPU reference predictions from the original model before graph rewriting.
+    image = np.arange(1, np.prod(shape) + 1, dtype=np.float32).reshape(shape)
+    image = (image / image.sum()) * 10000
+    _, session = _denoise._load_session(None, 1, provider, shape=shape)
+    if provider == "cuda":
+        # Compare full-precision outputs; the CUDA provider defaults to TF32.
+        path = (
+            pathlib.Path(_denoise.__file__).with_name("_data")
+            / _denoise.DEFAULT_MODEL_NAME
+        )
+        session = ort.InferenceSession(
+            str(path),
+            providers=[
+                ("CUDAExecutionProvider", {"use_tf32": "0"}),
+                "CPUExecutionProvider",
+            ],
+        )
+
+    result = _denoise._predict(session, image, False)
+
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
+
+
 @pytest.mark.parametrize("tta", [False, True])
 def test_denoise_bundled_model_with_dask_threads(image, tta):
     pytest.importorskip("onnxruntime", exc_type=ModuleNotFoundError)
@@ -882,7 +1062,9 @@ def test_denoise_parallel_bundled_model_matches_serial_bits(
     monkeypatch.setattr(
         _denoise,
         "_predict",
-        lambda session, image, tta, **kwargs: original_predict(session, image, tta),
+        lambda session, image, tta, **kwargs: original_predict(
+            session, image, tta, **(kwargs | {"parallel": False})
+        ),
     )
     expected = era.image.ml.denoise(data, **options)
 
