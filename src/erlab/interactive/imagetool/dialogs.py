@@ -3908,6 +3908,10 @@ class _DenoiseDialog(DataTransformDialog):
         self.threads_spin = QtWidgets.QSpinBox()
         self.threads_spin.setRange(0, 1024)
         self.threads_spin.setSpecialValueText("Automatic")
+        self.threads_spin.setToolTip(
+            "ONNX Runtime CPU threads. Automatic also allows up to four concurrent "
+            "orientations with the bundled model."
+        )
         self.layout_.addRow("# of threads", self.threads_spin)
 
         self.provider_combo = QtWidgets.QComboBox()

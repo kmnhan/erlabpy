@@ -1,8 +1,10 @@
+import concurrent.futures
 import importlib
 import pathlib
 import subprocess
 import sys
 import textwrap
+import threading
 import types
 
 import dask
@@ -21,6 +23,10 @@ class _IdentitySession:
         self.inputs = []
         self.loaded_threads = []
         self.loaded_providers = []
+        self.providers = ["CPUExecutionProvider"]
+
+    def get_providers(self):
+        return self.providers
 
     def get_inputs(self):
         return [
@@ -216,6 +222,207 @@ def test_denoise_session_cache_tracks_provider_and_model(onnx_runtime, tmp_path)
     assert _denoise._load_session(path, 0, "cpu")[1] is not replacement
     assert _denoise._load_session(path, 1, "auto")[1] is not replacement
     assert len(onnx_runtime.sessions) == 4
+
+
+@pytest.fixture
+def tta_executor(monkeypatch):
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        monkeypatch.setattr(_denoise, "_cached_tta_executor", lambda pid: executor)
+        yield executor
+
+
+@pytest.mark.parametrize("shape", [(7, 9), (8, 10)])
+def test_parallel_tta_preserves_order_and_output_bits(tta_executor, shape):
+    image = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+    transforms = _denoise._tta_transforms(True)
+    inputs = {
+        (
+            (image.T if transpose else image).shape,
+            np.ascontiguousarray(
+                np.flip(image.T if transpose else image, axis=flip_axes)
+            ).tobytes(),
+        ): (index, transpose, flip_axes)
+        for index, (transpose, flip_axes) in enumerate(transforms)
+    }
+    scales = [1e16, 1.0, -1e16, 1.0, 2.0, 3.0, 4.0, 5.0]
+
+    class Session(_IdentitySession):
+        def __init__(self, delay_first):
+            super().__init__()
+            self.delay_first = delay_first
+            self.later_finished = threading.Event()
+            self.completed = []
+
+        def run(self, output_names, input_feed):
+            tensor = super().run(output_names, input_feed)[0][0, 0]
+            index, transpose, flip_axes = inputs[tensor.shape, tensor.tobytes()]
+            if self.delay_first and index == 0:
+                assert self.later_finished.wait(timeout=5)
+            prediction = np.full(
+                ((shape[0] + 1) // 2, (shape[1] + 1) // 2),
+                scales[index],
+                dtype=np.float32,
+            )
+            prediction[0, 0] = -0.0
+            prediction = np.flip(
+                prediction.T if transpose else prediction, axis=flip_axes
+            )
+            self.completed.append(index)
+            if index != 0:
+                self.later_finished.set()
+            return [prediction[None, None]]
+
+    serial = _denoise._predict(Session(False), image, True)
+    parallel_session = Session(True)
+    parallel = _denoise._predict(parallel_session, image, True, parallel=True)
+
+    assert parallel_session.completed[0] != 0
+    assert sorted(parallel_session.completed) == list(range(8))
+    assert parallel.tobytes() == serial.tobytes()
+    assert parallel[0, 0].view(np.uint64) == 0
+
+
+@pytest.mark.parametrize("error", ["shape", "empty", "nonfinite", "inconsistent"])
+def test_parallel_tta_preserves_model_errors(tta_executor, error):
+    class Session(_IdentitySession):
+        def run(self, output_names, input_feed):
+            tensor = super().run(output_names, input_feed)[0]
+            if error == "shape":
+                return [tensor[0]]
+            if error == "empty":
+                return [tensor[:, :, :0]]
+            if error == "nonfinite":
+                return [tensor * np.nan]
+            return [np.ones((1, 1, 2, 3), dtype=np.float32)]
+
+    image = np.ones((7, 9), dtype=np.float32)
+    exception = FloatingPointError if error == "nonfinite" else ValueError
+    with pytest.raises(exception) as serial:
+        _denoise._predict(Session(), image, True)
+    with pytest.raises(exception) as parallel:
+        _denoise._predict(Session(), image, True, parallel=True)
+    assert str(parallel.value) == str(serial.value)
+
+
+@pytest.mark.parametrize(
+    ("provider", "num_threads", "tta", "shape", "custom", "lazy", "parallel"),
+    [
+        ("CoreMLExecutionProvider", 0, True, (128, 128), False, False, True),
+        ("CoreMLExecutionProvider", 3, True, (128, 128), False, False, False),
+        ("CPUExecutionProvider", 0, True, (128, 128), False, False, True),
+        ("CoreMLExecutionProvider", 0, True, (128, 128), True, False, False),
+        ("CoreMLExecutionProvider", 0, False, (128, 128), False, False, False),
+        ("CoreMLExecutionProvider", 0, True, (7, 9), False, False, True),
+        ("CPUExecutionProvider", 1, True, (128, 128), False, False, False),
+        ("CPUExecutionProvider", 3, True, (128, 128), False, False, False),
+        ("CPUExecutionProvider", 0, True, (128, 128), False, True, False),
+        ("CoreMLExecutionProvider", 0, True, (128, 128), False, True, False),
+        ("CUDAExecutionProvider", 0, True, (128, 128), False, False, False),
+    ],
+)
+def test_denoise_parallel_tta_eligibility(
+    monkeypatch, tmp_path, provider, num_threads, tta, shape, custom, lazy, parallel
+):
+    class StatefulSession(_IdentitySession):
+        def run(self, output_names, input_feed):
+            tensor = super().run(output_names, input_feed)[0]
+            return [np.full_like(tensor, len(self.inputs))]
+
+    session = StatefulSession()
+    session.providers = (
+        [provider]
+        if provider == "CPUExecutionProvider"
+        else [provider, "CPUExecutionProvider"]
+    )
+    monkeypatch.setattr(
+        _denoise,
+        "_load_session",
+        lambda *args: (pathlib.Path("model.onnx"), session),
+    )
+    requests = []
+
+    class Executor:
+        def map(self, function, values):
+            return map(function, values)
+
+    def executor(pid):
+        assert parallel, "This model and configuration must run serially"
+        requests.append(pid)
+        return Executor()
+
+    monkeypatch.setattr(_denoise, "_cached_tta_executor", executor)
+    data = xr.DataArray(np.ones(shape), dims=("eV", "alpha"))
+    if lazy:
+        data = data.chunk({"eV": -1, "alpha": -1})
+    result = era.image.ml.denoise(
+        data,
+        resize=shape,
+        model_path=tmp_path / "custom.onnx" if custom else None,
+        num_threads=num_threads,
+        tta=tta,
+        restore_scale=False,
+    ).compute(scheduler="synchronous")
+
+    assert bool(requests) == parallel
+    assert len(session.inputs) == (8 if tta else 1)
+    np.testing.assert_array_equal(result.values, 4.5 if tta else 1.0)
+
+
+@pytest.mark.parametrize(("cpu_count", "workers"), [(None, 1), (1, 1), (2, 2), (8, 4)])
+def test_parallel_tta_shares_a_bounded_executor(monkeypatch, cpu_count, workers):
+    real_executor = concurrent.futures.ThreadPoolExecutor
+    executors = []
+    active = 0
+    max_active = 0
+    worker_threads = set()
+    lock = threading.Lock()
+    workers_running = threading.Event()
+    release = threading.Event()
+
+    def create_executor(**kwargs):
+        executor = real_executor(**kwargs)
+        executors.append(executor)
+        return executor
+
+    class Session(_IdentitySession):
+        def run(self, output_names, input_feed):
+            nonlocal active, max_active
+            with lock:
+                worker_threads.add(threading.get_ident())
+                active += 1
+                max_active = max(max_active, active)
+                if active == workers:
+                    workers_running.set()
+            try:
+                assert release.wait(timeout=5)
+                return super().run(output_names, input_feed)
+            finally:
+                with lock:
+                    active -= 1
+
+    monkeypatch.setattr(_denoise.os, "cpu_count", lambda: cpu_count)
+    monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", create_executor)
+    _denoise._cached_tta_executor.cache_clear()
+    image = np.arange(63, dtype=np.float32).reshape(7, 9)
+    try:
+        with real_executor(max_workers=2) as callers:
+            results = [
+                callers.submit(_denoise._predict, Session(), image, True, parallel=True)
+                for _ in range(2)
+            ]
+            try:
+                assert workers_running.wait(timeout=5)
+            finally:
+                release.set()
+            for result in results:
+                np.testing.assert_array_equal(result.result(timeout=5), image)
+        assert len(executors) == 1
+        assert max_active == len(worker_threads) == workers
+    finally:
+        release.set()
+        for executor in executors:
+            executor.shutdown(wait=True)
+        _denoise._cached_tta_executor.cache_clear()
 
 
 @pytest.mark.parametrize("provider", ["auto", "cpu", "cuda", "coreml"])
@@ -654,6 +861,33 @@ def test_denoise_bundled_model_with_dask_threads(image, tta):
     result = lazy.compute(scheduler="threads", num_workers=4)
 
     xr.testing.assert_allclose(result, expected)
+
+
+@pytest.mark.parametrize("provider", ["auto", "cpu"])
+@pytest.mark.parametrize("restore_scale", [False, True])
+@pytest.mark.parametrize("restore_size", [False, True])
+def test_denoise_parallel_bundled_model_matches_serial_bits(
+    monkeypatch, provider, restore_scale, restore_size
+):
+    pytest.importorskip("onnxruntime", exc_type=ModuleNotFoundError)
+    data = xr.DataArray(np.arange(1.0, 100.0).reshape(9, 11), dims=("eV", "alpha"))
+    options = {
+        "resize": (129, 131),
+        "provider": provider,
+        "restore_scale": restore_scale,
+        "restore_size": restore_size,
+    }
+    result = era.image.ml.denoise(data, **options)
+    original_predict = _denoise._predict
+    monkeypatch.setattr(
+        _denoise,
+        "_predict",
+        lambda session, image, tta, **kwargs: original_predict(session, image, tta),
+    )
+    expected = era.image.ml.denoise(data, **options)
+
+    assert result.values.tobytes() == expected.values.tobytes()
+    xr.testing.assert_identical(result, expected)
 
 
 def test_denoise_bundled_model_with_dask_processes():

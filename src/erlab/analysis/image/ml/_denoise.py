@@ -1,6 +1,7 @@
 """Denoise angle-energy slices of ARPES data with the bundled ONNX model."""
 
 __all__ = ["denoise"]
+import concurrent.futures
 import copy
 import functools
 import os
@@ -337,8 +338,20 @@ def _tta_transforms(tta: bool) -> list[tuple[bool, tuple[int, ...]]]:
     ]
 
 
+@functools.lru_cache(maxsize=1)
+def _cached_tta_executor(pid: int) -> concurrent.futures.ThreadPoolExecutor:
+    """Share a bounded pool within each process, including after a fork."""
+    return concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(4, os.cpu_count() or 1), thread_name_prefix="erlab-denoise"
+    )
+
+
 def _predict(
-    session: "ort.InferenceSession", image: "npt.NDArray[np.floating]", tta: bool
+    session: "ort.InferenceSession",
+    image: "npt.NDArray[np.floating]",
+    tta: bool,
+    *,
+    parallel: bool = False,
 ) -> "npt.NDArray[np.float64]":
     """Run the model on ``image`` and return the TTA-averaged prediction.
 
@@ -347,8 +360,10 @@ def _predict(
     """
     input_name, output_name = _check_model_io(session, image.shape, tta)
 
-    aligned = []
-    for transpose, flip_axes in _tta_transforms(tta):
+    def predict_one(
+        transform: tuple[bool, tuple[int, ...]],
+    ) -> "npt.NDArray[np.float64]":
+        transpose, flip_axes = transform
         augmented = np.flip(image.T if transpose else image, axis=flip_axes)
         tensor = np.ascontiguousarray(augmented[None, None], dtype=np.float32)
         prediction = np.asarray(session.run([output_name], {input_name: tensor})[0])
@@ -363,7 +378,15 @@ def _predict(
 
         # Undo the augmentation so every prediction lines up with the input.
         prediction = np.flip(prediction[0, 0].astype(np.float64), axis=flip_axes)
-        aligned.append(prediction.T if transpose else prediction)
+        return prediction.T if transpose else prediction
+
+    transforms = _tta_transforms(tta)
+    if parallel:
+        with _SESSION_LOCK:
+            executor = _cached_tta_executor(os.getpid())
+        aligned = list(executor.map(predict_one, transforms))
+    else:
+        aligned = [predict_one(transform) for transform in transforms]
     return np.stack(aligned).mean(axis=0)
 
 
@@ -399,7 +422,13 @@ def _denoise_2d(
 
     # Load in the executing process; ONNX sessions cannot be sent to Dask workers.
     _, session = _load_session(model_path, num_threads, provider)
-    native = _predict(session, normalized, tta)
+    parallel = False
+    if model_path is None and tta and num_threads == 0:
+        parallel = session.get_providers()[0] in (
+            "CPUExecutionProvider",
+            "CoreMLExecutionProvider",
+        )
+    native = _predict(session, normalized, tta, parallel=parallel)
     # Scale the area rebin by the pixel-count ratio to keep the intensity level.
     result = _area_rebin(native, shape) * (np.prod(shape) / native.size)
     if restore_scale:
@@ -482,9 +511,9 @@ def denoise(
         ``resize``. If ``False``, only ``"eV"`` and ``along`` are resized, with
         coordinates resampled over the same pixel-edge extent.
     num_threads
-        ONNX Runtime intra-op thread count for unchunked data. The default, ``0``, lets
-        ONNX Runtime choose the thread count. This parameter is ignored for chunked
-        input since chunked data always uses one thread to avoid nested parallelism with
+        ONNX Runtime intra-op thread count. ``0`` lets the runtime choose and allows
+        up to four concurrent TTA passes for the bundled model on CPU or CoreML.
+        Chunked input always uses one ONNX thread per task and leaves parallelism to
         Dask.
     provider
         ONNX Runtime backend. ``"auto"`` selects CUDA, then CoreML, then CPU,
