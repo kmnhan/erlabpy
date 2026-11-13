@@ -35,12 +35,7 @@ def _find_group_for_key(dt: xr.DataTree, name: str) -> xr.DataTree | None:
 
 
 class SSRL52Loader(LoaderBase):
-    """Load ARPES data from SSRL Beamline 5-2.
-
-    .. versionchanged:: 3.28.0
-        Map ``WorkFunction`` to the ``analyzer_work_function`` attribute instead of
-        ``sample_workfunction``.
-    """
+    """Load ARPES data from SSRL Beamline 5-2."""
 
     name = "ssrl52"
     description = "SSRL Beamline 5-2"
@@ -50,8 +45,8 @@ class SSRL52Loader(LoaderBase):
 
     name_map: typing.ClassVar[dict] = {
         "eV": ["Kinetic Energy", "Binding Energy"],
-        "alpha": "ThetaX",
-        "beta": ["ThetaY", "YDeflection", "DeflectionY"],
+        "alpha": ["ThetaX", "SampleThetaX"],
+        "beta": ["ThetaY", "YDeflection", "DeflectionY", "SampleThetaY"],
         "delta": ["A", "a"],  # azi
         "chi": ["T", "t"],  # polar
         "xi": ["F", "f"],  # tilt
@@ -161,17 +156,26 @@ class SSRL52Loader(LoaderBase):
             for v in data.children.values()
         ]
 
-        # Apply dim labels
-        dim_mapping = {f"phony_dim_{i}": str(ax["label"]) for i, ax in enumerate(axes)}
+        if any("centerpixel" in ax for ax in axes):
+            count_var_name = "Image"
+
+        # Files can retain axis metadata beyond the stored data dimensions.
+        dim_mapping = {
+            dim: str(ax["label"])
+            for dim, ax in zip(data[count_var_name].dims, axes, strict=False)
+        }
 
         ds = data.dataset.rename_dims(dim_mapping)
 
         for ax in axes:
-            cnt = ds.sizes[ax["label"]]
+            cnt = ds.sizes.get(ax["label"])
+            if cnt is None:
+                if ax.get("count") != 1 or ax["label"] == "None":
+                    continue
+                cnt = 1
             if "centerpixel" in ax:
                 offset = float(ax["centerpixel"])
                 delta = 1.0
-                count_var_name = "Image"
             elif isinstance(ax["offset"], str):
                 if mapinfo is None:
                     raise RuntimeError
@@ -222,7 +226,11 @@ class SSRL52Loader(LoaderBase):
                 delta = float(ax["delta"])
 
             mn, mx = (offset, offset + (cnt - 1) * delta)
-            coord = xr.DataArray(np.linspace(mn, mx, cnt), dims=[ax["label"]], attrs=ax)
+            coord = (
+                xr.DataArray(np.linspace(mn, mx, cnt), dims=[ax["label"]], attrs=ax)
+                if ax["label"] in ds.dims
+                else xr.DataArray(offset, attrs=ax)
+            )
 
             ds = ds.assign_coords({ax["label"]: coord})
 
@@ -231,7 +239,7 @@ class SSRL52Loader(LoaderBase):
             v
             for v in dim_mapping.values()
             # Attributes should not be dependent on these dims
-            if v not in ("ThetaX", "Kinetic Energy", "Binding Energy")
+            if v not in ("ThetaX", "SampleThetaX", "Kinetic Energy", "Binding Energy")
         )
         for k, v in dict(attrs).items():
             if isinstance(v, str) and v.startswith("MapInfo:"):
