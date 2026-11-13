@@ -2,11 +2,15 @@
 
 __all__ = ["denoise"]
 import concurrent.futures
+import contextlib
 import copy
 import functools
+import hashlib
+import json
 import os
 import pathlib
 import platform
+import shutil
 import threading
 import typing
 import warnings
@@ -16,7 +20,7 @@ import scipy
 import xarray as xr
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Hashable, Mapping
+    from collections.abc import Hashable, Iterator, Mapping
 
     import numpy.typing as npt
     import onnxruntime as ort
@@ -235,6 +239,46 @@ def _output_coordinates(
 # ---------------------------------------------------------------------------
 
 
+def _coreml_cache_root() -> pathlib.Path:
+    return pathlib.Path.home() / "Library" / "Caches" / "erlabpy" / "denoise" / "coreml"
+
+
+def _coreml_cache_directory(
+    model: bytes,
+    shape: tuple[int, int],
+    runtime_version: str,
+    provider_options: dict[str, str],
+) -> pathlib.Path:
+    """Separate compiled models by contents, dimensions and runtime configuration."""
+    identity = {
+        "schema": 1,
+        "model": hashlib.sha256(model).hexdigest(),
+        "shape": shape,
+        "onnxruntime": runtime_version,
+        "machine": platform.machine(),
+        "macos": platform.mac_ver()[0],
+        "kernel": platform.version(),
+        "graph_optimization": "all",
+        "provider_options": provider_options,
+    }
+    key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+    return _coreml_cache_root() / key
+
+
+@contextlib.contextmanager
+def _lock_coreml_cache(path: pathlib.Path) -> "Iterator[None]":
+    """Serialize cache creation across processes without leaving a stale lock."""
+    import fcntl
+
+    # Keep the lock file beside the entry so invalidation cannot replace its inode.
+    with path.open("a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
 @functools.lru_cache(maxsize=8)
 def _cached_session(
     path: str,
@@ -262,15 +306,54 @@ def _cached_session(
     if shape is not None:
         options.add_free_dimension_override_by_name("height", shape[0])
         options.add_free_dimension_override_by_name("width", shape[1])
-        providers[0] = (
-            provider,
-            {
-                "ModelFormat": "MLProgram",
-                "MLComputeUnits": "ALL",
-                "RequireStaticInputShapes": "1",
-                "AllowLowPrecisionAccumulationOnGPU": "0",
-            },
-        )
+        provider_options = {
+            "ModelFormat": "MLProgram",
+            "MLComputeUnits": "ALL",
+            "RequireStaticInputShapes": "1",
+            "AllowLowPrecisionAccumulationOnGPU": "0",
+        }
+        providers[0] = (provider, provider_options)
+        # The bundled graph has inline weights. Loading its bytes also makes ORT's
+        # inner cache key independent of installation and frozen-app resource paths.
+        model = pathlib.Path(path).read_bytes()
+        cache = _coreml_cache_directory(model, shape, ort.__version__, provider_options)
+        try:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            with _lock_coreml_cache(cache.with_suffix(".lock")):
+                cache.mkdir(exist_ok=True)
+                try:
+                    session = ort.InferenceSession(
+                        model,
+                        sess_options=options,
+                        providers=[
+                            (
+                                provider,
+                                provider_options | {"ModelCacheDirectory": str(cache)},
+                            ),
+                            "CPUExecutionProvider",
+                        ],
+                        enable_fallback=False,
+                    )
+                except Exception as exc:
+                    # Native ORT load failures are not necessarily RuntimeError.
+                    # Remove only this entry and retain the normal uncached fallback.
+                    shutil.rmtree(cache, ignore_errors=True)
+                    warnings.warn(
+                        "Could not load the CoreML disk cache; "
+                        f"continuing without it: {exc}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                else:
+                    session.enable_fallback()
+                    return session
+        except OSError as exc:
+            warnings.warn(
+                f"Could not access the CoreML disk cache; continuing without it: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        return ort.InferenceSession(model, sess_options=options, providers=providers)
     return ort.InferenceSession(path, sess_options=options, providers=providers)
 
 
@@ -589,8 +672,11 @@ def denoise(
     ONNX sessions are cached within each process by model path, modification time, file
     size, thread count, provider, and CoreML input shape. For chunked input, validation,
     selection, and model loading occur on each worker when the result is computed.
-    CoreML compiles the model when a session is created, so the first call can take
-    longer than later calls.
+    On macOS 12 or later, CoreML caches the bundled model in
+    ``~/Library/Caches/erlabpy/denoise/coreml/``, separated by model contents,
+    processing shape, and runtime configuration. Later processes can reuse these files.
+    The first use of each configuration can take longer for compilation and device
+    preparation.
     """
     if not isinstance(data, xr.DataArray):
         raise TypeError("data must be an xarray.DataArray.")

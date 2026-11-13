@@ -1,4 +1,5 @@
 import concurrent.futures
+import contextlib
 import importlib
 import pathlib
 import subprocess
@@ -18,6 +19,15 @@ import erlab.analysis as era
 _denoise = importlib.import_module("erlab.analysis.image.ml._denoise")
 
 
+@pytest.fixture(scope="module", autouse=True)
+def isolated_coreml_cache(tmp_path_factory):
+    root = tmp_path_factory.mktemp("coreml-cache")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(_denoise, "_coreml_cache_root", lambda: root)
+        yield
+    _denoise._cached_session.cache_clear()
+
+
 class _IdentitySession:
     def __init__(self):
         self.inputs = []
@@ -27,6 +37,10 @@ class _IdentitySession:
         self.input_shape = [1, 1, "height", "width"]
         self.input_name = "image"
         self.output_name = "prediction"
+        self.fallback_enabled = True
+
+    def enable_fallback(self):
+        self.fallback_enabled = True
 
     def get_providers(self):
         return self.providers
@@ -127,7 +141,7 @@ def deferred_image(image):
 
 
 @pytest.fixture
-def onnx_runtime(monkeypatch):
+def onnx_runtime(monkeypatch, tmp_path):
     sessions = []
 
     class SessionOptions:
@@ -137,12 +151,14 @@ def onnx_runtime(monkeypatch):
         def add_free_dimension_override_by_name(self, name, value):
             self.overrides[name] = value
 
-    def create_session(path, *, sess_options, providers):
+    def create_session(path, *, sess_options, providers, enable_fallback=True):
         session = _IdentitySession()
         session.path = path
         session.options = sess_options
         session.providers = [p[0] if isinstance(p, tuple) else p for p in providers]
         session.provider_options = dict(p for p in providers if isinstance(p, tuple))
+        session.constructor_fallback_enabled = enable_fallback
+        session.fallback_enabled = enable_fallback
         session.input_shape = [
             sess_options.overrides.get(n, n) for n in session.input_shape
         ]
@@ -150,6 +166,7 @@ def onnx_runtime(monkeypatch):
         return session
 
     runtime = types.SimpleNamespace(
+        __version__="test-runtime",
         SessionOptions=SessionOptions,
         ExecutionMode=types.SimpleNamespace(ORT_SEQUENTIAL=object()),
         GraphOptimizationLevel=types.SimpleNamespace(ORT_ENABLE_ALL=object()),
@@ -158,6 +175,10 @@ def onnx_runtime(monkeypatch):
         sessions=sessions,
     )
     monkeypatch.setitem(sys.modules, "onnxruntime", runtime)
+    monkeypatch.setattr(_denoise, "_coreml_cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(
+        _denoise, "_lock_coreml_cache", lambda path: contextlib.nullcontext()
+    )
     _denoise._cached_session.cache_clear()
     yield runtime
     _denoise._cached_session.cache_clear()
@@ -246,6 +267,176 @@ def test_denoise_session_cache_tracks_provider_and_model(onnx_runtime, tmp_path)
     assert len(onnx_runtime.sessions) == 4
 
 
+@pytest.fixture
+def coreml_runtime(monkeypatch, onnx_runtime):
+    onnx_runtime.get_available_providers = lambda: [
+        "CoreMLExecutionProvider",
+        "CPUExecutionProvider",
+    ]
+    monkeypatch.setattr(_denoise.platform, "mac_ver", lambda: ("27.2", (), ""))
+    return onnx_runtime
+
+
+@pytest.mark.parametrize(
+    "changed", ["model", "shape", "runtime", "options", "machine", "macos", "kernel"]
+)
+def test_denoise_coreml_disk_cache_separates_configurations(
+    monkeypatch, onnx_runtime, changed
+):
+    options = {"ModelFormat": "MLProgram", "MLComputeUnits": "ALL"}
+    arguments = [b"weights", (9, 11), "1.31", options]
+    original = _denoise._coreml_cache_directory(*arguments)
+    assert original.parent == _denoise._coreml_cache_root()
+    assert original == _denoise._coreml_cache_directory(*arguments)
+    if changed == "model":
+        arguments[0] = b"new weights"
+    elif changed == "shape":
+        arguments[1] = (11, 9)
+    elif changed == "runtime":
+        arguments[2] = "1.32"
+    elif changed == "options":
+        arguments[3] = options | {"MLComputeUnits": "CPUOnly"}
+    elif changed == "machine":
+        monkeypatch.setattr(_denoise.platform, "machine", lambda: "other-architecture")
+    elif changed == "macos":
+        monkeypatch.setattr(_denoise.platform, "mac_ver", lambda: ("28.0", (), ""))
+    else:
+        monkeypatch.setattr(_denoise.platform, "version", lambda: "other-kernel-build")
+    assert original != _denoise._coreml_cache_directory(*arguments)
+
+
+def test_denoise_coreml_disk_cache_is_independent_of_installation(
+    monkeypatch, coreml_runtime, tmp_path
+):
+    paths = [tmp_path / "notebook.onnx", tmp_path / "frozen-resource.onnx"]
+    sessions = []
+    for path in paths:
+        path.write_bytes(b"identical bundled graph and weights")
+        stat = path.stat()
+        if path == paths[1]:
+            monkeypatch.setattr(sys, "frozen", True, raising=False)
+            monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+        sessions.append(
+            _denoise._cached_session(
+                str(path),
+                stat.st_mtime_ns,
+                stat.st_size,
+                1,
+                "CoreMLExecutionProvider",
+                (9, 11),
+            )
+        )
+
+    assert sessions[0].path == sessions[1].path == paths[0].read_bytes()
+    first, second = [s.provider_options["CoreMLExecutionProvider"] for s in sessions]
+    assert first["ModelCacheDirectory"] == second["ModelCacheDirectory"]
+    assert all(not session.constructor_fallback_enabled for session in sessions)
+    assert all(session.fallback_enabled for session in sessions)
+
+
+@pytest.mark.parametrize("failure", ["directory", "lock"])
+def test_denoise_coreml_disk_cache_access_failure_is_optional(
+    monkeypatch, coreml_runtime, tmp_path, failure
+):
+    if failure == "directory":
+        root = tmp_path / "not-a-directory"
+        root.write_text("blocked")
+        monkeypatch.setattr(_denoise, "_coreml_cache_root", lambda: root)
+    else:
+
+        def denied(path):
+            raise PermissionError("lock unavailable")
+
+        monkeypatch.setattr(_denoise, "_lock_coreml_cache", denied)
+    with pytest.warns(RuntimeWarning, match="Could not access the CoreML disk cache"):
+        _, session = _denoise._load_session(None, 1, "coreml", shape=(9, 11))
+
+    assert (
+        "ModelCacheDirectory" not in session.provider_options["CoreMLExecutionProvider"]
+    )
+    assert session.constructor_fallback_enabled
+    assert session.fallback_enabled
+
+
+def test_denoise_coreml_corrupt_cache_recovers_after_unlock(
+    monkeypatch, coreml_runtime
+):
+    class NativeFailure(Exception):
+        pass
+
+    _, healthy = _denoise._load_session(None, 1, "coreml", shape=(9, 11))
+    cache = pathlib.Path(
+        healthy.provider_options["CoreMLExecutionProvider"]["ModelCacheDirectory"]
+    )
+    (cache / "incomplete-model").write_bytes(b"invalid")
+    unrelated = cache.parent / "other-configuration"
+    unrelated.mkdir()
+    (unrelated / "keep").touch()
+    _denoise._cached_session.cache_clear()
+    create_session = coreml_runtime.InferenceSession
+    locked = False
+    calls = []
+
+    @contextlib.contextmanager
+    def lock(path):
+        nonlocal locked
+        assert path == cache.with_suffix(".lock")
+        locked = True
+        try:
+            yield
+        finally:
+            locked = False
+
+    def corrupted(*args, **kwargs):
+        calls.append(kwargs.get("enable_fallback", True))
+        if not calls[-1]:
+            assert locked
+            assert (cache / "incomplete-model").exists()
+            raise NativeFailure("invalid compiled model")
+        assert not locked
+        assert not cache.exists()
+        return create_session(*args, **kwargs)
+
+    monkeypatch.setattr(_denoise, "_lock_coreml_cache", lock)
+    coreml_runtime.InferenceSession = corrupted
+    with pytest.warns(RuntimeWarning, match="Could not load the CoreML disk cache"):
+        _, recovered = _denoise._load_session(None, 1, "coreml", shape=(9, 11))
+
+    assert calls == [False, True]
+    assert recovered.constructor_fallback_enabled
+    assert recovered.fallback_enabled
+    assert (unrelated / "keep").exists()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="CoreML uses the macOS file-lock API"
+)
+def test_denoise_coreml_lock_excludes_other_openers_and_releases(tmp_path):
+    path = tmp_path / "cache.lock"
+    started, acquired = threading.Event(), threading.Event()
+
+    def other_opener():
+        started.set()
+        with _denoise._lock_coreml_cache(path):
+            acquired.set()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        with _denoise._lock_coreml_cache(path):
+            future = executor.submit(other_opener)
+            assert started.wait(5)
+            assert not acquired.wait(0.05)
+        future.result(timeout=5)
+    assert acquired.is_set()
+    assert path.is_file()
+    with (
+        pytest.raises(ValueError, match="release on failure"),
+        _denoise._lock_coreml_cache(path),
+    ):
+        raise ValueError("release on failure")
+    with _denoise._lock_coreml_cache(path):
+        assert path.is_file()
+
+
 @pytest.mark.parametrize(
     ("provider", "mac_version", "custom"),
     [
@@ -304,7 +495,14 @@ def test_denoise_coreml_specializes_both_orientations(
         assert session.input_shape == [1, 1, *shape]
         assert len(session.inputs) == 4
         assert all(tensor.shape == (1, 1, *shape) for tensor in session.inputs)
-        assert session.provider_options["CoreMLExecutionProvider"] == {
+        provider_options = session.provider_options["CoreMLExecutionProvider"].copy()
+        cache_directory = pathlib.Path(provider_options.pop("ModelCacheDirectory"))
+        assert cache_directory.parent == _denoise._coreml_cache_root()
+        assert cache_directory.is_dir()
+        assert isinstance(session.path, bytes)
+        assert not session.constructor_fallback_enabled
+        assert session.fallback_enabled
+        assert provider_options == {
             "ModelFormat": "MLProgram",
             "MLComputeUnits": "ALL",
             "RequireStaticInputShapes": "1",
