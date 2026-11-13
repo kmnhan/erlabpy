@@ -486,7 +486,7 @@ def test_data_ingress_dataset_registration_error_cleans_created_tool(
     )
 
     with manager_context() as manager:
-        monkeypatch.setattr(manager, "add_imagetool", fail_registration)
+        monkeypatch.setattr(manager, "import_imagetool", fail_registration)
         monkeypatch.setattr(
             manager._data_ingress,
             "_error_creating_imagetool",

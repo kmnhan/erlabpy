@@ -538,9 +538,14 @@ def _file_provenance_spec(path: typing.Any = "scan.h5") -> typing.Any:
 
 
 def _representative_structured_operations() -> tuple[ToolProvenanceOperation, ...]:
+    from erlab.interactive.imagetool._provenance._operations._coordinates import (
+        ImageToolInputOperation,
+    )
+
     edge_fit = xr.Dataset({"edge": ("x", [1.0, 2.0, 3.0])})
     vertices = np.array([[0.0, 10.0], [1.0, 11.0], [2.0, 12.0]])
     return (
+        ImageToolInputOperation(cast_float64=True, degree_coords=("x",)),
         QSelOperation(kwargs={"x": 1.0}),
         IselOperation(kwargs={"x": slice(0, 2)}),
         SelOperation(kwargs={"y": slice(10.0, 12.0)}),
@@ -724,7 +729,6 @@ def test_extension_routine_omits_code_without_a_registered_script() -> None:
         lambda: BoxcarFilterOperation(size={"x": 0}),
         lambda: BoxcarFilterOperation(size={"x": True}),
         lambda: BoxcarFilterOperation(size={"x": 1.5}),
-        lambda: BoxcarFilterOperation(size={"x": 3}, cval=np.inf),
         lambda: UniformInterpolationOperation(sizes={}),
         lambda: UniformInterpolationOperation(sizes={"x": 0}),
         lambda: UniformInterpolationOperation(sizes={"x": True}),
@@ -1445,13 +1449,6 @@ def test_operation_replay_code_uses_requested_names(
     )
     result = namespace["result"]
     expected = operation.apply(data)
-    if isinstance(
-        operation,
-        DivideByCoordOperation,
-    ):
-        result = result.rename(None)
-        expected = expected.rename(None)
-        assert ".rename(" not in code
     xr.testing.assert_identical(result, expected)
 
 
@@ -1525,7 +1522,7 @@ def test_operation_replay_code_preserves_input_expression_grouping(
     right = left * 2.0
     namespace = _exec_generated_code(
         operation.replay_code("left - right", output_name="result"),
-        {"left": left, "right": right},
+        {"left": left, "right": right, "era": erlab.analysis},
     )
     xr.testing.assert_identical(namespace["result"], operation.apply(left - right))
 
@@ -1818,28 +1815,21 @@ def test_operation_code_base_edges() -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("operation", "expected"),
-    [
-        (
-            NormalizeOperation(dims=("x",), mode="area"),
-            'data / data.mean("x")',
-        ),
-        (
-            NormalizeOperation(dims=("x",), mode="min"),
-            'data - data.min("x")',
-        ),
-        (
-            NormalizeOperation(dims=("x",), mode="min_area"),
-            '(data - data.min("x")) / data.mean("x")',
-        ),
-    ],
-)
-def test_normalize_operation_expression_modes(
-    operation: NormalizeOperation,
-    expected: str,
-) -> None:
-    assert operation.expression_code("data") == expected
+@pytest.mark.parametrize("mode", ["area", "min", "min_area", "minmax"])
+@pytest.mark.parametrize("dims", [(), ("x",)])
+def test_normalize_operation_expression_modes(mode, dims):
+    data = xr.DataArray(
+        [[1.0, 2.0], [-1.0 + 1e-14, 2.0]], dims=("x", "y"), attrs={"sample": "A"}
+    )
+    operation = NormalizeOperation(dims=dims, mode=mode, keep_attrs=False)
+    with xr.set_options(keep_attrs=True):
+        expected = operation.apply(data)
+        result = eval(  # noqa: S307
+            operation.expression_code("data"), {"data": data, "era": erlab.analysis}
+        )
+    xr.testing.assert_identical(result, expected)
+    if dims and mode in ("area", "min_area"):
+        assert expected.isel(y=0).isnull().all()
 
 
 def test_roi_operation_derivation_labels() -> None:
@@ -1867,8 +1857,7 @@ def test_operations_expression_code_chains_without_relay_assignments() -> None:
     )
 
     code = operations_expression_code(operations, "data")
-    assert code.startswith("(data / data.scale).isel(")
-    assert ".rename(" not in code
+    assert ".isel(" in code
     assert "derived" not in code
 
     namespace = _exec_generated_code(
@@ -1878,7 +1867,7 @@ def test_operations_expression_code_chains_without_relay_assignments() -> None:
     expected = operations[1].apply(
         operations[0].apply(data),
     )
-    xr.testing.assert_identical(namespace["result"].rename(None), expected.rename(None))
+    xr.testing.assert_identical(namespace["result"], expected)
 
 
 def test_generated_provenance_code_elides_meaningless_reassignments() -> None:
@@ -3002,9 +2991,8 @@ def test_tool_provenance_divide_by_coord_operation() -> None:
     xr.testing.assert_identical(spec.apply(data), expected)
     code = spec.derivation_code()
     assert code is not None
-    assert ".rename(" not in code
     namespace = _exec_generated_code(code, {"data": data})
-    xr.testing.assert_identical(namespace["derived"], data / data.mesh_current)
+    xr.testing.assert_identical(namespace["derived"], expected)
 
     reparsed = parse_tool_provenance_spec(spec.model_dump(mode="json"))
     assert reparsed == spec
@@ -3026,18 +3014,14 @@ def test_tool_provenance_divide_by_coord_fallback_code_and_broadcast() -> None:
     spaced_spec = full_data(DivideByCoordOperation(coord_name="mesh current"))
     spaced_code = spaced_spec.derivation_code()
     assert spaced_code is not None
-    assert ".rename(" not in spaced_code
     namespace = _exec_generated_code(spaced_code, {"data": data})
-    xr.testing.assert_identical(
-        namespace["derived"], data / data.coords["mesh current"]
-    )
+    xr.testing.assert_identical(namespace["derived"], spaced_spec.apply(data))
 
     conflict_spec = full_data(DivideByCoordOperation(coord_name="mean"))
     conflict_code = conflict_spec.derivation_code()
     assert conflict_code is not None
-    assert ".rename(" not in conflict_code
     namespace = _exec_generated_code(conflict_code, {"data": data})
-    xr.testing.assert_identical(namespace["derived"], data / data.coords["mean"])
+    xr.testing.assert_identical(namespace["derived"], conflict_spec.apply(data))
 
     broadcast_spec = full_data(DivideByCoordOperation(coord_name="mesh_map"))
     xr.testing.assert_identical(
@@ -4158,7 +4142,8 @@ def test_correct_with_edge_code_handles_nonfinite_dataset(monkeypatch) -> None:
     data = _base_data()
     edge_fit = xr.Dataset({"edge": ("x", [np.nan, np.inf, -np.inf])})
 
-    def correct_with_edge(data_arg, edge_fit_arg, *, shift_coords=True):
+    def correct_with_edge(data_arg, edge_fit_arg, *, along="alpha", shift_coords=True):
+        assert along == "alpha"
         xr.testing.assert_identical(edge_fit_arg, edge_fit)
         return data_arg.assign_attrs(shift_coords=shift_coords)
 
@@ -10537,4 +10522,69 @@ def test_released_display_mapping_stops_at_its_restore_step(kind) -> None:
     assert code is not None
     xr.testing.assert_identical(
         _exec_generated_code(code, {"data": data})["derived"], expected
+    )
+
+
+def test_kspace_fixed_target_grid_and_unit_scale_replay():
+    data = _kspace_data()
+    data.kspace.alpha_scale = 1.12
+    centered = KspaceSetNormalOperation(alpha=1.5, beta=-0.5, alpha_scale=1.0)
+    expected = data.copy(deep=True)
+    expected.kspace.set_normal(1.5, -0.5, alpha_scale=1.0)
+    xr.testing.assert_identical(centered.apply(data), expected)
+    grid = np.linspace(-0.02, 0.02, 5, dtype=np.float32)
+    options = {"kx": grid, "ky": grid[::-1], "method": "nearest"}
+    operation = operation_from_console_call(
+        ConsoleCall(
+            accessor_path=("kspace", "convert"),
+            kwargs=options,
+            display_code="data.kspace.convert(**options)",
+            has_extra_tracked_inputs=False,
+        )
+    )
+    assert isinstance(operation, KspaceConvertOperation)
+    expected = expected.kspace.convert(**options)
+    grid[:] = 100
+    spec = full_data(centered, operation)
+    restored = ToolProvenanceSpec.model_validate_json(spec.model_dump_json())
+    actual = restored.apply(data)
+    xr.testing.assert_identical(actual, expected)
+    assert actual.kx.dtype == expected.kx.dtype
+    code = restored.derivation_code()
+    assert code is not None
+    copied = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    xr.testing.assert_identical(copied["derived"], expected)
+
+
+@pytest.mark.parametrize(
+    ("op", "required"), [("rotate", {"angle": 27}), ("symmetrize_nfold", {"fold": 3})]
+)
+def test_rotation_legacy_defaults_and_nonfinite_fill(op, required):
+    data = _base_data()
+    kwargs = {**required, "axes": ("x", "y"), "center": (0.3, 11.0), "reshape": False}
+    func = getattr(erlab.analysis.transform, op)
+    for extra in ({}, {"mode": "grid-constant", "cval": -np.inf, "prefilter": False}):
+        record = parse_tool_provenance_operation({"op": op, **kwargs, **extra})
+        spec = full_data(record)
+        restored = ToolProvenanceSpec.model_validate_json(spec.model_dump_json())
+        expected = func(data, **kwargs, **extra)
+        xr.testing.assert_identical(restored.apply(data), expected)
+        code = restored.derivation_code()
+        assert code is not None
+        xr.testing.assert_identical(
+            _exec_generated_code(code, {"data": data, "era": erlab.analysis, "np": np})[
+                "derived"
+            ],
+            expected,
+        )
+
+
+def test_selection_option_name_can_be_a_dimension():
+    data = xr.DataArray([0.0, 2.0, 4.0], dims="func", coords={"func": [0, 1, 2]})
+    op = QSelOperation(kwargs={"func": 1, "func_width": 2}, func="sum")
+    expected = data.qsel({"func": 1, "func_width": 2}, func="sum")
+    xr.testing.assert_identical(op.apply(data), expected)
+    code = op.replay_code("data", output_name="result")
+    xr.testing.assert_identical(
+        _exec_generated_code(code, {"data": data})["result"], expected
     )

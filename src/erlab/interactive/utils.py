@@ -4712,7 +4712,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
                 activate_window(tool)
                 return tool
 
-            manager.add_imagetool(
+            manager.import_imagetool(
                 tool,
                 show=True,
                 activate=True,
@@ -4778,7 +4778,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             return None
         tool.set_provenance_spec(provenance_spec)
 
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             tool,
             parent_uid,
             show=True,

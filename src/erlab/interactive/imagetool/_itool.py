@@ -94,6 +94,16 @@ def itool(
 
             Integer manager indexes select a specific ImageTool Manager instance.
 
+        .. versionchanged:: 3.30.0
+
+            Managed windows isolate eager input before this call returns. Keep the
+            input unchanged during the call; NumPy buffers can be reused afterward.
+            Lazy computations must retain stable backing values for as long as any
+            result uses them. Source replacement or closure does not invalidate
+            retained lazy results. See
+            :func:`erlab.interactive.imagetool.manager.replace_data` for the input
+            ownership contract.
+
     replace
         When using the manager, this argument specifies which existing ImageTool windows
         should be replaced with the new data. If the manager is not used, this argument

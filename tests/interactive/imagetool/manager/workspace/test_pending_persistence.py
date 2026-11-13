@@ -1116,7 +1116,7 @@ def test_manager_pending_memory_file_source_full_code_uses_saved_load_code(
             ),
         )
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(root, show=False)
+        manager.import_imagetool(root, show=False, provenance_spec=root.provenance_spec)
         root.hide()
 
         node = manager._tool_graph.root_wrappers[0]
@@ -1188,7 +1188,7 @@ def test_manager_replay_source_survives_pending_workspace_load_and_duplicate(
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         tool = itool(displayed, manager=False, execute=False)
         assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(
+        manager.import_imagetool(
             tool,
             show=False,
             provenance_spec=provenance,
@@ -1575,7 +1575,7 @@ def test_legacy_toolwindow_reload_applies_source_spec_once(
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(
+        manager.import_imagetool(
             root,
             show=False,
             provenance_spec=parent_provenance,
@@ -1875,13 +1875,13 @@ def test_manager_promote_pending_child_memory_uses_saved_payload(
         child = itool(child_data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         assert isinstance(child, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(
+        manager.import_imagetool(
             root,
             show=False,
             provenance_spec=root_provenance,
             replay_source_data=replay_source,
         )
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child,
             0,
             show=False,
@@ -2474,7 +2474,7 @@ def test_import_retains_reachable_revision_checkpoint_source(
             ),
         )
         derived = itool(data + 1, manager=False, execute=False)
-        manager.add_imagetool(derived, show=False, provenance_spec=spec)
+        manager.import_imagetool(derived, show=False, provenance_spec=spec)
         manager.remove_imagetool(source_node.index)
         manager._workspace_controller.saving._save_workspace_document(source_path)
 

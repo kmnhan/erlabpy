@@ -163,7 +163,10 @@ and `GAUSSIAN_TOOLS.py`.
 4. Select {guilabel}`OK`.
 
 Manager opens the result in a new ImageTool and records the extension operation in its
-provenance.
+provenance. Each Manager executes analysis routines in its own Python process.
+A routine receives the selected input and the xarray calculation settings in effect
+when the job was submitted. Code that the routine imports must be available in that
+process. Pass input through the routine arguments if it comes from the Manager console.
 
 ## Loading a file
 

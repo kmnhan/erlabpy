@@ -31,6 +31,7 @@ from erlab.interactive.imagetool._provenance._graph import (
     LiveInputResolver,
     ReplayGraph,
     ReplayGraphError,
+    ResolvedReplayInput,
     _memoized_by_identity,
     _memoized_input_provenance_resolver,
     _reserved_names_from_spec,
@@ -257,7 +258,9 @@ def _load_file_source_object(
             parameters=_deserialize_loader_kwargs(call.kwargs),
         )
     else:
-        func = _registered_local_callable_loader(call.target)
+        func = getattr(
+            call, "_session_loader", None
+        ) or _registered_local_callable_loader(call.target)
         if func is None:
             raise ValueError(
                 f"Callable file loader {call.target!r} is not registered locally"
@@ -301,6 +304,7 @@ def execute_replay_graph(
     authorization: object | None = None,
     authorize: ExecutionAuthorizer | None = None,
     _on_value: Callable[[str, xr.DataArray], None] | None = None,
+    owned_inputs: bool = False,
 ) -> xr.DataArray:
     # Replay runs from manager actions; avoid optional native reduction accelerators
     # that can crash PySide6/Python 3.14 while Qt threads are alive.
@@ -309,6 +313,7 @@ def execute_replay_graph(
     with xr.set_options(use_numbagg=False):
         return _execute_replay_graph(
             graph,
+            owned_inputs=owned_inputs,
             cache=cache,
             extension_executor=extension_executor,
             extension_loader_executor=extension_loader_executor,
@@ -326,6 +331,7 @@ def _execute_replay_graph(
     extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
     authorization: object | None = None,
     on_value: Callable[[str, xr.DataArray], None] | None = None,
+    owned_inputs: bool = False,
 ) -> xr.DataArray:
     replay_cache = {} if cache is None else cache
     values: dict[str, xr.DataArray] = {}
@@ -366,25 +372,29 @@ def _execute_replay_graph(
                         "trusted"
                     )
                 input_bindings = node.payload.get("input_bindings", ())
-                if input_bindings:
-                    data = operation.apply_with_inputs(
-                        values[node.parents[0]],
-                        {slot: values[input_key] for slot, input_key in input_bindings},
-                        authorization=authorization,
-                    )
-                elif node.payload.get("legacy_parent_context", False):
-                    data = operation._apply_schema_v2(
-                        values[node.parents[0]],
-                        parent_data=values[node.parents[1]],
-                        authorization=authorization,
-                    )
-                elif entries:
-                    data = operation.apply(
-                        values[node.parents[0]],
-                        authorization=authorization,
-                    )
-                else:
-                    data = operation.apply(values[node.parents[0]])
+                with xr.set_options(**operation.execution_options):
+                    if input_bindings:
+                        data = operation.apply_with_inputs(
+                            values[node.parents[0]],
+                            {
+                                slot: values[input_key]
+                                for slot, input_key in input_bindings
+                            },
+                            authorization=authorization,
+                        )
+                    elif node.payload.get("legacy_parent_context", False):
+                        data = operation._apply_schema_v2(
+                            values[node.parents[0]],
+                            parent_data=values[node.parents[1]],
+                            authorization=authorization,
+                        )
+                    elif entries:
+                        data = operation.apply(
+                            values[node.parents[0]],
+                            authorization=authorization,
+                        )
+                    else:
+                        data = operation.apply(values[node.parents[0]])
         elif node.kind == "script":
             entries = provenance_replay_node_code_trust_entries(
                 node,
@@ -433,7 +443,11 @@ def _execute_replay_graph(
             for input_name, input_key in typing.cast(
                 "tuple[tuple[str, str], ...]", node.payload["bindings"]
             ):
-                namespace[input_name] = values[input_key].copy(deep=True)
+                namespace[input_name] = (
+                    values[input_key]
+                    if owned_inputs
+                    else values[input_key].copy(deep=True)
+                )
             for compiled in compiled_codes:
                 exec(compiled, namespace, namespace)  # noqa: S102
             active_name = typing.cast("str", node.payload["active_name"])
@@ -460,7 +474,7 @@ def _execute_replay_graph(
     if graph.output_key is None:
         raise ReplayGraphError("Replay graph has no output")
     output = values[graph.output_key]
-    if any(
+    if not owned_inputs and any(
         node.kind == "live_input" and _shares_array_memory(output, values[node.key])
         for node in graph.nodes
     ):
@@ -786,17 +800,31 @@ def replay_script_provenance(
     | None = None,
     extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
     authorize: ExecutionAuthorizer | None = None,
+    owned_inputs: bool = False,
 ) -> xr.DataArray:
-    """Execute script provenance from already resolved input arrays."""
+    """Execute script provenance from already resolved input arrays.
+
+    Set owned_inputs only for isolated operands of a live console command.
+    Imported scripts receive independent copies of caller-supplied arrays.
+    """
     try:
         graph = compile_replay_graph(
             spec,
             external_inputs=inputs,
+            live_input_resolver=lambda item: (
+                ResolvedReplayInput(inputs[item.name], item)
+                if item.name in inputs
+                and item.provenance_spec is None
+                and item.revision_id is None
+                and item.node_uid is None
+                else None
+            ),
             trusted_user_code=True,
             structured_file_replay=True,
         )
         return execute_replay_graph(
             graph,
+            owned_inputs=owned_inputs,
             extension_executor=extension_executor,
             extension_loader_executor=extension_loader_executor,
             authorize=authorize,

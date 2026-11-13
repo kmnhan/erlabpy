@@ -419,6 +419,7 @@ def estimate_kspace_conversion(
     *,
     bounds: dict[str, tuple[float, float]] | None = None,
     resolution: dict[str, float] | None = None,
+    fixed_coords: Mapping[str, Sequence[float]] | None = None,
     jacobian: bool = False,
     memory: KspaceMemoryBudget | None = None,
 ) -> KspaceConversionEstimate:
@@ -427,6 +428,8 @@ def estimate_kspace_conversion(
         bounds = {}
     if resolution is None:
         resolution = {}
+    if fixed_coords is None:
+        fixed_coords = {}
     if memory is None:
         memory = system_memory_budget()
 
@@ -435,10 +438,16 @@ def estimate_kspace_conversion(
     axis_sizes: dict[str, int] = {}
     momentum_axes = tuple(data.kspace.momentum_axes)
     estimated_bounds: dict[str, tuple[float, float]] = {}
-    if any(axis not in bounds for axis in momentum_axes):
+    if any(axis not in bounds and axis not in fixed_coords for axis in momentum_axes):
         estimated_bounds = data.kspace.estimate_bounds()
 
     for axis in momentum_axes:
+        if axis in fixed_coords:
+            values = fixed_coords[axis]
+            axis_sizes[axis] = len(values)
+            if len(values):
+                effective_bounds[axis] = min(values), max(values)
+            continue
         if axis in bounds:
             lims = _validated_bounds(axis, bounds[axis])
         elif axis in estimated_bounds:
@@ -683,6 +692,7 @@ def kspace_conversion_operations(
     beta_scale: float | None = None,
     input_coordinates: Mapping[str, float] | None = None,
     jacobian: bool = False,
+    recorded_conversion: KspaceConvertOperation | None = None,
 ) -> tuple[ToolProvenanceOperation, ...]:
     operations: list[ToolProvenanceOperation] = []
     focuses: list[str] = []
@@ -733,7 +743,7 @@ def kspace_conversion_operations(
             if (
                 current is not None
                 and current.ndim == 0
-                and np.isclose(float(current.values), value)
+                and float(current.values) == value
             ):
                 continue
             operation = AssignScalarCoordOperation(coord_name=name, value=value)
@@ -776,19 +786,89 @@ def kspace_conversion_operations(
             alpha=float(normal_emission[0]),
             beta=float(normal_emission[1]),
             delta=None if delta is None else float(delta),
-            alpha_scale=None if np.isclose(alpha_scale, 1.0) else float(alpha_scale),
-            beta_scale=None if np.isclose(beta_scale, 1.0) else float(beta_scale),
+            alpha_scale=None
+            if alpha_scale == configured_data.kspace.alpha_scale == 1.0
+            else float(alpha_scale),
+            beta_scale=None
+            if beta_scale == configured_data.kspace.beta_scale == 1.0
+            else float(beta_scale),
         )
     )
     focuses.append(_FOCUS_NORMAL)
     operations.append(
-        KspaceConvertOperation(bounds=bounds, resolution=resolution, jacobian=jacobian)
+        KspaceConvertOperation(
+            bounds=bounds,
+            resolution=resolution,
+            jacobian=jacobian,
+            method=recorded_conversion.method
+            if recorded_conversion is not None
+            else "linear",
+            silent=recorded_conversion.silent
+            if recorded_conversion is not None
+            else True,
+            coords=recorded_conversion.coords
+            if recorded_conversion is not None
+            else {},
+        )
     )
     focuses.append(_FOCUS_CONVERT)
     return stamp_operation_group(
         operations,
         kind=KSPACE_CONVERSION_GROUP_KIND,
         focuses=focuses,
+    )
+
+
+def edit_kspace_conversion_group(
+    recorded: Sequence[ToolProvenanceOperation],
+    initial: Sequence[ToolProvenanceOperation],
+    edited: Sequence[ToolProvenanceOperation],
+) -> tuple[ToolProvenanceOperation, ...]:
+    # A console group can omit default setters or run them in a different order.
+    # Apply only changes made to the controls, retaining the original recipe.
+    def key(
+        op: ToolProvenanceOperation,
+    ) -> tuple[type[ToolProvenanceOperation], object]:
+        return (
+            type(op),
+            op.coord_name if isinstance(op, AssignScalarCoordOperation) else None,
+        )
+
+    before = {key(op): op for op in initial}
+    after = {key(op): op for op in edited}
+    output = {key(op): op for op in recorded}
+    order = list(output)
+    for k in before.keys() - after.keys():
+        if k in output:
+            del output[k]
+            order.remove(k)
+    for i, (k, op) in enumerate(after.items()):
+        original = output.get(k)
+        previous = before.get(k)
+        changes = {
+            field: getattr(op, field)
+            for field in type(op).model_fields
+            if field != "group"
+            and (previous is None or getattr(op, field) != getattr(previous, field))
+        }
+        if not changes:
+            continue
+        if original is not None:
+            output[k] = original.model_copy(update=changes)
+        else:
+            # Insert a new setter before the next surviving step in the recipe.
+            next_step = next(
+                (key(step) for step in edited[i + 1 :] if key(step) in order), None
+            )
+            order.insert(len(order) if next_step is None else order.index(next_step), k)
+            output[k] = op
+    operations = tuple(output[k] for k in order)
+    marker = recorded[0].group
+    return stamp_operation_group(
+        operations,
+        kind=KSPACE_CONVERSION_GROUP_KIND,
+        group_id=marker.id if marker is not None else None,
+        focuses=tuple(op.group.focus if op.group else None for op in operations),
     )
 
 

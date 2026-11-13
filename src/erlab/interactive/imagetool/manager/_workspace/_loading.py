@@ -1236,7 +1236,7 @@ class _WorkspaceLoader:
 
         with _workspace_load_stage(profiler, "imagetool manager registration"):
             if parent_target is not None:
-                target = self._manager.add_imagetool_child(
+                target = self._manager.import_imagetool_child(
                     tool,
                     parent_target,
                     show=window_visible,
@@ -1260,7 +1260,7 @@ class _WorkspaceLoader:
                     preferred_index = int(node_path)
                 if preferred_index is not None and preferred_index < 0:
                     preferred_index = None
-            target = self._manager.add_imagetool(
+            target = self._manager.import_imagetool(
                 tool,
                 show=window_visible,
                 index=preferred_index,
@@ -1521,6 +1521,9 @@ class _WorkspaceLoader:
         target: int | str,
         loaded_targets_by_uid: dict[str, int | str] | None,
     ) -> None:
+        node = self._manager._node_for_target(target)
+        if node.is_imagetool:
+            self._manager._data_graph.imported_workflow(node.uid)
         if loaded_targets_by_uid is None:
             return
         saved_uid = self._workspace_saved_uid_from_dataset(ds)
@@ -2829,7 +2832,7 @@ class _WorkspaceLoader:
                     payload_path=payload_paths.get(node.uid)
                     or self._controller.saving._workspace_payload_path(node.uid),
                 )
-                slicer_area.set_data(data, auto_compute=False)
+                slicer_area._set_data(data, auto_compute=False)
                 slicer_area.state = state
                 node._set_name(name, manual=False)
                 self._controller._sync_node_workspace_sources(node)

@@ -6,8 +6,10 @@ from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool._provenance._code import _replace_code_identifiers
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
+    FileLoadSource,
     ScriptInput,
     ScriptInputDataRole,
+    ToolProvenanceOperation,
     ToolProvenanceSpec,
     _ProvenanceDisplayRow,
     compose_display_provenance,
@@ -54,6 +56,11 @@ from erlab.interactive.imagetool._load_source import (
     _registered_local_callable_loader,
 )
 from erlab.interactive.imagetool._mainwindow import ImageTool
+from erlab.interactive.imagetool.manager._data_graph import (
+    _CalculatedResult,
+    _ImageToolInput,
+    _RawReplacement,
+)
 from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
 from erlab.interactive.imagetool.manager._revisions import requires_legacy_replay_source
 from erlab.interactive.imagetool.manager._source_labels import script_input_source_label
@@ -61,14 +68,19 @@ from erlab.interactive.imagetool.manager._widgets import _curve_preview_data
 
 if typing.TYPE_CHECKING:
     import os
-    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
     from erlab.interactive.imagetool._provenance._graph import ReplayGraph
+    from erlab.interactive.imagetool.manager._data_graph import _SourceWrite
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
+    from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
     from erlab.interactive.imagetool.manager._widgets import _WorkspaceDocumentAccess
     from erlab.interactive.imagetool.slicer import ArraySlicer
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
-    from erlab.interactive.imagetool.viewer_state import ImageSlicerState
+    from erlab.interactive.imagetool.viewer_state import (
+        ImageSlicerState,
+        _PreparedInputData,
+    )
     from erlab.interactive.utils import ToolWindow, _ToolInputState
 
 
@@ -337,16 +349,23 @@ def _append_unique_path(paths: list[pathlib.Path], path: str | pathlib.Path) -> 
         paths.append(normalized)
 
 
-def _collect_provenance_file_paths(
+def _imported_file_sources(
     spec: ToolProvenanceSpec | None,
-    paths: list[pathlib.Path],
-) -> None:
-    if spec is None:
-        return
-    if spec.file_load_source is not None:
-        _append_unique_path(paths, spec.file_load_source.path)
-    for script_input in spec.replay_inputs:
-        _collect_provenance_file_paths(script_input.parsed_provenance_spec(), paths)
+) -> dict[pathlib.Path, FileLoadSource]:
+    files: dict[pathlib.Path, FileLoadSource] = {}
+    pending = [spec] if spec is not None else []
+    while pending:
+        current = pending.pop()
+        if current.file_load_source is not None:
+            files.setdefault(
+                pathlib.Path(current.file_load_source.path), current.file_load_source
+            )
+        pending.extend(
+            nested
+            for item in reversed(current.replay_inputs)
+            if (nested := item.parsed_provenance_spec()) is not None
+        )
+    return files
 
 
 def _compact_file_suffix(paths: Sequence[pathlib.Path]) -> str:
@@ -507,11 +526,6 @@ class _ManagedWindowNode(QtCore.QObject):
             elif provenance_spec is not None:
                 self.set_detached_provenance(
                     provenance_spec,
-                    replay_source_data=replay_source_data,
-                )
-            elif isinstance(window, ImageTool) and window.provenance_spec is not None:
-                self.set_detached_provenance(
-                    window.provenance_spec,
                     replay_source_data=replay_source_data,
                 )
         finally:
@@ -728,10 +742,14 @@ class _ManagedWindowNode(QtCore.QObject):
                 self._handle_imagetool_provenance_changed
             )
             value.slicer_area._in_manager = True
+            value.slicer_area._own_managed_source()
             value.remove_act.setVisible(True)
             value._set_managed_reveal_callback(self.reveal_in_manager)
             for plot in value.slicer_area._materialized_axes():
                 plot.ensure_manager_figure_actions()
+            graph = self.manager._data_graph
+            if graph.owns_result(self.uid):
+                graph._record_view(self)
             self._sync_manager_window_reference()
             self._notify_info_and_type_badge_change(previous_type_badge)
             return
@@ -1260,6 +1278,10 @@ class _ManagedWindowNode(QtCore.QObject):
         ):
             self.imagetool.setWindowTitle(self.label_text)
             return
+        adapter = self.manager._data_graph
+        if record_provenance and self.uid in self.manager._tool_graph.nodes:
+            adapter.rename_source(self, data_name)
+            return
         slicer_area._data = slicer_area._data.rename(data_name)
         slicer_area.array_slicer.set_array(
             slicer_area.array_slicer._obj.rename(data_name), validate=False
@@ -1297,7 +1319,13 @@ class _ManagedWindowNode(QtCore.QObject):
         paths: list[pathlib.Path] = []
         if self.imagetool is not None and self.slicer_area._file_path is not None:
             _append_unique_path(paths, self.slicer_area._file_path)
-        _collect_provenance_file_paths(self.displayed_provenance_spec, paths)
+        graph = self.manager._data_graph
+        if graph.owns_result(self.uid):
+            for load in graph.recorded_files(self.uid):
+                _append_unique_path(paths, pathlib.Path(load.source.path))
+            return tuple(paths)
+        for path in _imported_file_sources(self.displayed_provenance_spec):
+            _append_unique_path(paths, path)
         return tuple(paths)
 
     @property
@@ -1434,15 +1462,24 @@ class _ManagedWindowNode(QtCore.QObject):
                     self.slicer_area._load_func,
                     source_input_dtype=self._load_source_input_dtype(),
                 )
+        graph = self.manager._data_graph
+        if graph.owns_result(self.uid):
+            loads = graph.recorded_files(self.uid)
+            if len(loads) != 1:
+                return None
+            from erlab.interactive.imagetool._provenance._recorded_code import (
+                recorded_file_source,
+            )
+
+            return _load_source_details_from_provenance(recorded_file_source(loads[0]))
         provenance_spec = (
             self.provenance_spec
             if flush_deferred_restore
             else self.passive_displayed_provenance_spec
         )
-        if provenance_spec is not None and provenance_spec.file_load_source is not None:
-            return _load_source_details_from_provenance(
-                provenance_spec.file_load_source
-            )
+        files = _imported_file_sources(provenance_spec)
+        if len(files) == 1:
+            return _load_source_details_from_provenance(next(iter(files.values())))
         return self._pending_workspace_load_source_details()
 
     def _pending_workspace_load_source_details(self) -> _LoadSourceDetails | None:
@@ -1517,6 +1554,12 @@ class _ManagedWindowNode(QtCore.QObject):
     @property
     def reloadable(self) -> bool:
         """Return whether this live ImageTool node can reload its displayed data."""
+        graph = self.manager._data_graph
+        if graph.reloads_result(self.uid):
+            return (
+                self.imagetool is not None
+                and graph.command_issue(self.uid, "reload") is None
+            )
         return self.imagetool is not None and self.slicer_area.reloadable
 
     @property
@@ -1860,12 +1903,18 @@ class _ManagedWindowNode(QtCore.QObject):
     def source_spec(
         self,
     ) -> ToolProvenanceSpec | None:
+        adapter = self.manager._data_graph
+        if adapter.owns_result(self.uid):
+            return adapter.relative_spec(self, displayed=False)
         return self._source_spec
 
     @property
     def displayed_source_spec(
         self,
     ) -> ToolProvenanceSpec | None:
+        adapter = self.manager._data_graph
+        if adapter.owns_result(self.uid):
+            return adapter.relative_spec(self, displayed=True)
         source_spec = self.source_spec
         if self.imagetool is not None:
             return self.slicer_area.displayed_live_source_spec(source_spec)
@@ -1883,6 +1932,9 @@ class _ManagedWindowNode(QtCore.QObject):
     ) -> ToolProvenanceSpec | None:
         if self.tool_window is not None:
             return self._tool_provenance_spec(flush_deferred_restore=True)
+        adapter = self.manager._data_graph
+        if adapter.owns_result(self.uid):
+            return adapter.result_spec(self.uid, displayed=False)
         if self._provenance_spec is not None:
             return self._provenance_spec
         return self._source_spec
@@ -2015,6 +2067,9 @@ class _ManagedWindowNode(QtCore.QObject):
     def displayed_provenance_spec(
         self,
     ) -> ToolProvenanceSpec | None:
+        adapter = self.manager._data_graph
+        if adapter.owns_result(self.uid):
+            return adapter.result_spec(self.uid, displayed=True)
         if self.imagetool is not None:
             return self.slicer_area.displayed_provenance_spec(self.provenance_spec)
         return self.provenance_spec
@@ -2031,13 +2086,12 @@ class _ManagedWindowNode(QtCore.QObject):
     @property
     def persistence_provenance_spec(self) -> ToolProvenanceSpec | None:
         """Return the saved recipe without reading data or deferred tool state."""
-        if (
-            isinstance(self, _ImageToolWrapper)
-            and self.watched
-            and self._provenance_spec is None
-        ):
-            # The watched binding reconstructs this seed from the main data payload.
-            return None
+        if isinstance(self, _ImageToolWrapper) and self.watched:
+            adapter = self.manager._data_graph
+            if adapter.owns_result(self.uid):
+                return adapter.watched_persistence_spec(self.uid)
+            if self._provenance_spec is None:
+                return None
         if self.tool_window is not None:
             return self._tool_provenance_spec(flush_deferred_restore=False)
         return self.provenance_spec
@@ -2145,6 +2199,7 @@ class _ManagedWindowNode(QtCore.QObject):
         data_role: ScriptInputDataRole,
         *,
         primary_checkpoint_required: bool = True,
+        retain_expression: bool = False,
     ) -> str:
         """Capture an exact input independently of this window's lifetime."""
         token = self.snapshot_token_for_role(data_role)
@@ -2170,15 +2225,41 @@ class _ManagedWindowNode(QtCore.QObject):
                 if normalized != base_spec:
                     self.set_displayed_provenance(normalized, advance_snapshot=False)
             spec = self.provenance_for_role(data_role)
-            revision_id = self.manager._provenance_revisions.add(
-                self.data_for_role(data_role),
-                spec,
-                source_owner_uid=self.uid,
-                primary_revision_id=(
-                    self._current_revision_id if data_role == "source" else None
-                ),
-                primary_checkpoint_required=primary_checkpoint_required,
-            )
+            adapter = self.manager._data_graph
+            reader = None
+            key = None
+            if adapter.owns_result(self.uid):
+                key = adapter.source_revision(
+                    self.uid, displayed=data_role == "displayed"
+                )
+                if retain_expression or adapter.graph.checkpoint_is_materialized(key):
+                    with adapter.graph.retain(key):
+                        reader = adapter.graph.checkpoint_reader(key)
+            store = self.manager._provenance_revisions
+            if key is not None and spec is None and key in store:
+                revision_id = key
+            else:
+                data = self.data_for_role(data_role) if reader is None else None
+                revision_id = store.add(
+                    data,
+                    spec,
+                    data_reader=reader,
+                    revision_id=key if spec is None else None,
+                    source_owner_uid=self.uid,
+                    primary_revision_id=self._current_revision_id
+                    if data_role == "source"
+                    else None,
+                    primary_checkpoint_required=primary_checkpoint_required,
+                    preserve_lazy=(
+                        retain_expression
+                        or (
+                            self.uid in adapter.graph
+                            and not adapter.owns_result(self.uid)
+                        )
+                    )
+                    and data is not None
+                    and (data.chunks is not None or not data.variable._in_memory),
+                )
             self._revision_ids_by_role[data_role] = (token, revision_id)
             if data_role == "source":
                 self._current_revision_id = revision_id
@@ -2319,12 +2400,20 @@ class _ManagedWindowNode(QtCore.QObject):
     def source_state(self) -> _source_state_type:
         if self.tool_window is not None:
             return self.tool_window.source_state
+        graph = self.manager._data_graph
+        if graph.manages(self.uid):
+            if graph.graph.auto_error(self.uid) or graph.unavailable(self.uid):
+                return "unavailable"
+            return "stale" if graph.graph.is_stale(self.uid) else "fresh"
         return self._source_state
 
     @property
     def source_auto_update(self) -> bool:
         if self.tool_window is not None:
             return self.tool_window.source_auto_update
+        graph = self.manager._data_graph
+        if graph.manages(self.uid):
+            return graph.graph.auto_enabled(self.uid)
         return self._source_auto_update
 
     @property
@@ -2333,6 +2422,11 @@ class _ManagedWindowNode(QtCore.QObject):
             return bool(self.tool_window.script_inputs)
         if not self.is_imagetool:
             return bool(self.tool_script_inputs)
+        if self.manager._data_graph.owns_result(self.uid):
+            return (
+                self.manager._data_graph.parent_operations(self, displayed=False)
+                is not None
+            )
         return (
             self._source_spec is not None
             or self._source_binding is not None
@@ -2379,6 +2473,11 @@ class _ManagedWindowNode(QtCore.QObject):
         ):
             return self._derivation_display_rows_cache[1]
 
+        if self.manager._data_graph.owns_result(self.uid):
+            projected = self.manager._data_graph.provenance_rows(self.uid)
+            self._derivation_display_rows_cache = (cache_key, projected)
+            return projected
+
         source_spec = self.source_spec
         source_label_resolver = functools.partial(
             script_input_source_label,
@@ -2418,6 +2517,10 @@ class _ManagedWindowNode(QtCore.QObject):
                 )
             )
         cached_rows = tuple(rows)
+        if self.manager._data_graph.manages(self.uid):
+            cached_rows = self.manager._data_graph.provenance_rows(
+                self.uid, cached_rows
+            )
         self._derivation_display_rows_cache = (cache_key, cached_rows)
         return cached_rows
 
@@ -2444,6 +2547,8 @@ class _ManagedWindowNode(QtCore.QObject):
             filter_revision,
             self.manager._tool_graph.structure_generation,
         )
+        if self.manager._data_graph.manages(self.uid):
+            return (*generation, self.manager._data_graph.graph.generation)
         if self.parent_uid is None or self.source_spec is None:
             return generation
 
@@ -2507,6 +2612,10 @@ class _ManagedWindowNode(QtCore.QObject):
             emit_replay_code,
         )
 
+        if self.manager._data_graph.has_recorded_code(self):
+            return self.manager._data_graph.copy_code(
+                self, lambda _key, name, _used: name
+            )
         compiled = self._derivation_replay_graph()
         if compiled is None:
             return None
@@ -2671,10 +2780,18 @@ class _ManagedWindowNode(QtCore.QObject):
         store = self.manager._provenance_revisions
         seed_id = None
         if requires_legacy_replay_source(provenance_spec):
-            if replay_source_data is not None:
-                seed_id = store.add(replay_source_data)
-            elif self._replay_source_data is not None:
-                seed_id = store.add(self._replay_source_data)
+            seed_id = self.manager._data_graph.legacy_replay_seed(self.uid)
+            seed = (
+                replay_source_data
+                if replay_source_data is not None
+                else self._replay_source_data
+            )
+            if seed_id is None and seed is not None:
+                seed_id = store.add(
+                    seed,
+                    preserve_lazy=seed.chunks is not None
+                    or not seed.variable._in_memory,
+                )
         return store.normalize_provenance(
             provenance_spec, replay_source_revision_id=seed_id
         )
@@ -2738,15 +2855,26 @@ class _ManagedWindowNode(QtCore.QObject):
         state: _source_state_type = "fresh",
         propagate_descendants: bool,
         preserve_filter: bool = False,
+        recorded_filter: tuple[ToolProvenanceOperation, xr.DataArray] | None = None,
+        preserve_file: bool = False,
         detach_source_binding: bool = False,
         primary_checkpoint_required: bool = True,
         on_commit: Callable[[], None] | None = None,
+        after_replace: Callable[[], None] | None = None,
     ) -> None:
-        data = data.compute()
+        if erlab.interactive.imagetool.viewer._should_auto_compute(data):
+            data = data.compute()
         self.revision_id_for_role("source")
         accepted_filter_operation = None
         filtered = None
-        if preserve_filter and self.imagetool is not None:
+        if recorded_filter is not None:
+            accepted_filter_operation, result = recorded_filter
+            filtered = self.slicer_area._normalize_filter_result_for_source_dims(
+                data,
+                result.copy(deep=True),
+                self.slicer_area._replacement_display_dims(data),
+            )
+        elif preserve_filter and self.imagetool is not None:
             accepted_filter_operation = (
                 self.slicer_area._accepted_filter_provenance_operation
             )
@@ -2756,7 +2884,19 @@ class _ManagedWindowNode(QtCore.QObject):
                     accepted_filter_operation,
                 )
         with self._suspend_descendant_propagation(), self._suspend_snapshot_updates():
-            self.slicer_area.replace_source_data(data)
+            area = self.slicer_area
+            if preserve_file:
+                area._set_data(
+                    data,
+                    source_replaced=True,
+                    file_path=area._file_path,
+                    load_func=area._load_func,
+                    preparation_operations=area._load_preparation_operations,
+                )
+            else:
+                area._set_data(data, source_replaced=True)
+            if after_replace is not None:
+                after_replace()
             if accepted_filter_operation is not None:
                 self.slicer_area._apply_filter_result(
                     typing.cast("xr.DataArray", filtered),
@@ -2781,6 +2921,7 @@ class _ManagedWindowNode(QtCore.QObject):
         )
         self._set_source_state(state)
         self.manager._mark_node_data_dirty(self.uid)
+        self.manager._data_graph.source_changed(self)
         if propagate_descendants:
             if state == "fresh":
                 self.manager._lineage_controller._propagate_source_change_from_uid(
@@ -2790,6 +2931,224 @@ class _ManagedWindowNode(QtCore.QObject):
                 self.manager._lineage_controller._propagate_source_state_from_uid(
                     self.uid, state
                 )
+
+    def prepare_raw_replacement(
+        self,
+        prepared: _PreparedInputData,
+        *,
+        watched: bool = False,
+        preflight: bool = False,
+        rad2deg: bool | Iterable[str] = False,
+        load_func: _LoadFunc | None = None,
+        preparation_operations: Sequence[ToolProvenanceOperation] = (),
+        auto_compute: bool = True,
+    ) -> Callable[[], None]:
+        """Apply the displayed assignments to an incoming array."""
+        graph = self.manager._data_graph
+        self.manager.get_imagetool(self.uid)
+        revision = (
+            graph.graph.current_revision(self.uid)
+            if self.uid in graph.graph
+            else graph.displayed_edit_revision(self)
+        )
+        assignments = self.manager._metadata_editor.preserved_assignments(
+            self, revision
+        )
+        area = self.slicer_area
+        data = prepared.data
+        preparation = list(prepared.operations)
+        watched_name = None
+        if watched:
+            if not isinstance(self, _ImageToolWrapper):
+                raise TypeError("A watched variable must have a root ImageTool")
+            watched_name = self._watched_varname
+            name = _normalize_dataarray_name(self.name)
+            if data.name != name:
+                from erlab.interactive.imagetool._provenance._operations import (
+                    RenameOperation,
+                )
+
+                preparation.append(RenameOperation(name=name))
+        conversion = area._input_conversion(data, rad2deg)
+        if conversion is not None:
+            preparation.append(conversion)
+        publish = None
+        raw_revision = None
+        if preparation or assignments:
+            original = prepared.data if prepared.raw is None else prepared.raw
+            raw_revision = uuid.uuid4().hex
+            publish = graph.graph.prepare_raw_replacement(
+                self.uid,
+                workspace_arrays.lease_workspace_input(original),
+                assignments,
+                raw_revision=raw_revision,
+                preparation=tuple(op.capture_execution_options() for op in preparation),
+                keep_recipe=not watched,
+                prepare_view=graph._prepare_view,
+            )
+            data = publish.value
+        if preflight:
+            erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(data)
+        replacement = _RawReplacement(
+            prepared.source_ndim,
+            prepared.source_dtype,
+            publish,
+            raw_revision,
+            watched_name,
+        )
+
+        def commit() -> None:
+            if graph.graph.current_revision(self.uid) != revision:
+                raise RuntimeError(
+                    "ImageTool changed while its replacement was being prepared"
+                )
+            with self.publishing_replacement(replacement):
+                area._install_input(
+                    prepared,
+                    data,
+                    conversion,
+                    None,
+                    load_func,
+                    preparation_operations,
+                    auto_compute,
+                    source_replaced=True,
+                )
+
+        return commit
+
+    def publish_replacement(
+        self,
+        value: xr.DataArray | _CalculatedResult,
+        origin: _ImageToolInput | None = None,
+        *,
+        edit: typing.Literal["replace", "edited", "item"] = "replace",
+        require_current: Callable[[], None] | None = None,
+    ) -> None:
+        """Install a live result and publish its revision before notifying followers.
+
+        A file input supplies its own origin. A calculation supplies its captured
+        inputs. An external update keeps the previous recipe for future updates.
+        Assigning a plain array from the console starts a new checkpoint.
+        """
+        publication = value if isinstance(value, _CalculatedResult) else origin
+        data = value.data if isinstance(value, _CalculatedResult) else value
+        area = self.manager.get_imagetool(self.uid).slicer_area
+        item_update = edit == "item" and not area.has_active_filter
+        with self.publishing_replacement(
+            publication, data, require_current=require_current, item_update=item_update
+        ):
+            if isinstance(publication, _ImageToolInput):
+                area._set_data(
+                    data,
+                    source_replaced=True,
+                    file_path=publication.path,
+                    load_func=publication.loader,
+                    preparation_operations=publication.preparation,
+                )
+            elif item_update:
+                area._install_edited_values(data)
+            else:
+                area._set_data(data, source_replaced=True)
+                if edit != "replace":
+                    area.sigDataEdited.emit()
+
+    @contextlib.contextmanager
+    def publishing_replacement(
+        self,
+        publication: _CalculatedResult | _SourceWrite | None,
+        data: xr.DataArray | None = None,
+        *,
+        item_update: bool = False,
+        require_current: Callable[[], None] | None = None,
+    ) -> Iterator[None]:
+        """Publish the installed value before notifying dependents."""
+        graph = self.manager._data_graph
+        if graph.installing(self.uid) and isinstance(
+            publication, (_RawReplacement, _ImageToolInput, str)
+        ):
+            with graph.superseding_source(self.uid, publication):
+                yield
+            return
+        if self.uid not in graph.graph or not isinstance(
+            publication, (_RawReplacement, _ImageToolInput, str)
+        ):
+            graph.require_published(self.uid)
+        self.manager.get_imagetool(self.uid)
+        update = (
+            isinstance(publication, _RawReplacement)
+            and publication.watched_name is None
+        )
+        retain_history = update and self._current_revision_id is not None
+        if not update:
+            self.revision_id_for_role("source")
+        with (
+            graph.replacing(self),
+            self._suspend_snapshot_updates(),
+            self._suspend_descendant_propagation(),
+        ):
+            if not update:
+                self.set_detached_provenance(None, replay_source_data=None)
+            check_inputs = (
+                graph.graph.observe_calculation(self.uid, publication.capture)
+                if isinstance(publication, _CalculatedResult)
+                else None
+            )
+            yield
+            graph._require_single_write(self.uid)
+            if check_inputs is not None:
+                check_inputs()
+            if isinstance(publication, _CalculatedResult):
+                publish = graph.prepare_calculation(
+                    self.uid,
+                    publication,
+                    parent_uid=self.parent_uid,
+                    tool=self.manager.get_imagetool(self.uid),
+                    item_update=item_update,
+                )
+            else:
+                if publication is None:
+                    if data is None:
+                        raise ValueError("A data assignment requires an input")
+                    # The viewer has accepted this array, including any reduction.
+                    publication = _ImageToolInput(
+                        None, None, self.slicer_area._load_preparation_operations, data
+                    )
+                publish = graph.prepare_source_update(self, publication)
+            if require_current is not None:
+                require_current()
+            publish()
+            self.record_source_input(publication)
+        self._advance_snapshot_token(defer_refresh=True)
+        if retain_history:
+            self.revision_id_for_role("source", retain_expression=True)
+        self.manager._mark_node_data_dirty(self.uid)
+        self.manager._lineage_controller._propagate_source_change_from_uid(self.uid)
+
+    def record_source_input(
+        self, publication: _SourceWrite | _CalculatedResult | None
+    ) -> None:
+        """Update the input identity and dimensions after a successful publication."""
+        if (
+            not isinstance(publication, _RawReplacement)
+            or publication.watched_name is None
+        ):
+            self.manager._data_graph.forget_watched_input(self.uid)
+        if not isinstance(self, _ImageToolWrapper):
+            return
+        if (
+            isinstance(publication, _RawReplacement)
+            and publication.watched_name is not None
+        ):
+            self.set_source_input_ndim(publication.source_ndim)
+            self.set_source_input_dtype(publication.source_dtype)
+        elif publication == "file" or isinstance(publication, _ImageToolInput):
+            raw = publication.raw if isinstance(publication, _ImageToolInput) else None
+            self.set_source_input_ndim(
+                self.slicer_area._data.ndim if raw is None else raw.ndim
+            )
+            self.set_source_input_dtype(
+                self.slicer_area._source_input_dtype if raw is None else raw.dtype
+            )
 
     def replace_with_detached_data(
         self,
@@ -2801,25 +3160,30 @@ class _ManagedWindowNode(QtCore.QObject):
         replay_source_data: xr.DataArray | None,
         primary_checkpoint_required: bool = True,
         on_commit: Callable[[], None] | None = None,
+        staged: _ProvenanceRevisionStore | None = None,
     ) -> None:
-        """Replace displayed ImageTool data with detached provenance."""
+        """Install an edited or reloaded version of a saved workflow."""
         provenance_spec = self._normalize_provenance(
             provenance_spec, replay_source_data
         )
         self.manager._lineage_controller._validate_detached_replacement(
-            self,
-            provenance_spec,
+            self, provenance_spec
         )
-        self._replace_imagetool_data(
-            data,
-            provenance_spec,
-            state="fresh",
-            propagate_descendants=propagate_descendants,
-            preserve_filter=preserve_filter,
-            detach_source_binding=True,
-            primary_checkpoint_required=primary_checkpoint_required,
-            on_commit=on_commit,
-        )
+        graph = self.manager._data_graph
+        publish = graph.prepare_replacement(self, data, provenance_spec, staged=staged)
+        with graph.replacing(self) if publish is not None else contextlib.nullcontext():
+            self._replace_imagetool_data(
+                data,
+                provenance_spec,
+                state="fresh",
+                propagate_descendants=propagate_descendants,
+                preserve_filter=preserve_filter,
+                detach_source_binding=True,
+                primary_checkpoint_required=primary_checkpoint_required,
+                on_commit=on_commit,
+            )
+            if publish is not None:
+                publish()
 
     def _handle_tool_data_changed(self) -> None:
         manager = self.manager
@@ -2901,6 +3265,8 @@ class _ManagedWindowNode(QtCore.QObject):
         )
 
     def _set_source_auto_update(self, value: bool) -> None:
+        if self.manager._data_graph.manages(self.uid):
+            self.manager._data_graph.graph.set_auto(self.uid, enabled=value)
         self._source_auto_update = bool(value)
         self._notify_change(_ManagedNodeChange.ROW)
         self.manager._mark_node_state_dirty(self.uid)
@@ -3043,6 +3409,8 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def reload_source_data(self) -> bool:
         """Reload this node through its one applicable framework path."""
+        if self.manager._data_graph.reloads_result(self.uid):
+            return self.manager._data_graph.run(self.uid, "reload")
         if self.tool_window is None:
             if not self.is_imagetool:
                 return False
@@ -3106,10 +3474,12 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @QtCore.Slot()
     def _handle_imagetool_displayed_layout_changed(self) -> None:
+        self.manager._data_graph.view_changed(self)
         self._advance_displayed_snapshot_token(defer_refresh=True)
 
     @QtCore.Slot()
     def _handle_imagetool_provenance_changed(self) -> None:
+        self.manager._data_graph.view_changed(self)
         self._mark_provenance_changed(refresh_display=True)
 
     @QtCore.Slot()
@@ -3121,6 +3491,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @QtCore.Slot()
     def _handle_imagetool_source_data_changed(self) -> None:
+        self.manager._data_graph.source_changed(self, signal=True)
         self._advance_source_snapshot_token(defer_refresh=True)
         if (
             not self._suspend_snapshot_token_updates
@@ -3140,6 +3511,8 @@ class _ManagedWindowNode(QtCore.QObject):
         self._notify_change(_ManagedNodeChange.ROW | _ManagedNodeChange.INFO)
 
     def _update_from_parent_source(self) -> bool:
+        if self.manager._data_graph.manages(self.uid):
+            return self.manager._data_graph.run(self.uid, "refresh")
         if self.tool_window is not None:
             return self.manager._lineage_controller._refresh_tool_inputs(
                 self.uid,
@@ -3193,6 +3566,8 @@ class _ManagedWindowNode(QtCore.QObject):
         return True
 
     def handle_parent_source_replaced(self, parent_data: xr.DataArray) -> bool:
+        if self.manager._data_graph.manages(self.uid):
+            return False
         if self.tool_window is not None:
             # The dependency tracker owns every ToolWindow input edge. The tree
             # parent controls placement only.
@@ -3259,7 +3634,8 @@ class _ManagedWindowNode(QtCore.QObject):
     def show_source_update_dialog(
         self, *, parent: QtWidgets.QWidget | None = None
     ) -> int:
-        if not self.has_source_binding:
+        graph = self.manager._data_graph
+        if not graph.manages(self.uid) and not self.has_source_binding:
             return int(QtWidgets.QDialog.DialogCode.Rejected)
 
         dialog = erlab.interactive.utils._ToolSourceUpdateDialog(
@@ -3267,6 +3643,22 @@ class _ManagedWindowNode(QtCore.QObject):
             state=self.source_state,
             auto_update=self.source_auto_update,
         )
+        if graph.manages(self.uid):
+            preview = graph.preview(self.uid, "refresh")
+            if not graph.graph.has_recipe(self.uid):
+                dialog.auto_update_check.setEnabled(False)
+                dialog.save_button.setEnabled(False)
+            if error := graph.graph.auto_error(self.uid):
+                preview = (
+                    f"Automatic update failed: {error}\n"
+                    f"Check the data and operation, then choose Update Now.\n\n"
+                    f"{preview}"
+                )
+                dialog.update_button.setVisible(True)
+                dialog.update_button.setEnabled(True)
+            if graph.command_issue(self.uid, "refresh"):
+                dialog.update_button.setEnabled(False)
+            dialog.setInformativeText(preview)
         result = dialog.exec()
         if result == int(QtWidgets.QDialog.DialogCode.Accepted):
             if self.tool_window is not None:
@@ -3275,7 +3667,10 @@ class _ManagedWindowNode(QtCore.QObject):
                 )
             else:
                 self._set_source_auto_update(dialog.auto_update_check.isChecked())
-            if dialog.update_requested and self.source_state == "stale":
+            if dialog.update_requested and (
+                self.source_state == "stale"
+                or (graph.manages(self.uid) and graph.graph.is_stale(self.uid))
+            ):
                 self.manager._lineage_controller._refresh_source_chain_to_uid(self.uid)
         return result
 
@@ -3436,7 +3831,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
     def _watched_input_provenance_spec(
         self,
         *,
-        source_input_dtype: np.dtype[typing.Any] | str | None = None,
+        source_input_dtype: np.dtype | None,
     ) -> ToolProvenanceSpec | None:
         varname = self._watched_varname
         if (
@@ -3447,12 +3842,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
         ):
             return None
         seed_source = varname
-        input_dtype = (
-            self._source_input_dtype
-            if source_input_dtype is None
-            else np.dtype(source_input_dtype)
-        )
-        if input_dtype not in (
+        if source_input_dtype not in (
             None,
             np.dtype(np.float32),
             np.dtype(np.float64),
@@ -3468,14 +3858,18 @@ class _ImageToolWrapper(_ManagedWindowNode):
     def _watched_root_provenance_spec(self) -> ToolProvenanceSpec | None:
         if self._provenance_spec is not None or self._source_spec is not None:
             return None
-        return self._watched_input_provenance_spec()
+        return self._watched_input_provenance_spec(
+            source_input_dtype=self._source_input_dtype
+        )
 
     @property
     def provenance_spec(
         self,
     ) -> ToolProvenanceSpec | None:
         base_provenance = super().provenance_spec
-        if base_provenance is not None:
+        if base_provenance is not None or self.manager._data_graph.owns_result(
+            self.uid
+        ):
             return base_provenance
         return self._watched_root_provenance_spec()
 

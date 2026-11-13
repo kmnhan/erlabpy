@@ -39,9 +39,10 @@ from tests.interactive.imagetool.manager.helpers import (
     metadata_derivation_texts,
     metadata_detail_map,
     select_child_tool,
-    select_metadata_rows,
+    select_metadata_items,
     select_tools,
     set_transform_launch_mode,
+    top_level_operation_items,
     trigger_menu_action,
 )
 from tests.interactive.imagetool.manager.provenance._common import (
@@ -97,7 +98,7 @@ def test_revert_selected_input_uses_saved_raw_prefix_and_reloads_current_file(
     expected = prepared.isel(x=slice(1, 3))
     workspace = tmp_path / "selected-input.itws"
     with manager_context() as manager:
-        raw_index = manager.add_imagetool(
+        raw_index = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(prepared, _in_manager=True),
             provenance_spec=_manager_replay_file_spec(path, *raw_operations),
             show=False,
@@ -125,7 +126,7 @@ def test_revert_selected_input_uses_saved_raw_prefix_and_reloads_current_file(
         output = selected.assign_attrs(later=True)
         intermediates = []
         if nested:
-            intermediate = manager.add_imagetool(
+            intermediate = manager.import_imagetool(
                 erlab.interactive.imagetool.ImageTool(output, _in_manager=True),
                 provenance_spec=spec,
                 show=False,
@@ -143,7 +144,7 @@ def test_revert_selected_input_uses_saved_raw_prefix_and_reloads_current_file(
             )
             output = output.assign_attrs(outer=True)
         for _ in range(2 if multiple else 1):
-            manager.add_imagetool(
+            manager.import_imagetool(
                 erlab.interactive.imagetool.ImageTool(output, _in_manager=True),
                 provenance_spec=spec,
                 show=False,
@@ -221,10 +222,9 @@ def test_revert_selected_input_uses_saved_raw_prefix_and_reloads_current_file(
         )
         for node in list(manager._tool_graph.root_wrappers.values()):
             assert node.materialize_pending_workspace_payload()
-            # Workspace data follows the saved slicer layout. The recorded
-            # selection and its next replay retain the source dimension order.
+            xr.testing.assert_identical(node.slicer_area._data, expected)
             xr.testing.assert_identical(
-                node.slicer_area._data, expected.transpose(*selected.dims)
+                node.slicer_area.displayed_data, expected.transpose(*selected.dims)
             )
             assert manager._lineage_controller._reload_script_derived_target(node.index)
             xr.testing.assert_identical(
@@ -253,7 +253,7 @@ def test_revert_selection_after_closed_source_reloads_uses_latest_raw_checkpoint
     )
     workspace = tmp_path / "reloaded-input.itws"
     with manager_context() as manager:
-        raw_index = manager.add_imagetool(
+        raw_index = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
             provenance_spec=_manager_replay_file_spec(path),
             show=False,
@@ -271,7 +271,7 @@ def test_revert_selection_after_closed_source_reloads_uses_latest_raw_checkpoint
             primary_input="data",
             script_inputs=(captured,),
         )
-        target = manager.add_imagetool(
+        target = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(
                 source_spec.apply(data).assign_attrs(later=True), _in_manager=True
             ),
@@ -404,7 +404,7 @@ def test_closed_source_reloads_keep_source_recipe_depth_and_transform_once(
         return 1 + max((input_depth(value) for value in nested), default=0)
 
     with manager_context() as manager:
-        raw = manager.add_imagetool(
+        raw = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
             provenance_spec=_manager_replay_file_spec(path),
             show=False,
@@ -419,7 +419,7 @@ def test_closed_source_reloads_keep_source_recipe_depth_and_transform_once(
             primary_input="data",
             script_inputs=(source,),
         )
-        target = manager.add_imagetool(
+        target = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(
                 source_spec.apply(data).assign_attrs(result=True), _in_manager=True
             ),
@@ -471,7 +471,7 @@ def test_selected_input_revert_preserves_exact_raw_revision_code_approval(
     )
     expected = (data + 7).isel(x=slice(1, 3))
     with manager_context() as manager:
-        raw = manager.add_imagetool(
+        raw = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(data + 7, _in_manager=True),
             provenance_spec=raw_provenance,
             show=False,
@@ -487,12 +487,12 @@ def test_selected_input_revert_preserves_exact_raw_revision_code_approval(
             script_inputs=(captured,),
         )
         original = source_spec.apply(data + 7).assign_attrs(later=True)
-        target = manager.add_imagetool(
+        target = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(original, _in_manager=True),
             provenance_spec=provenance,
             show=False,
         )
-        external = manager.add_imagetool(
+        external = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(data + 7, _in_manager=True),
             provenance_spec=raw_provenance,
             show=False,
@@ -599,7 +599,7 @@ def test_relative_restore_keeps_only_its_own_parameter_expression_approval(
         parameter="c0",
     )
     with manager_context() as manager:
-        raw = manager.add_imagetool(
+        raw = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
             provenance_spec=_manager_replay_file_spec(path) if file_backed else None,
             show=False,
@@ -617,7 +617,7 @@ def test_relative_restore_keeps_only_its_own_parameter_expression_approval(
             script_inputs=(source,),
         )
         targets = [
-            manager.add_imagetool(
+            manager.import_imagetool(
                 erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
                 provenance_spec=provenance,
                 show=False,
@@ -734,7 +734,7 @@ def test_exact_selected_checkpoint_revert_keeps_pin_without_replaying_fit(
             script_inputs=(pinned,),
         )
         targets = [
-            manager.add_imagetool(
+            manager.import_imagetool(
                 erlab.interactive.imagetool.ImageTool(
                     selected.assign_attrs(later=True), _in_manager=True
                 ),
@@ -912,7 +912,7 @@ def test_manager_mixed_revert_restores_checkpoint_and_rebuilds_legacy_recipe(
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         manager._workspace_controller.local_code_edit = _authorize_local_edit
-        recorded = manager.add_imagetool(
+        recorded = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
             provenance_spec=_manager_replay_file_spec(paths[0]),
             show=False,
@@ -923,7 +923,7 @@ def test_manager_mixed_revert_restores_checkpoint_and_rebuilds_legacy_recipe(
             _manager_replay_file_spec(paths[0], operation),
             replay_source_data=None,
         )
-        legacy = manager.add_imagetool(
+        legacy = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(
                 operation.apply(data), _in_manager=True
             ),
@@ -962,7 +962,7 @@ def test_manager_checkpoint_batch_materializes_all_targets_before_restoring(
         nodes = []
         target_rows = []
         for _ in range(2):
-            index = manager.add_imagetool(
+            index = manager.import_imagetool(
                 erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
                 provenance_spec=_manager_replay_file_spec(path),
                 show=False,
@@ -1041,8 +1041,6 @@ def test_manager_repeated_shift_restores_primary_checkpoints_after_sources_close
         node.replace_with_detached_data(
             normalized, full_data(operation), replay_source_data=data
         )
-        normalized_revision = node.current_revision_id
-        normalized_spec = node.provenance_spec
         for _ in range(2):
             current = node.data_for_role("source")
             spec = manager._multi_input_operation_provenance(
@@ -1077,32 +1075,28 @@ def test_manager_repeated_shift_restores_primary_checkpoints_after_sources_close
                 AssertionError("exact restoration must not execute provenance")
             ),
         )
-        row = next(
-            row
-            for row in node.derivation_display_rows
-            if row.revision_id == normalized_revision
+        previous_shift = (
+            node.derivation_display_rows[0].children[0].materialized_children()[0]
         )
+        row = previous_shift.children[0]
+        graph = manager._data_graph.graph
+        assert isinstance(
+            graph.revision(previous_shift.graph_revision).producer.operation,
+            ShiftFromInputOperation,
+        )
+        xr.testing.assert_identical(graph.data(row.revision_id), normalized)
+        history = graph.revision(row.revision_id).producer
         assert controller.can_revert_row(row) == (True, "")
         controller.revert_row(row)
         xr.testing.assert_identical(node.data_for_role("source"), normalized)
-        store = manager._provenance_revisions
-        assert node.current_revision_id == normalized_revision
-        assert node.provenance_spec == normalized_spec
-        store.bind(node.current_revision_id, node.provenance_spec)
-        saved_input = node.provenance_spec.root_input
-        assert saved_input is not None
-        assert not saved_input.follow_source
-        assert saved_input.source_spec is None
-        xr.testing.assert_identical(store.resolve_data(normalized_revision), normalized)
-        saved_spec = saved_input.parsed_provenance_spec()
-        store.bind(saved_input.revision_id, saved_spec)
-        assert any(
-            isinstance(step.operation, NormalizeOperation)
-            for step in node.provenance_spec.steps
-        )
+        restored = graph.revision(graph.current_revision(node.uid))
+        assert restored.producer == history
+        assert isinstance(restored.producer.operation, NormalizeOperation)
         assert all(
-            not isinstance(step.operation, ShiftFromInputOperation)
-            for step in node.provenance_spec.steps
+            not isinstance(
+                getattr(record.producer, "operation", None), ShiftFromInputOperation
+            )
+            for record in graph.recorded_lineage(restored.revision_id)
         )
         for index in tuple(manager._tool_graph.root_wrappers):
             manager._remove_imagetool(index)
@@ -1155,17 +1149,42 @@ def test_manager_recorded_input_edit_uses_captured_data_and_open_input_is_indepe
         controller = manager._provenance_edit_controller
         replayed = controller._replay_candidate_result(node, "display", spec).data
         xr.testing.assert_identical(replayed, expected)
-        manager._metadata_node_uid = node.uid
-        row = node.derivation_display_rows[-1].materialized_children()[0]
+        manager.tree_view.clearSelection()
+        select_tools(manager, [target])
+        manager._update_info()
+        tree = manager.metadata_derivation_list
+        inputs = tree.topLevelItem(0)
+        assert inputs.text(0) == "Inputs used"
+        inputs.setExpanded(True)
+        shift = next(
+            inputs.child(i)
+            for i in range(inputs.childCount())
+            if inputs.child(i).text(0).startswith("shift")
+        )
+        tree.setCurrentItem(shift)
+        row = manager._selected_derivation_row()
+        assert row is not None
         assert not row.on_primary_chain
         assert not controller.can_revert_row(row)[0]
-        assert controller.can_open_input_row(row) == (True, "")
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        open_input = next(
+            action for action in menu.actions() if action.data() == "open_input"
+        )
+        assert open_input.isEnabled()
         previous_count = manager.ntools
-        controller.open_input_row(row)
+        trigger_menu_action(menu, open_input)
         assert manager.ntools == previous_count + 1
         opened = manager._node_for_target(manager._tool_graph.next_index - 1)
         xr.testing.assert_identical(opened.current_public_data(), correction)
-        opened.slicer_area.data.values[:] = 100.0
+        from erlab.interactive.imagetool.manager._console import ToolsNamespace
+
+        handle = ToolsNamespace(manager)[opened.index]
+        editable = handle.data
+        editable.values[:] = 100.0
+        xr.testing.assert_identical(opened.current_public_data(), correction)
+        handle.data = editable
+        np.testing.assert_array_equal(opened.current_public_data(), 100.0)
         xr.testing.assert_identical(
             manager._provenance_revisions.resolve_data(
                 spec.script_inputs[1].revision_id
@@ -1220,13 +1239,15 @@ def test_manager_detached_file_provenance_metadata_and_reload_roundtrip(
             tree["1/imagetool"].attrs["manager_node_provenance_spec"]
         )
         assert provenance_payload["schema_version"] == 3
-        assert provenance_payload["kind"] == "file"
-        assert provenance_payload["operations"] == []
-        assert len(provenance_payload["steps"]) == 1
-        assert provenance_payload["steps"][0]["input_policy"] == "restored"
+        assert provenance_payload["kind"] == "script"
         assert provenance_payload["steps"][0]["operation"]["op"] == "qsel_aggregate"
+        source_input = ScriptInput.model_validate(
+            provenance_payload["script_inputs"][0]
+        )
+        assert source_input.follow_source
+        assert source_input.node_uid == manager._node_for_target(0).uid
         assert (
-            provenance_payload["file_load_source"]["replay_call"]["target"]
+            source_input.parsed_provenance_spec().file_load_source.replay_call.target
             == "xarray.load_dataarray"
         )
         manager.remove_all_tools()
@@ -1244,7 +1265,12 @@ def test_manager_detached_file_provenance_metadata_and_reload_roundtrip(
         assert detached.output_id is None
         assert detached.source_spec is None
         assert detached.provenance_spec is not None
-        assert detached.provenance_spec.file_load_source is not None
+        assert (
+            detached.provenance_spec.replay_inputs[0]
+            .parsed_provenance_spec()
+            .file_load_source
+            is not None
+        )
         assert detached.reloadable
         assert detached_tool.slicer_area._file_path is None
 
@@ -1253,7 +1279,7 @@ def test_manager_detached_file_provenance_metadata_and_reload_roundtrip(
         manager._update_actions()
         manager._update_info()
         assert metadata_detail_map(manager)["File"] == str(file_path)
-        assert metadata_derivation_texts(manager)[0] == "Load data from file 'scan.h5'"
+        assert "Load data from file 'scan.h5'" in metadata_derivation_texts(manager)
         assert manager.reload_action.isVisible()
 
         updated = test_data + 100
@@ -1492,9 +1518,9 @@ def test_manager_nonuniform_transform_children_refresh_from_public_data(
         manager.tree_view.clearSelection()
         select_child_tool(manager, child_uid)
         manager._update_info(uid=child_uid)
-        derivation = metadata_derivation_texts(manager)
+        inputs, *derivation = metadata_derivation_texts(manager, top_level=True)
+        assert inputs == "Inputs used"
         assert derivation[0] == "Start from current parent ImageTool data"
-        assert len(derivation) == 2
         assert "Coarsen" in derivation[1]
 
         updated = data.copy(deep=True)
@@ -1595,16 +1621,18 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         manager.tree_view.clearSelection()
         select_child_tool(manager, child_uid)
         manager._update_info(uid=child_uid)
-        derivation = metadata_derivation_texts(manager)
+        inputs, *derivation = metadata_derivation_texts(manager, top_level=True)
+        assert inputs == "Inputs used"
         assert derivation[0] == "Start from current parent ImageTool data"
-        assert len(derivation) == 3
         assert "Aggregate" in derivation[1]
         assert "dims=" in derivation[1]
         assert "Aggregate" in derivation[2]
         assert "dims=" in derivation[2]
         manager.metadata_derivation_list.setFocus()
         clipboard = QtWidgets.QApplication.clipboard()
-        select_metadata_rows(manager, [0])
+        select_metadata_items(
+            manager, [manager.metadata_derivation_list.topLevelItem(1)]
+        )
         clipboard.clear()
         qtbot.keyClick(
             manager.metadata_derivation_list,
@@ -1614,7 +1642,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         assert copied == []
         assert clipboard.text() == ""
 
-        select_metadata_rows(manager, [1, 2])
+        select_metadata_items(manager, top_level_operation_items(manager))
         qtbot.keyClick(
             manager.metadata_derivation_list,
             QtCore.Qt.Key.Key_C,
@@ -1649,9 +1677,9 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         )
 
         monkeypatch.setattr(
-            manager,
-            "_prompt_replay_input_name",
-            lambda _node: "source_data",
+            manager._details_panel,
+            "_checkpoint_name",
+            lambda _revision, _suggestion, _used_names: "source_data",
         )
         trigger_menu_action(menu, manager._metadata_copy_full_action)
         full_namespace = _exec_generated_code(
@@ -1699,11 +1727,15 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         assert detached.source_spec is None
         assert detached.provenance_spec is not None
         assert detached.replay_source_data is None
-        assert detached.provenance_spec.root_input is not None
-        seed_revision = detached.provenance_spec.root_input.revision_id
-        assert manager._provenance_revisions.has_data(seed_revision)
+        graph = manager._data_graph.graph
+        seed = detached.provenance_spec.replay_inputs[0]
+        assert seed.follow_source
+        assert seed.node_uid == manager._node_for_target(0).uid
+        assert graph.follows(detached.uid) == {seed.node_uid}
         detached_tool = manager.get_imagetool(1)
-        detached_derivation_before = detached.provenance_spec.derivation_code()
+        detached_derivation_before = manager._data_graph.copy_code(
+            detached, lambda *_: "data"
+        )
 
         def _replace_detached_average(dialog) -> None:
             dialog.dim_checks["y"].setChecked(True)
@@ -1721,8 +1753,8 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
             "qsel_aggregate",
             "qsel_aggregate",
         ]
-        detached_derivation = detached.provenance_spec.derivation_code()
-        assert detached_derivation.count("derived =") == 1
+        detached_derivation = manager._data_graph.copy_code(detached, lambda *_: "data")
+        assert detached_derivation is not None
         detached_namespace = _exec_generated_code(
             detached_derivation,
             {"data": updated.copy(deep=True)},
@@ -1733,7 +1765,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
             detached_result.rename(None),
             updated.qsel.mean("x").qsel.mean("y").rename(None),
         )
-        assert detached.provenance_spec.derivation_code() != detached_derivation_before
+        assert detached_derivation != detached_derivation_before
         xr.testing.assert_identical(
             detached_tool.slicer_area._data.rename(None),
             updated.qsel.mean("x").qsel.mean("y").rename(None),
@@ -1743,9 +1775,11 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         manager.tree_view.clearSelection()
         select_tools(manager, [1])
         manager._update_info()
-        detached_derivation = metadata_derivation_texts(manager)
-        assert detached_derivation[0] == "Use data from Saved"
-        assert len(detached_derivation) == 3
+        inputs, *detached_derivation = metadata_derivation_texts(
+            manager, top_level=True
+        )
+        assert inputs == "Inputs used"
+        assert "parent ImageTool data" in detached_derivation[0]
         assert "Aggregate" in detached_derivation[1]
         assert "Aggregate" in detached_derivation[2]
 
@@ -1756,7 +1790,10 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         assert duplicated_detached.source_spec is None
         assert duplicated_detached.provenance_spec == detached.provenance_spec
         assert duplicated_detached.replay_source_data is None
-        assert duplicated_detached.current_revision_id == detached.current_revision_id
+        assert graph.current_revision(
+            duplicated_detached.uid
+        ) != graph.current_revision(detached.uid)
+        assert graph.follows(duplicated_detached.uid) == graph.follows(detached.uid)
         xr.testing.assert_identical(
             manager.get_imagetool(duplicated_detached_index).slicer_area._data.rename(
                 None
@@ -1856,7 +1893,7 @@ def test_reloaded_fallback_captures_exist_before_publication(
             active_name="data",
             script_inputs=(ScriptInput(name="data", provenance_spec=fallback),),
         )
-        index = manager.add_imagetool(
+        index = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(current),
             provenance_spec=spec,
             show=False,

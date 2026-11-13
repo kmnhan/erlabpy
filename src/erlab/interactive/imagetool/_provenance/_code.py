@@ -144,12 +144,23 @@ def _provenance_numeric_array_code(values: typing.Any) -> str:
 
 
 def _format_selection_expr(
-    input_name: str, method: str, kwargs: Mapping[Hashable, typing.Any]
+    input_name: str,
+    method: str,
+    kwargs: Mapping[Hashable, typing.Any],
+    options: Mapping[str, typing.Any] | None = None,
 ) -> str:
-    if not kwargs:
-        return f"{input_name}.{method}()"
-    args = erlab.utils._code.format_kwargs(dict(kwargs))
-    return f"{input_name}.{method}({args})"
+    reserved = {
+        "isel": {"indexers", "drop", "missing_dims"},
+        "sel": {"indexers", "method", "tolerance", "drop"},
+        "qsel": {"indexers", "func"},
+    }
+    if kwargs.keys() & reserved.get(method, set()):
+        args = erlab.utils._code._parse_single_arg(dict(kwargs))
+    else:
+        args = erlab.utils._code.format_kwargs(dict(kwargs))
+    settings = erlab.utils._code.format_call_kwargs(options or {})
+    arguments = ", ".join(part for part in (args, settings) if part)
+    return f"{input_name}.{method}({arguments})"
 
 
 def _format_selection_step(method: str, kwargs: Mapping[Hashable, typing.Any]) -> str:

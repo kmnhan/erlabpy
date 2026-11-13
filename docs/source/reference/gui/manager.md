@@ -133,7 +133,7 @@ Tree badges describe live state:
 - The Dask icon identifies chunked arrays.
 - A variable-name badge identifies a watched notebook variable.
 - {guilabel}`Stale`, {guilabel}`Unavailable`, and {guilabel}`Auto` describe update state
-  for child results.
+  for results that follow other ImageTools.
 - {guilabel}`Changed` and {guilabel}`Missing` describe results that depend on several
   live ImageTools.
 
@@ -159,11 +159,37 @@ data. Compatible source changes can mark the child as stale or update it automat
 
 ImageTool transformation dialogs use {guilabel}`Result Placement`:
 
-- {guilabel}`Open Child Window` preserves the source and records a child result.
-- {guilabel}`Open Top-Level Window` preserves the source but creates an independent
-  top-level row.
+- {guilabel}`Open Child Window` places the result below its source.
+- {guilabel}`Open Top-Level Window` places the result at the top level. Both choices
+  record the transformation and its inputs.
 - {guilabel}`Replace Current` replaces the data in the active ImageTool and retains
   the earlier data and recorded steps in its history.
+
+For a result created from live ImageTools, expand {guilabel}`Inputs used` in the
+{guilabel}`Provenance` panel to see the revisions that produced the displayed data.
+Open a recorded input in a separate ImageTool to inspect its array. To change a
+shared operation for this result alone, expand the input and edit the operation there.
+For a stale result, expand {guilabel}`Inputs for next update` below the provenance
+list to inspect its planned inputs. The Auto indicator shows whether the result
+updates automatically. {guilabel}`Update Now` uses
+current inputs and updates stale prerequisites. {guilabel}`Reload Data` rebuilds
+followed inputs from their origins. Closing a source window retains its last revision
+for results that still use it.
+
+If you use {menuselection}`File --> Open` in a result window, the window keeps
+its place in the tree. Its new input is the selected file. {guilabel}`Reload Data`
+reads that file, and changes to the previous input no longer mark the window stale.
+
+This also applies when you transform an ImageTool after reopening a workspace.
+If the workspace retained the prepared result of a file load, Reload repeats
+the saved load and preparation steps. If only the displayed array can be
+identified, the preview shows that checkpoint. Reload the source ImageTool
+first to replay any earlier steps that it owns.
+
+```{versionchanged} 3.30.0
+New child and top-level transform results can follow the same source. Moving a result
+to the top level preserves its input bindings.
+```
 
 (imagetool-manager-workspace-properties)=
 
@@ -262,7 +288,7 @@ ImageTool. These handles are not {class}`xarray.DataArray` objects, but they sup
 many of the same operations and keep track of the manager history. For example:
 
   ```python
-  # Access the underlying DataArray of the first window
+  # Get an independent DataArray snapshot of the first window
   tools[0].data
 
   # Inspect the child rows under the first window
@@ -273,16 +299,23 @@ many of the same operations and keep track of the manager history. For example:
 
   # Use complicated expressions
   tools[0].qsel(alpha=slice(-1, 1)).qsel.average("eV")
-  era.transform.rotate(tools[0], 2.0, axes=("alpha", "eV"), reshape=False)
+  era.transform.rotate(
+      tools[0],
+      2.0,
+      axes=("alpha", "eV"),
+      center={"eV": 0.0, "alpha": 1.5},
+      reshape=False,
+      mode="nearest",
+  )
 
   # Use a child ImageTool in a similar calculation
   tools[0].children[0] - tools[1]
 
-  # xarray module calls also keep manager inputs when they receive tool handles
+  # Concatenate windows while retaining their Manager inputs
   xr.concat([tools[0], tools[1]], dim="scan")
 
 
-  # Simple helper functions defined in the console can receive tool handles directly
+  # Python functions can receive tool handles directly
   def normalize(data):
       return data / data.max()
 
@@ -296,6 +329,103 @@ many of the same operations and keep track of the manager history. For example:
   # Replace data in the first window
   tools[0].data = tools[0].assign_coords(time=tools[1].time)
   ```
+
+`tools[i].data` returns an independent, editable {class}`xarray.DataArray`
+snapshot of the displayed data. The Manager does not track edits to that array
+or its NumPy views. Assign the array back to apply your changes:
+
+```python
+a = tools[0].data
+a[0, 0] = 100  # Changes a only
+tools[0].data = a  # Replaces the window data
+```
+
+This assignment records a new checkpoint because the Manager does not know which
+Python operations produced `a`. Existing results retain their recorded inputs.
+To edit the window directly and record the operation, use `tools[0][0, 0] = 100`.
+The handle `tools[0]` continues to use the current window data in expressions such
+as `tools[0] - tools[1]`. A saved method such as `select = tools[0].isel` also uses
+the current window data when you call `select(...)`.
+
+A calculated result such as `diff = tools[0] - tools[1]` retains its calculated
+values and the input revisions used to produce them. `diff.data` returns an
+independent snapshot, just like `tools[i].data`. To modify a calculated result,
+edit its snapshot and assign that array to a window. Opening `diff` itself
+preserves its original values and recorded steps. Use
+`diff.qshow(manager=True, replace=1)` to replace window 1 with that recorded
+result while preserving the inputs used by earlier results.
+
+Handles support arithmetic, comparisons, indexing, selection and reduction
+methods, `qsel`, supported `kspace` operations, and named `coarsen` reductions.
+Use `dir(handle)` to inspect the available operations. Shape and dimension reads
+do not copy the full array. A coarsening operation that has already been
+constructed retains its input even if the source window changes.
+
+Use `.data` for ordinary xarray and NumPy operations, including coordinate and
+attribute edits, callbacks, and raw array conversion. Access such as
+`tools[0].values` or `tools[0].attrs` raises an error that explains this boundary.
+For example:
+
+```python
+a = tools[0].data
+a.coords["gain"].values[:] = 7
+a.attrs["sample"] = "edited"
+tools[0].data = a
+```
+
+The supplied `xr`, `era`, and `erlab` aliases support direct recorded calls such
+as `xr.concat([tools[0], tools[1]], dim="scan")` and
+`era.transform.rotate(tools[0], 5.0, reshape=False)`. ERLab transformations with
+a recorded operation and multi-input `era.transform.shift` use the same path.
+Calls with ordinary DataArrays keep normal library behavior. Unsupported tracked
+calls require snapshots. Normal NumPy ufunc calls such as
+`np.sin(tools[0])` retain provenance. Mutable output arguments such as `out=`
+require ordinary snapshots.
+
+Functions imported separately keep their normal behavior. Use `tools.apply`
+to call one with handles, for example
+`tools.apply(concat, [tools[0], tools[1]], dim="scan")` after
+`from xarray import concat`. Importing `xarray as xr` replaces the supplied
+console alias, so use `tools.apply` for that imported module as well.
+
+Python functions receive the objects you pass to them. Passing a window handle
+lets the function edit that window through the same operations used directly in
+the console:
+
+```python
+def set_first_value(data):
+    data[0, 0] = 100
+
+
+set_first_value(tools[0])  # Edits the window and records the operation
+set_first_value(tools[0].data)  # Edits only the independent snapshot
+```
+
+The `.data` snapshot boundary also applies inside functions. Assign an edited
+DataArray to the handle's `.data` property to apply coordinate or metadata
+changes. An edit already applied to a window is retained if a later statement
+raises an exception. A failed edit leaves the window and its provenance unchanged.
+
+The recorded result contains the array operations that the function performed.
+Refresh replays those operations; it does not rerun arbitrary Python control
+flow. For example, if a Python conditional chooses a multiplier of 2, that
+multiplier remains 2 during Refresh even if the updated source would take another
+branch. Python scalars obtained through `.item()` are fixed values in subsequent
+recorded calculations.
+
+Python augmented assignment follows the same boundary. `tools[0].data += 1`
+reads a snapshot and assigns it back as a new checkpoint. In contrast,
+`h = tools[0]; h += 1` assigns a calculated result to the variable `h` and leaves
+the window unchanged.
+
+:::{versionchanged} 3.30.0
+`.data` returns a snapshot for both window handles and calculated results. An
+expression such as `tools[0].data[0, 0] = 100` changes only that temporary snapshot.
+Use `tools[0][0, 0] = 100` to edit the window. Saved window methods and accessors
+use the current data when called. Console functions receive live handles directly.
+Mutable exports and unsupported calls require `.data`. Supported library calls
+retain provenance through the supplied aliases or `tools.apply`.
+:::
 
 :::{tip}
 Drag one row from the {guilabel}`Data/Tools` tree into the console to insert its

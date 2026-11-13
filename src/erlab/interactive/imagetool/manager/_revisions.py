@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 
 import xarray as xr
 
-from erlab._provenance._records import checkpoint_data
+from erlab._provenance._records import capture_display_data, checkpoint_data
 from erlab.interactive.imagetool._provenance._model import (
     ReplayStep,
     ScriptInput,
@@ -43,6 +43,7 @@ class _RevisionCheckpointSource:
 @dataclass(frozen=True)
 class _RevisionCheckpoint:
     source: _RevisionCheckpointSource | None = None
+    data_reader: Callable[[], xr.DataArray] | None = None
 
 
 @dataclass(frozen=True)
@@ -174,7 +175,9 @@ class _ProvenanceRevisionStore:
         source_owner_uid: str | None = None,
         revision_id: str | None = None,
         source: _RevisionCheckpointSource | None = None,
+        data_reader: Callable[[], xr.DataArray] | None = None,
         primary_checkpoint_required: bool = True,
+        preserve_lazy: bool = False,
     ) -> str:
         revision_id = uuid.uuid4().hex if revision_id is None else revision_id
         if (
@@ -186,17 +189,26 @@ class _ProvenanceRevisionStore:
             raise ValueError("Invalid provenance revision ID")
         if revision_id in self._records:
             raise ValueError(f"Provenance revision {revision_id!r} already exists")
-        if data is not None and source is not None:
-            raise ValueError("Supply revision data or a checkpoint source, not both")
+        if sum(value is not None for value in (data, source, data_reader)) > 1:
+            raise ValueError(
+                "Supply revision data or a checkpoint source or reader "
+                "as the sole input"
+            )
         if data is not None and not isinstance(data, xr.DataArray):
             raise TypeError("Revision data must be a DataArray")
         parsed_spec = parse_tool_provenance_spec(spec)
         parsed_spec = self.normalize_provenance(parsed_spec)
         owned_spec = None if parsed_spec is None else parsed_spec.model_copy(deep=True)
-        checkpoint = None if source is None else _RevisionCheckpoint(source)
+        checkpoint = (
+            _RevisionCheckpoint(source, data_reader)
+            if source is not None or data_reader is not None
+            else None
+        )
         protected = None
         if data is not None:
-            protected = checkpoint_data(data)
+            protected = (
+                capture_display_data(data) if preserve_lazy else checkpoint_data(data)
+            )
             checkpoint = _RevisionCheckpoint()
         record = _ProvenanceRevision(
             revision_id=revision_id,
@@ -339,8 +351,12 @@ class _ProvenanceRevisionStore:
         if record.checkpoint is None:
             raise ValueError(f"Revision {revision_id!r} has no data checkpoint")
         if revision_id not in self._data:
-            source = typing.cast("_RevisionCheckpointSource", record.checkpoint.source)
-            data = source.read_data()
+            if record.checkpoint.source is not None:
+                data = record.checkpoint.source.read_data()
+            elif record.checkpoint.data_reader is not None:
+                data = record.checkpoint.data_reader()
+            else:
+                raise RuntimeError(f"Revision {revision_id!r} has no checkpoint reader")
             self._data[revision_id] = data.copy(deep=True)
         return self._data[revision_id].copy(deep=True)
 
@@ -387,6 +403,16 @@ class _ProvenanceRevisionStore:
             )
         self._records.update(staged._records)
         self._data.update(staged._data)
+
+    def attach_checkpoint_reader(
+        self, revision_id: str, reader: Callable[[], xr.DataArray]
+    ) -> None:
+        """Supply the exact data for a previously metadata-only revision."""
+        record = self._records[revision_id]
+        if record.checkpoint is None:
+            self._records[revision_id] = replace(
+                record, checkpoint=_RevisionCheckpoint(data_reader=reader)
+            )
 
     def bind_checkpoint_source(
         self,

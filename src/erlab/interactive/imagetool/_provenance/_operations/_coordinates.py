@@ -35,7 +35,60 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
 
+class ImageToolInputOperation(ToolProvenanceOperation):
+    """Record the value and angle conversions applied when ImageTool opens an array."""
+
+    reads_input_only: typing.ClassVar[bool] = True
+    op: typing.Literal["imagetool_input"] = "imagetool_input"
+    cast_float64: bool = False
+    normalize_dtype: bool = False
+    degree_coords: tuple[str, ...] = ()
+
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
+        if self.cast_float64 or (
+            self.normalize_dtype and data.dtype not in (np.float32, np.float64)
+        ):
+            data = data.astype(np.float64, copy=False)
+        if self.degree_coords:
+            data = data.assign_coords(
+                {name: np.rad2deg(data[name]) for name in self.degree_coords}
+            )
+        return data
+
+    def derivation_label(self) -> str:
+        changes = []
+        if self.cast_float64:
+            changes.append("Convert data to float64")
+        elif self.normalize_dtype:
+            changes.append("Use the ImageTool display dtype")
+        if self.degree_coords:
+            changes.append(f"Convert {', '.join(self.degree_coords)} to degrees")
+        return ", ".join(changes)
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        code = (
+            f"{input_name}.astype(np.float64, copy=False)"
+            if self.cast_float64
+            else input_name
+        )
+        if self.normalize_dtype and not self.cast_float64:
+            code = (
+                f"{input_name}.pipe(lambda value: value if value.dtype in "
+                "(np.float32, np.float64) else value.astype(np.float64, copy=False))"
+            )
+        if self.degree_coords:
+            coords = ", ".join(
+                f"{name!r}: np.rad2deg({input_name}[{name!r}])"
+                for name in self.degree_coords
+            )
+            code = f"{code}.assign_coords({{{coords}}})"
+        return code
+
+
 class SwapDimsOperation(ToolProvenanceOperation):
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
     op: typing.Literal["swap_dims"] = "swap_dims"
     batch_available: typing.ClassVar[bool] = True
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
@@ -63,6 +116,7 @@ class SwapDimsOperation(ToolProvenanceOperation):
 
 
 class RenameDimsCoordsOperation(ToolProvenanceOperation):
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
     op: typing.Literal["rename_dims_coords"] = "rename_dims_coords"
     batch_available: typing.ClassVar[bool] = True
     mapping: ProvenanceHashableMapping = pydantic.Field(default_factory=dict)
@@ -103,6 +157,7 @@ class RenameDimsCoordsOperation(ToolProvenanceOperation):
 
 
 class AffineCoordOperation(ToolProvenanceOperation):
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
     op: typing.Literal["affine_coord"] = "affine_coord"
     batch_available: typing.ClassVar[bool] = True
     coord_name: str
@@ -211,6 +266,7 @@ class AffineCoordOperation(ToolProvenanceOperation):
 
 
 class AssignCoordsOperation(ToolProvenanceOperation):
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
     op: typing.Literal["assign_coords"] = "assign_coords"
     batch_available: typing.ClassVar[bool] = True
     coord_name: str
@@ -285,6 +341,7 @@ class AssignCoordsOperation(ToolProvenanceOperation):
 
 
 class AssignScalarCoordOperation(ToolProvenanceOperation):
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
     op: typing.Literal["assign_scalar_coord"] = "assign_scalar_coord"
     batch_available: typing.ClassVar[bool] = True
     coord_name: ProvenanceHashable
@@ -338,6 +395,7 @@ class AssignScalarCoordOperation(ToolProvenanceOperation):
 
 
 class DropScalarCoordsOperation(ToolProvenanceOperation):
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
     op: typing.Literal["drop_scalar_coords"] = "drop_scalar_coords"
     batch_available: typing.ClassVar[bool] = True
     names: ProvenanceHashableTuple = pydantic.Field(min_length=1)
@@ -361,6 +419,7 @@ class DropScalarCoordsOperation(ToolProvenanceOperation):
 
 
 class AssignCoord1DOperation(ToolProvenanceOperation):
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
     op: typing.Literal["assign_coord_1d"] = "assign_coord_1d"
     batch_available: typing.ClassVar[bool] = True
     coord_name: ProvenanceHashable
@@ -443,6 +502,7 @@ class AssignCoord1DOperation(ToolProvenanceOperation):
 
 
 class AssignAttrsOperation(ToolProvenanceOperation):
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
     op: typing.Literal["assign_attrs"] = "assign_attrs"
     batch_available: typing.ClassVar[bool] = True
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (

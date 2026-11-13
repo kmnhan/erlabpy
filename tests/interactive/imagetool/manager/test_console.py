@@ -55,12 +55,11 @@ from erlab.interactive.imagetool.manager._console import ToolNamespace
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
 from erlab.interactive.imagetool.manager._dialogs import _ConcatDialog, _StoreDialog
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
+from tests.interactive.imagetool.manager.helpers import show_script_result
 
 from .helpers import (
     _exec_generated_code,
     click_tree_view_pos,
-    console_helper,
-    console_helper_dependency,
     dependency_status_badge,
     metadata_detail_labels,
     metadata_detail_map,
@@ -74,6 +73,798 @@ def _authorize_execution(entries: tuple[typing.Any, ...]) -> object:
     if capability is None:  # pragma: no cover - local trust always issues one.
         raise RuntimeError("Could not issue test execution capability")
     return capability
+
+
+def _assert_console_copied_result(
+    manager, tools, node, expected, monkeypatch, *, output_name="derived"
+):
+    namespace = {}
+
+    def checkpoint_name(key, _suggestion, _used_names):
+        name = f"input_{len(namespace)}"
+        namespace[name] = tools.checkpoint(key)
+        return name
+
+    copied = []
+    monkeypatch.setattr(manager._details_panel, "_checkpoint_name", checkpoint_name)
+    monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)
+    manager._set_metadata_node(node)
+    manager._copy_full_derivation_code()
+    xr.testing.assert_identical(
+        _exec_generated_code(copied[-1], namespace)[output_name], expected
+    )
+
+
+@pytest.mark.parametrize("same_cell", [False, True])
+@pytest.mark.parametrize("raises", [False, True])
+def test_console_functions_keep_live_handle_edits(
+    manager_context, monkeypatch, same_cell, raises
+):
+    data = xr.DataArray(np.arange(12.0).reshape(3, 4), dims=("x", "y"))
+    with manager_context() as manager:
+        manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
+        tools = manager_console.ToolsNamespace(manager)
+        tools._show_handle(tools[0] * 3, active_name="derived", label="Before edit")
+        old = manager._node_for_target(1)
+        handle = tools[0]
+        shell = InteractiveShell()
+        shell.user_ns.update(tools=tools, handle=handle)
+        tools.bind_shell(shell)
+        definition = (
+            "def edit(first, *, second):\n"
+            "    assert first is second is handle\n"
+            "    first[0, 0] = 100\n"
+            "    assert second.data[0, 0] == 100\n"
+            + (
+                "    raise RuntimeError('after edit')\n"
+                if raises
+                else "    return second * 2\n"
+            )
+            + "original_function = edit\n"
+        )
+        call = "result = edit(handle, second=handle)"
+        try:
+            if same_cell:
+                execution = shell.run_cell(definition + call)
+            else:
+                assert shell.run_cell(definition).success
+                execution = shell.run_cell(call)
+            assert execution.success == (not raises)
+            assert shell.user_ns["edit"] is shell.user_ns["original_function"]
+            expected = data.copy(deep=True)
+            expected[0, 0] = 100
+            xr.testing.assert_identical(fetch(0), expected)
+            assert old.source_state == "stale"
+            _assert_console_copied_result(manager, tools, old, data * 3, monkeypatch)
+            if not raises:
+                shell.user_ns["result"].qshow(manager=True)
+                result = manager._node_for_target(2)
+                xr.testing.assert_identical(fetch(2), expected * 2)
+                _assert_console_copied_result(
+                    manager,
+                    tools,
+                    result,
+                    expected * 2,
+                    monkeypatch,
+                    output_name="result",
+                )
+                manager._data_graph.graph.refresh(result.uid)
+                xr.testing.assert_identical(fetch(2), expected * 2)
+        finally:
+            tools.unbind_shell()
+
+
+@pytest.mark.parametrize("same_cell", [False, True])
+@pytest.mark.parametrize("export", ["coords", "attrs", "data"])
+def test_console_functions_preserve_snapshot_exports(
+    manager_context, monkeypatch, same_cell, export
+):
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        coords={"gain": ("x", np.ones(3))},
+        attrs={"sample": {"name": "original"}},
+    )
+    with manager_context() as manager:
+        manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
+        tools = manager_console.ToolsNamespace(manager)
+        shell = InteractiveShell()
+        shell.user_ns["tools"] = tools
+        tools.bind_shell(shell)
+        mutation = {
+            "coords": "value.data.coords['gain'].values[:] = 7",
+            "attrs": "value.data.attrs['sample']['name'] = 'edited'",
+            "data": "value.data[0, 0] = 100",
+        }[export]
+        definition = f"def transform(value):\n    {mutation}\n    return value * 2\n"
+        try:
+            if same_cell:
+                assert shell.run_cell(
+                    definition + "result = transform(tools[0])"
+                ).success
+            else:
+                assert shell.run_cell(definition).success
+                assert shell.run_cell("result = transform(tools[0])").success
+            xr.testing.assert_identical(fetch(0), data)
+            shell.user_ns["result"].qshow(manager=True)
+            node = manager._node_for_target(1)
+            _assert_console_copied_result(
+                manager, tools, node, data * 2, monkeypatch, output_name="result"
+            )
+        finally:
+            tools.unbind_shell()
+
+
+@pytest.mark.parametrize("mode", ["add", "ufunc", "method", "concat", "assignment"])
+@pytest.mark.parametrize("replace_before_show", [False, True])
+def test_console_function_combines_values_before_and_after_edit(
+    manager_context, monkeypatch, mode, replace_before_show
+):
+    data = xr.DataArray(np.arange(12.0).reshape(3, 4), dims=("x", "y"))
+    with manager_context() as manager:
+        manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
+        tools = manager_console.ToolsNamespace(manager)
+        shell = InteractiveShell()
+        shell.user_ns.update(tools=tools, np=np, xr=xr)
+        tools.bind_shell(shell)
+        ending = {
+            "add": "    return before + value\n",
+            "ufunc": "    return np.add(before, value)\n",
+            "method": "    return before.where(value < 50, other=value)\n",
+            "concat": (
+                "    return tools.apply(xr.concat, [before, value], dim='state')\n"
+            ),
+            "assignment": "    value[:] = before\n    return value + 1\n",
+        }[mode]
+        try:
+            assert shell.run_cell(
+                "def transform(value):\n"
+                "    before = value * 2\n"
+                "    value[0, 0] = 100\n" + ending
+            ).success
+            assert shell.run_cell("result = transform(tools[0])").success
+            if replace_before_show:
+                tools[0].data = data + 200
+            shell.user_ns["result"].qshow(manager=True)
+            after = data.copy(deep=True)
+            after[0, 0] = 100
+            expected = {
+                "add": data * 2 + after,
+                "ufunc": np.add(data * 2, after),
+                "method": (data * 2).where(after < 50, other=after),
+                "concat": xr.concat([data * 2, after], dim="state"),
+                "assignment": data * 2 + 1,
+            }[mode]
+            xr.testing.assert_identical(fetch(1), expected)
+            _assert_console_copied_result(
+                manager,
+                tools,
+                manager._node_for_target(1),
+                expected,
+                monkeypatch,
+                output_name="result",
+            )
+        finally:
+            tools.unbind_shell()
+
+
+def test_console_library_functions_use_explicit_snapshots(manager_context, monkeypatch):
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        coords={"gain": ("x", np.ones(3))},
+        attrs={"sample": {"name": "original"}},
+    )
+    module = types.ModuleType("test_console_library")
+
+    def transform(items, *, again):
+        assert isinstance(items[0], xr.DataArray)
+        assert items[0] is items[1] is again
+        items[0].coords["gain"].values[:] = 7
+        items[0].attrs["sample"]["name"] = "edited"
+        return items[1] * 2
+
+    module.transform = transform
+    with manager_context() as manager:
+        manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
+        tools = manager_console.ToolsNamespace(manager)
+        handle = tools[0]
+        snapshot = handle.data
+        result = module.transform([snapshot, snapshot], again=snapshot)
+        xr.testing.assert_identical(fetch(0), data)
+        expected = data.copy(deep=True)
+        expected.coords["gain"][:] = 7
+        expected.attrs["sample"]["name"] = "edited"
+        xr.testing.assert_identical(result, expected * 2)
+        handle.data = result
+        result[:] = -1
+        xr.testing.assert_identical(fetch(0), expected * 2)
+
+
+@pytest.mark.parametrize("derived", [False, True])
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize(
+    "attribute", ["data", "values", "numpy", "attrs", "coords", "encoding", "variable"]
+)
+def test_console_snapshot_public_arrays_are_independent(
+    manager_context, monkeypatch, derived, lazy, attribute
+):
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        coords={"gain": ("x", np.ones(3))},
+        attrs={"sample": {"name": "original"}},
+    )
+    if lazy:
+        data = data.chunk({"x": 1})
+    with manager_context() as manager:
+        manager.add_imagetool(
+            itool(data, manager=False, execute=False, auto_compute=False), show=False
+        )
+        tools = manager_console.ToolsNamespace(manager)
+        handle = tools[0] * 2 if derived else tools[0]
+        expected = handle.data
+        snapshot = handle.data
+        if attribute == "data":
+            snapshot[0, 0] = 100
+        elif attribute == "values":
+            snapshot.values[0, 0] = 100
+        elif attribute == "numpy":
+            np.asarray(snapshot)[0, 0] = 100
+        elif attribute == "attrs":
+            snapshot.attrs["sample"]["name"] = "edited"
+        elif attribute == "coords":
+            snapshot.coords["gain"].values[:] = 100
+        elif attribute == "encoding":
+            snapshot.encoding["unrecorded"] = True
+        else:
+            snapshot.variable[0, 0] = 100
+        xr.testing.assert_identical(handle.data, expected)
+        assert "unrecorded" not in handle.data.encoding
+        xr.testing.assert_identical(fetch(0), data)
+        handle.qshow(manager=True)
+        node = manager._node_for_target(1)
+        xr.testing.assert_identical(fetch(1), expected)
+        _assert_console_copied_result(manager, tools, node, expected, monkeypatch)
+        manager._data_graph.graph.refresh(node.uid)
+        xr.testing.assert_identical(fetch(1), expected)
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "isel",
+        "isel_wrapped",
+        "qsel",
+        "qsel_wrapped",
+        "mean",
+        "coarsen",
+        "coarsened",
+        "coarsened_wrapped",
+    ],
+)
+def test_console_retained_methods_use_matching_data_and_provenance(
+    manager_context, monkeypatch, method
+):
+    data = xr.DataArray(
+        np.arange(24.0).reshape(4, 6),
+        dims=("x", "y"),
+        coords={"x": np.arange(4.0), "y": np.arange(6.0)},
+    )
+    with manager_context() as manager:
+        manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
+        tools = manager_console.ToolsNamespace(manager)
+        if method.startswith("isel"):
+            saved = tools[0].isel
+            kwargs = {"x": slice(0, 3)}
+            expected = (data + 100).isel(x=slice(0, 3))
+        elif method.startswith("qsel"):
+            saved = tools[0].qsel
+            kwargs = {"x": slice(0, 2)}
+            expected = (data + 100).qsel(x=slice(0, 2))
+        elif method == "mean":
+            saved = tools[0].qsel.mean
+            kwargs = {"dim": "x"}
+            expected = (data + 100).qsel.mean("x")
+        elif method == "coarsen":
+            saved = tools[0].coarsen
+            kwargs = {"y": 2}
+            expected = (data + 100).coarsen(y=2).mean()
+        else:
+            saved = tools[0].coarsen(y=2).mean
+            kwargs = {}
+            expected = data.coarsen(y=2).mean()
+        if method.endswith("_wrapped"):
+            saved = saved.__wrapped__
+        tools[0].data = data + 100
+        result = saved(**kwargs)
+        if method == "coarsen":
+            result = result.mean()
+        result.qshow(manager=True)
+        node = manager._node_for_target(1)
+        xr.testing.assert_identical(fetch(1), expected)
+        _assert_console_copied_result(manager, tools, node, expected, monkeypatch)
+        tools[0].data = data + 200
+        manager._data_graph.graph.refresh(node.uid)
+        offset = 200 if method.startswith("coarsened") else 100
+        xr.testing.assert_identical(fetch(1), expected + offset)
+
+
+def test_console_live_reads_do_not_copy_the_full_volume(manager_context, monkeypatch):
+    import inspect
+
+    data = xr.DataArray(np.ones((5, 7, 9)), dims=("scan", "x", "y"))
+    with manager_context() as manager:
+        manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
+        tools = manager_console.ToolsNamespace(manager)
+        _ = tools[0].data  # Establish the recorded source before counting copies.
+        copy = xr.DataArray.copy
+        full_copies = []
+
+        def track_copy(array, deep=True, data=None):
+            if deep and data is None and array.nbytes >= 5 * 7 * 9 * 8:
+                full_copies.append(array.nbytes)
+            return copy(array, deep=deep, data=data)
+
+        monkeypatch.setattr(xr.DataArray, "copy", track_copy)
+        for _ in range(3):
+            assert tools[0].shape == (5, 7, 9)
+            assert "isel" in dir(tools[0])
+            assert "indexers" in inspect.signature(tools[0].isel).parameters
+            assert "average" in dir(tools[0].qsel)
+            xr.testing.assert_identical(tools[0].isel(scan=0).data, data.isel(scan=0))
+            xr.testing.assert_identical(tools[0][0].data, data[0])
+        assert not full_copies
+        _ = tools[0].data
+        assert len(full_copies) == 1
+
+
+@pytest.mark.parametrize("derived", [False, True])
+def test_console_mutating_methods_use_detached_data(manager_context, derived):
+    data = xr.DataArray(
+        np.ones((3, 4)), dims=("x", "y"), attrs={"sample": {"name": "original"}}
+    )
+    with manager_context() as manager:
+        manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
+        tools = manager_console.ToolsNamespace(manager)
+        handle = tools[0] * 2 if derived else tools[0]
+        expected = handle.data
+
+        def edit(array):
+            array[0, 0] = 100
+            array.attrs["sample"]["name"] = "edited"
+            return array
+
+        changed = handle.data.pipe(edit)
+        xr.testing.assert_identical(handle.data, expected)
+        assert changed[0, 0] == 100
+        assert changed.attrs["sample"]["name"] == "edited"
+        xr.testing.assert_identical(fetch(0), data)
+
+
+def test_console_load_does_not_materialize_its_handle(manager_context):
+    data = xr.DataArray(np.ones((3, 4)), dims=("x", "y")).chunk({"x": 1})
+    with manager_context() as manager:
+        manager.add_imagetool(
+            itool(data, manager=False, execute=False, auto_compute=False), show=False
+        )
+        tools = manager_console.ToolsNamespace(manager)
+        for handle in (tools[0], tools[0] * 2):
+            loaded = handle.compute()
+            assert loaded.data.chunks is None
+            assert handle.data.chunks is not None
+            xr.testing.assert_identical(loaded.data, handle.data.compute())
+        assert fetch(0).chunks is not None
+
+
+def test_console_coarsen_callback_and_metadata_are_independent(manager_context):
+    data = xr.DataArray(
+        np.arange(24.0).reshape(4, 6),
+        dims=("x", "y"),
+        attrs={"sample": {"name": "original"}},
+    )
+    with manager_context() as manager:
+        manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
+        tools = manager_console.ToolsNamespace(manager)
+        coarsened = tools[0].data.coarsen(y=2)
+        coarsened.obj.attrs["sample"]["name"] = "edited"
+
+        def edit_then_mean(values, axis):
+            values[:] = 100
+            return values.mean(axis=axis)
+
+        result = coarsened.reduce(edit_then_mean)
+        xr.testing.assert_identical(fetch(0), data)
+        expected = xr.full_like(data.coarsen(y=2).mean(), 100)
+        expected.attrs = {"sample": {"name": "edited"}}
+        xr.testing.assert_identical(result, expected)
+
+
+def test_console_coordinate_callbacks_cannot_change_recorded_inputs(manager_context):
+    data = xr.DataArray(
+        np.arange(24.0).reshape(4, 6),
+        dims=("x", "y"),
+        coords={"gain": ("y", np.arange(6.0))},
+    )
+    with manager_context() as manager:
+        manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
+        tools = manager_console.ToolsNamespace(manager)
+
+        def assign_gain(array):
+            array[0, 0] = 100
+            return array.y * 2
+
+        result = tools[0].data.assign_coords(gain=assign_gain)
+        xr.testing.assert_identical(fetch(0), data)
+        assert result[0, 0] == 100
+
+        def offset_coordinate(values, axis):
+            values += 10
+            return np.mean(values, axis=axis)
+
+        first = (
+            tools[0].data.coarsen(y=2, coord_func={"gain": offset_coordinate}).mean()
+        )
+        second = (
+            tools[0].data.coarsen(y=2, coord_func={"gain": offset_coordinate}).mean()
+        )
+        xr.testing.assert_identical(first, second)
+        xr.testing.assert_identical(fetch(0), data)
+        np.testing.assert_equal(first.gain.values, [10.5, 12.5, 14.5])
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        "item",
+        "same_cell",
+        "error",
+        "alias",
+        "filter_after",
+        "clear_after",
+        "transpose_after",
+    ],
+)
+@pytest.mark.parametrize("filtered", [False, True])
+def test_console_handle_edit_updates_followers_and_copied_result(
+    qtbot, manager_context, monkeypatch, edit, filtered
+):
+    from erlab.interactive.imagetool.dialogs import AggregateDialog
+
+    data = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 4),
+        dims=("scan", "x", "y"),
+        coords={"scan": [0, 1], "x": [0, 1, 2], "y": [0, 1, 2, 3]},
+        attrs={"sample": "test"},
+    )
+    with manager_context() as manager:
+        manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
+        tools = manager_console.ToolsNamespace(manager)
+        source = manager._node_for_target(0)
+        if filtered:
+            operation = GaussianFilterOperation(sigma={"x": 1.0})
+            source.slicer_area.apply_filter_operation(operation)
+            data = operation.apply(data)
+
+        def aggregate():
+            dialog = AggregateDialog(source.slicer_area)
+            qtbot.addWidget(dialog)
+            dialog.dim_checks["y"].setChecked(True)
+            dialog.launch_mode_combo.setCurrentIndex(
+                dialog.launch_mode_combo.findData("detach")
+            )
+            dialog.accept()
+            return manager._node_for_target(manager.next_idx - 1)
+
+        original = aggregate()
+        shell = InteractiveShell()
+        shell.user_ns["tools"] = tools
+        shell.user_ns["_aggregate"] = aggregate
+        shell.user_ns["_filter"] = GaussianFilterOperation(sigma={"x": 1.0})
+        tools.bind_shell(shell)
+        try:
+            assert shell.run_cell("live = tools[0]").success
+            assert original.source_state == "fresh"
+            code = {
+                "item": "tools[0][0, 0, 0] = 100",
+                "same_cell": "tools[0][0, 0, 0] = 100; _aggregate()",
+                "error": "tools[0][0, 0, 0] = 100; raise RuntimeError('later')",
+                "alias": "live[0, 0, 0] = 100",
+                "filter_after": "tools[0][0, 0, 0] = 100; "
+                "tools[0].tool.slicer_area.apply_filter_operation(_filter)",
+                "clear_after": "tools[0][0, 0, 0] = 100; "
+                "tools[0].tool.slicer_area.apply_filter_operation(None)",
+                "transpose_after": "tools[0][0, 0, 0] = 100; "
+                "tools[0].tool.slicer_area.swap_axes(0, 1)",
+            }[edit]
+            execution = shell.run_cell(code)
+            assert execution.success == (edit != "error")
+        finally:
+            tools.unbind_shell()
+        expected = data.copy(deep=True)
+        expected[0, 0, 0] = 100
+        if edit == "filter_after":
+            expected = shell.user_ns["_filter"].apply(expected)
+        elif edit == "transpose_after":
+            expected = expected.transpose("x", "scan", "y")
+        xr.testing.assert_identical(fetch(0), expected)
+        assert original.source_state == "stale"
+        result = manager._node_for_target(2) if edit == "same_cell" else aggregate()
+        xr.testing.assert_identical(fetch(result.uid), expected.qsel.mean("y"))
+
+        namespace = {}
+
+        def name_checkpoint(key, _suggestion, _used_names):
+            name = f"input_{len(namespace)}"
+            namespace[name] = tools.checkpoint(key)
+            return name
+
+        copied = []
+        monkeypatch.setattr(manager._details_panel, "_checkpoint_name", name_checkpoint)
+        monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)
+        for node, values in ((original, data), (result, expected)):
+            manager._set_metadata_node(node)
+            manager._copy_full_derivation_code()
+            replayed = _exec_generated_code(copied[-1], namespace)["derived"]
+            xr.testing.assert_identical(replayed, values.qsel.mean("y"))
+
+
+@pytest.mark.parametrize("same_cell", [False, True])
+@pytest.mark.parametrize("filtered", [False, True])
+@pytest.mark.parametrize("lazy", [False, True])
+def test_console_assigned_data_is_an_independent_snapshot(
+    manager_context, same_cell, filtered, lazy
+):
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        coords={"gain": ("x", np.ones(3))},
+        attrs={"sample": {"name": "original"}},
+    )
+    if lazy:
+        data = data.chunk({"x": 1})
+    with manager_context() as manager:
+        manager.add_imagetool(
+            itool(data, manager=False, execute=False, auto_compute=False), show=False
+        )
+        area = manager.get_imagetool(0).slicer_area
+        if filtered:
+            area.apply_filter_operation(GaussianFilterOperation(sigma={"x": 0.25}))
+        original = fetch(0)
+        tools = manager_console.ToolsNamespace(manager)
+        shell = InteractiveShell()
+        shell.user_ns["tools"] = tools
+        tools.bind_shell(shell)
+        try:
+            mutation = (
+                "a[0, 0] = 100; a.coords['gain'][:] = 7; "
+                "a.attrs['sample']['name'] = 'edited'"
+            )
+            if same_cell:
+                assert shell.run_cell("a = tools[0].data; " + mutation).success
+            else:
+                assert shell.run_cell("a = tools[0].data").success
+                assert shell.run_cell(mutation).success
+            snapshot = shell.user_ns["a"]
+            assert type(snapshot) is xr.DataArray
+            assert (snapshot.chunks is not None) == lazy
+            expected = original.copy(deep=True)
+            expected[0, 0] = 100
+            expected.coords["gain"][:] = 7
+            expected.attrs["sample"]["name"] = "edited"
+            xr.testing.assert_identical(snapshot, expected)
+            xr.testing.assert_identical(fetch(0), original)
+
+            area.swap_axes(0, 1)
+            assert shell.run_cell("a[1, 2] = 200").success
+            expected[1, 2] = 200
+            xr.testing.assert_identical(snapshot, expected)
+            xr.testing.assert_identical(fetch(0), original.transpose("y", "x"))
+
+            # The live handle still edits the current window.
+            assert shell.run_cell("tools[0][0, 0] = 300").success
+            displayed = original.transpose("y", "x").copy(deep=True)
+            displayed[0, 0] = 300
+            xr.testing.assert_identical(fetch(0), displayed)
+            xr.testing.assert_identical(snapshot, expected)
+            tools[0].data = data + 10
+            xr.testing.assert_identical(snapshot, expected)
+            manager._remove_imagetool(0, preflight=False)
+            xr.testing.assert_identical(snapshot, expected)
+        finally:
+            tools.unbind_shell()
+
+
+@pytest.mark.parametrize("retain", [False, True])
+def test_console_data_snapshot_has_no_cell_tracking(
+    manager_context, monkeypatch, retain
+):
+    import gc
+    import weakref
+
+    data = xr.DataArray(
+        np.ones((4, 4)), dims=("x", "y"), coords={"x": np.arange(4), "y": np.arange(4)}
+    )
+    with manager_context() as manager:
+        manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
+        tools = manager_console.ToolsNamespace(manager)
+        observed = []
+
+        def shape_only(value):
+            observed.append(weakref.ref(value))
+            return value.shape
+
+        shell = InteractiveShell()
+        shell.user_ns.update(tools=tools, _shape_only=shape_only)
+        tools.bind_shell(shell)
+        try:
+            code = (
+                "snapshot = tools[0].data; shape = _shape_only(snapshot)"
+                if retain
+                else "shape = _shape_only(tools[0].data)"
+            )
+            assert shell.run_cell(code).success
+            gc.collect()
+            assert (observed[0]() is not None) == retain
+            tokenizations = []
+            tokenize = xr.DataArray.__dask_tokenize__
+
+            def track_tokenize(value):
+                tokenizations.append(value)
+                return tokenize(value)
+
+            monkeypatch.setattr(xr.DataArray, "__dask_tokenize__", track_tokenize)
+            for _ in range(3):
+                assert shell.run_cell("unrelated = 1").success
+            assert not tokenizations
+            xr.testing.assert_identical(fetch(0), data)
+        finally:
+            tools.unbind_shell()
+
+
+@pytest.mark.parametrize("alias", ["values", "view", "coordinate"])
+def test_console_numpy_snapshot_does_not_update_window(manager_context, alias):
+    data = xr.DataArray(
+        np.ones((4, 4)), dims=("x", "y"), coords={"gain": ("x", np.ones(4))}
+    )
+    with manager_context() as manager:
+        manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
+        tools = manager_console.ToolsNamespace(manager)
+        shell = InteractiveShell()
+        shell.user_ns["tools"] = tools
+        tools.bind_shell(shell)
+        try:
+            expression = {
+                "values": "tools[0].data.values",
+                "view": "tools[0].data.values[:, :2]",
+                "coordinate": "tools[0].data.coords['gain'].values",
+            }[alias]
+            assert shell.run_cell(f"retained = {expression}").success
+            assert shell.run_cell("retained[:] = 7").success
+            np.testing.assert_array_equal(shell.user_ns["retained"], 7)
+            xr.testing.assert_identical(fetch(0), data)
+            assert shell.run_cell("tools[0].data.attrs['alias'] = 'numpy'").success
+            xr.testing.assert_identical(fetch(0), data)
+        finally:
+            tools.unbind_shell()
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        "tools[0].data[0, 0] = 100",
+        "tools[0].data.loc[{'x': 0, 'y': 0}] = 100",
+        "tools[0].data.values[0, 0] = 100",
+    ],
+)
+def test_console_temporary_snapshot_edits_do_not_update_window(manager_context, edit):
+    data = xr.DataArray(np.ones((3, 4)), dims=("x", "y"))
+    with manager_context() as manager:
+        manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
+        tools = manager_console.ToolsNamespace(manager)
+        shell = InteractiveShell()
+        shell.user_ns["tools"] = tools
+        tools.bind_shell(shell)
+        try:
+            assert shell.run_cell(edit).success
+            xr.testing.assert_identical(fetch(0), data)
+        finally:
+            tools.unbind_shell()
+
+
+def test_console_snapshot_edits_require_explicit_assignment(
+    manager_context,
+):
+    data = xr.DataArray(
+        np.arange(16.0).reshape(4, 4),
+        dims=("x", "y"),
+        coords={"gain": ("x", np.ones(4))},
+        attrs={"sample": "before"},
+    )
+    with manager_context() as manager:
+        manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
+        tools = manager_console.ToolsNamespace(manager)
+        shell = InteractiveShell()
+        shell.user_ns.update(tools=tools, fetch=fetch)
+        tools.bind_shell(shell)
+        try:
+            assert shell.run_cell("editable = tools[0].data").success
+            expected = data.copy(deep=True)
+            expected.coords["gain"] = ("x", np.full(4, 2.0))
+            expected.attrs["sample"] = "after"
+            assert shell.run_cell(
+                "editable.coords['gain'] = ('x', [2., 2., 2., 2.]); "
+                "editable.attrs['sample'] = 'after'; copied = fetch(0)"
+            ).success
+            xr.testing.assert_identical(shell.user_ns["copied"], data)
+            assert shell.run_cell("editable[0, 0] = 100").success
+            expected[0, 0] = 100
+            xr.testing.assert_identical(fetch(0), data)
+            assert shell.run_cell("tools[0].data = editable").success
+            xr.testing.assert_identical(fetch(0), expected)
+            replacement = data + 10
+            tools[0].data = replacement
+            assert shell.run_cell("editable[0, 0] = -10").success
+            xr.testing.assert_identical(fetch(0), replacement)
+        finally:
+            tools.unbind_shell()
+
+
+def test_console_snapshot_assignment_starts_new_history(manager_context, monkeypatch):
+    data = xr.DataArray(np.arange(12.0).reshape(3, 4), dims=("x", "y"))
+    with manager_context() as manager:
+        manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
+        tools = manager_console.ToolsNamespace(manager)
+        assert tools._show_handle(tools[0] + 10, active_name="shifted", label="Shift")
+        assert tools._show_handle(tools[1] * 2, active_name="double", label="Double")
+        target = manager._node_for_target(1)
+        original = manager._node_for_target(2)
+        shell = InteractiveShell()
+        shell.user_ns["tools"] = tools
+        tools.bind_shell(shell)
+        try:
+            assert shell.run_cell("a = tools[1].data").success
+            assert shell.run_cell("a[:] = -7; tools[1].data = a").success
+            expected = xr.full_like(data, -7)
+            xr.testing.assert_identical(fetch(1), expected)
+            assert original.source_state == "stale"
+            assert not target.slicer_area.reloadable
+
+            # Neither the old source nor further edits to a can change this input.
+            assert shell.run_cell(
+                "tools[0].data = tools[0].data + 100; a[:] = 99"
+            ).success
+            xr.testing.assert_identical(fetch(1), expected)
+            assert target.source_state == "fresh"
+            assert tools._show_handle(
+                tools[1] * 3, active_name="triple", label="Triple"
+            )
+            new = manager._node_for_target(3)
+
+            namespace = {}
+
+            def checkpoint_name(key, _suggestion, _used_names):
+                name = f"input_{len(namespace)}"
+                namespace[name] = tools.checkpoint(key)
+                return name
+
+            copied = []
+            monkeypatch.setattr(
+                manager._details_panel, "_checkpoint_name", checkpoint_name
+            )
+            monkeypatch.setattr(
+                erlab.interactive.utils, "copy_to_clipboard", copied.append
+            )
+            for node, name, values in (
+                (original, "double", (data + 10) * 2),
+                (new, "triple", expected * 3),
+            ):
+                manager._set_metadata_node(node)
+                manager._copy_full_derivation_code()
+                replayed = _exec_generated_code(copied[-1], namespace)[name]
+                xr.testing.assert_identical(replayed, values)
+        finally:
+            tools.unbind_shell()
 
 
 if typing.TYPE_CHECKING:
@@ -201,7 +992,8 @@ def test_manager_console(
 
         # Test delayed import
         manager.console._console_widget.execute("era")
-        assert _get_last_output_contents() == erlab.analysis
+        assert isinstance(_get_last_output_contents(), types.ModuleType)
+        assert _get_last_output_contents().__name__ == erlab.analysis.__name__
 
         # Loader state should persist across console cells.
         manager.console._console_widget.execute("erlab.io.set_loader('merlin')")
@@ -254,7 +1046,7 @@ def test_manager_console(
             manager.get_imagetool(1).slicer_area.data, data * 2 + 1
         )
 
-        manager.console._console_widget.execute("tools[1].data[0, 0] = -5.0")
+        manager.console._console_widget.execute("tools[1][0, 0] = -5.0")
         assert float(manager.get_imagetool(1).slicer_area._data.values[0, 0]) == -5.0
         assert float(manager.get_imagetool(1).slicer_area.data.values[0, 0]) == -5.0
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, data)
@@ -786,6 +1578,21 @@ def test_manager_console_kspace_set_normal_returns_derived_provenance() -> None:
         kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
     ) == (0, 2)
 
+    for result, expected in (
+        (derived + 1, derived.data + 1),
+        (-derived, -derived.data),
+        (np.sin(derived), np.sin(derived.data)),
+        (derived.isel(alpha=0), derived.data.isel(alpha=0)),
+        (derived.mean("alpha"), derived.data.mean("alpha")),
+        (derived.coarsen(alpha=3).mean(), derived.data.coarsen(alpha=3).mean()),
+    ):
+        expression_spec = result._console_provenance_spec(
+            active_name="result", label="Use prepared data"
+        )
+        code = expression_spec.display_code()
+        namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+        xr.testing.assert_identical(namespace["result"], expected)
+
     derived._set_console_name("intermediate")
     separately_converted = derived.kspace.convert()
     separate_spec = separately_converted._console_provenance_spec(
@@ -894,28 +1701,45 @@ def test_resolve_console_namespace_patches_before_lazy_import(monkeypatch) -> No
 
 
 def test_tool_namespace_script_input_delegates_to_lineage() -> None:
-    expected = ScriptInput(name="canonical")
+    expected = manager_console.ConsoleInput(name="canonical")
     calls: list[tuple[object, str | None]] = []
 
     class _Lineage:
         def _script_input_for_node(
-            self, node: object, *, name: str | None = None
+            self,
+            node: object,
+            *,
+            name: str | None = None,
+            input_type: type[ScriptInput],
         ) -> ScriptInput:
+            assert isinstance(expected, input_type)
             calls.append((node, name))
             return expected
 
+    captures = []
+
     class _Manager:
         _lineage_controller = _Lineage()
+        _data_graph = types.SimpleNamespace(
+            owns_result=lambda uid: False,
+            require_published=lambda uid: None,
+            capture_input=lambda node, item: captures.append((node, item)),
+        )
 
     class _Wrapper:
         manager = _Manager()
         index = 4
+        uid = "input"
 
     wrapper = _Wrapper()
+    wrapper.manager._tool_graph = types.SimpleNamespace(
+        nodes={wrapper.uid: wrapper}, node_path=lambda node: (node.index,)
+    )
     namespace = ToolNamespace(wrapper)  # type: ignore[arg-type]
 
     assert namespace._script_input() is expected
     assert calls == [(wrapper, "data_4")]
+    assert captures == [(wrapper, expected)]
 
 
 def test_tool_namespace_get_data_item(
@@ -1040,9 +1864,8 @@ def test_tool_namespace_set_filtered_data_item_uses_displayed_data(
         )
 
 
-def test_tool_namespace_set_unfiltered_data_item_avoids_display_copy(
+def test_tool_namespace_item_edit_preserves_accepted_revision(
     qtbot,
-    monkeypatch,
     test_data,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -1058,23 +1881,50 @@ def test_tool_namespace_set_unfiltered_data_item_avoids_display_copy(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         parent_tool = manager.get_imagetool(0)
-        source_data = parent_tool.slicer_area._data
         namespace = ToolNamespace(manager._tool_graph.root_wrappers[0])
-        copy_calls = []
-        original_copy = xr.DataArray.copy
-
-        def _record_copy(self, *args, **kwargs):
-            deep = kwargs.get("deep", args[0] if args else True)
-            if self is source_data and deep is True:
-                copy_calls.append(self)
-            return original_copy(self, *args, **kwargs)
-
-        monkeypatch.setattr(xr.DataArray, "copy", _record_copy)
+        graph = manager._data_graph.graph
+        manager._data_graph._ensure_source(namespace._wrapper)
+        revision = graph.current_revision(namespace.uid)
         namespace[(0, 0)] = -5.0
 
-        assert copy_calls == []
+        applied = graph.revision(graph.entry(namespace.uid).revision_id).producer
+        assert applied.inputs[0][1] == revision
+        old = graph.data(revision)
+        xr.testing.assert_identical(old, data)
         assert float(parent_tool.slicer_area._data.values[0, 0]) == -5.0
         assert parent_tool.slicer_area._accepted_filter_provenance_operation is None
+
+
+@pytest.mark.parametrize("transpose", [False, True])
+def test_console_item_edit_preserves_navigation(
+    qtbot, manager_context, test_data, transpose
+):
+    with manager_context() as manager:
+        itool(test_data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1)
+        node = manager._node_for_target(0)
+        area = node.slicer_area
+        if transpose:
+            area.swap_axes(0, 1)
+        initial_index = area.array_slicer.get_index(0, 0)
+        area.set_index(0, 0)
+        area.set_index(0, 1)
+        area.undo()
+        assert area.undoable
+        assert area.redoable
+        expected = area.displayed_data.copy(deep=True)
+        expected[0, 1] = -5.0
+
+        ToolNamespace(node)[0, 1] = -5.0
+
+        xr.testing.assert_identical(area.displayed_data, expected)
+        assert area.array_slicer.get_index(0, 0) == 0
+        area.redo()
+        assert area.array_slicer.get_index(0, 0) == 1
+        area.undo()
+        area.undo()
+        assert area.array_slicer.get_index(0, 0) == initial_index
+        xr.testing.assert_identical(area.displayed_data, expected)
 
 
 def test_tool_namespace_set_filtered_data_item_updates_child_provenance(
@@ -1101,7 +1951,7 @@ def test_tool_namespace_set_filtered_data_item_updates_child_provenance(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         child_tool = itool(data.copy(deep=False), manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child_tool,
             0,
             show=False,
@@ -1160,12 +2010,14 @@ def test_tool_namespace_set_data_item_failure_keeps_child_tools_fresh(
         namespace = ToolNamespace(manager._tool_graph.root_wrappers[0])
         child = next(iter(manager._tool_graph.root_wrappers[0]._childtools.values()))
 
+        graph = manager._data_graph.graph
+        revision = graph.current_revision(namespace.uid)
         with pytest.raises(IndexError, match="too many indices"):
             namespace[(0, 0, 0)] = -5.0
 
         assert child.source_state == "fresh"
         assert float(parent_tool.slicer_area._data.values[0, 0]) == 0.0
-        assert manager._tool_graph.root_wrappers[0].provenance_spec is None
+        assert graph.current_revision(namespace.uid) == revision
 
 
 def test_manager_console_bare_expression_opens_provenance_root(
@@ -1430,7 +2282,7 @@ def test_manager_console_helpers_preserve_nested_operands() -> None:
 
     nested = {"left": [handle, slice(0, 1)], "right": (handle,)}
     assert manager_console._first_console_handle(nested) is handle
-    unwrapped = manager_console._unwrap_console_value(nested)
+    unwrapped = manager_console._operand_from_value(nested).value
     xr.testing.assert_identical(unwrapped["left"][0], data)
     xr.testing.assert_identical(unwrapped["right"][0], data)
 
@@ -1585,7 +2437,7 @@ def test_manager_console_call_preserves_keyword_order() -> None:
     assert actual == capture(0, **kwargs)
 
 
-def test_manager_console_namespace_protocols_and_proxies() -> None:
+def test_manager_console_namespace_protocols() -> None:
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("x", "y"),
@@ -1622,9 +2474,11 @@ def test_manager_console_namespace_protocols_and_proxies() -> None:
     assert isinstance(inverted, manager_console._DerivedDataNamespace)
     xr.testing.assert_identical(inverted.data, xr.DataArray([False, True], dims=("x",)))
 
-    assert handle.__array_ufunc__(np.add, "reduce", handle) is NotImplemented
-    np.testing.assert_array_equal(np.asarray(handle), data.values)
-    np.testing.assert_array_equal(handle.__array__(copy=True), data.values)
+    with pytest.raises(TypeError, match=r"\.data"):
+        np.add.reduce(handle)
+    with pytest.raises(TypeError, match=r"\.data"):
+        np.asarray(handle)
+    np.testing.assert_array_equal(np.asarray(handle.data), data.values)
 
     coarsened = handle.coarsen(y=2).mean()
     spec = coarsened._console_provenance_spec(
@@ -1637,27 +2491,16 @@ def test_manager_console_namespace_protocols_and_proxies() -> None:
         coarsened.data,
     )
 
-    module_proxy = manager_console._ConsoleModuleProxy(np, "np")
-    assert isinstance(module_proxy.linalg, manager_console._ConsoleModuleProxy)
-    assert module_proxy.float64 is np.float64
-    assert module_proxy.pi == np.pi
-    np.testing.assert_allclose(module_proxy.sin(np.array([0.0, np.pi / 2])), [0.0, 1.0])
-    module_result = module_proxy.sin(handle)
-    assert isinstance(module_result, manager_console._DerivedDataNamespace)
-    xr.testing.assert_allclose(module_result.data, np.sin(data))
-
     def add_one(value):
         return value + 1
 
-    function_proxy = manager_console._ConsoleFunctionProxy(add_one)
-    xr.testing.assert_identical(function_proxy(data), data + 1)
-    function_proxy.__name__ = ""
-    function_result = function_proxy(handle)
+    xr.testing.assert_identical(add_one(data), data + 1)
+    function_result = add_one(handle)
     assert isinstance(function_result, manager_console._DerivedDataNamespace)
     xr.testing.assert_identical(function_result.data, data + 1)
 
 
-def test_manager_console_operator_and_proxy_branches() -> None:
+def test_manager_console_operator_and_accessor_boundaries(monkeypatch) -> None:
     data = xr.DataArray(
         np.arange(1, 5).reshape(2, 2),
         dims=("x", "y"),
@@ -1675,8 +2518,8 @@ def test_manager_console_operator_and_proxy_branches() -> None:
         (lambda: 10 + handle, 10 + data),
         (lambda: 10 - handle, 10 - data),
         (lambda: 2 * handle, 2 * data),
-        (lambda: handle @ data, data @ data),
-        (lambda: handle.__rmatmul__(data), data @ data),
+        (lambda: handle @ handle, data @ data),
+        (lambda: handle.__rmatmul__(handle), data @ data),
         (lambda: handle / 2, data / 2),
         (lambda: 10 / handle, 10 / data),
         (lambda: handle // 2, data // 2),
@@ -1717,24 +2560,15 @@ def test_manager_console_operator_and_proxy_branches() -> None:
         xr.testing.assert_identical(result.data, expected)
 
     assert handle.qsel.__doc__
-    assert handle._wrap_console_result(1, "one", (), copyable=True) == 1
-    with pytest.raises(TypeError, match="not callable"):
-        manager_console._ConsoleAccessorProxy(
-            handle,
-            types.SimpleNamespace(value=10),
-            ("fake",),
-            "data_0.fake",
-        )()
-    accessor_proxy = manager_console._ConsoleAccessorProxy(
-        handle,
-        types.SimpleNamespace(array=data, value=10),
-        ("fake",),
-        "data_0.fake",
+    assert handle[0, 0].item() == data[0, 0].item()
+    monkeypatch.setattr(
+        xr.DataArray,
+        "test_console_accessor",
+        property(lambda array: types.SimpleNamespace(array=array, value=10)),
+        raising=False,
     )
-    accessor_array = accessor_proxy.array
-    assert isinstance(accessor_array, manager_console._DerivedDataNamespace)
-    xr.testing.assert_identical(accessor_array.data, data)
-    assert accessor_proxy.value == 10
+    with pytest.raises(TypeError, match=r"\.data"):
+        _ = handle.test_console_accessor
     coarsened_with_kwargs = handle.coarsen(y=2).mean(skipna=True)
     assert isinstance(coarsened_with_kwargs, manager_console._DerivedDataNamespace)
     xr.testing.assert_identical(
@@ -1750,14 +2584,9 @@ def test_manager_console_operator_and_proxy_branches() -> None:
         return value + offset
 
     custom_module.scale = scale
-    module_proxy = manager_console._ConsoleModuleProxy(custom_module, "custom")
-    assert module_proxy.__file__ == "custom_console_module.py"
-    module_result = module_proxy.scale(handle, offset=2)
+    module_result = custom_module.scale(handle, offset=2)
     assert isinstance(module_result, manager_console._DerivedDataNamespace)
     xr.testing.assert_identical(module_result.data, data + 2)
-    assert module_proxy == custom_module
-    assert module_proxy == manager_console._ConsoleModuleProxy(custom_module, "alias")
-    assert hash(module_proxy) == hash(custom_module)
 
     class ParentWithoutTools:
         _console_label = "Parent"
@@ -1818,24 +2647,13 @@ def test_manager_console_tools_namespace_helper_branches(
     monkeypatch.setattr(
         handle_without_provenance, "_console_provenance_spec", lambda **_kwargs: None
     )
-    assert not tools._show_handle(
-        handle_without_provenance,
-        active_name="derived",
-        label="Evaluate console expression",
-    )
-
-    monkeypatch.setattr(erlab.interactive, "itool", lambda *_args, **_kwargs: object())
-    shown = tools._show_dataarray_with_provenance(
-        data,
-        script(
-            ScriptCodeOperation(label="Copy", code="derived = data_0"),
-            start_label="Run script",
+    with pytest.raises(TypeError, match=r"\.data"):
+        tools._show_handle(
+            handle_without_provenance,
             active_name="derived",
-            script_inputs=(ScriptInput(name="data_0", label="Input"),),
-        ),
-        execute=True,
-    )
-    assert not shown
+            label="Evaluate console expression",
+        )
+
     assert not fake_manager.added
 
 
@@ -2003,122 +2821,6 @@ def test_manager_console_tree_namespace_helper_branches() -> None:
     assert tools._tree_node_label(unnamed_tool) == "tool"
 
 
-def test_manager_console_callable_operand_captures_replayable_functions(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    data = xr.DataArray(np.arange(3.0), dims=("x",))
-    monkeypatch.setattr(console_helper, "__module__", "__main__")
-    monkeypatch.setattr(console_helper_dependency, "__module__", "__main__")
-
-    operand = manager_console._callable_operand(console_helper)
-
-    assert operand is not None
-    assert operand.copyable
-    namespace: dict[str, typing.Any] = {
-        "data": data,
-        "np": np,
-        "xr": xr,
-        "erlab": erlab,
-        "era": erlab.analysis,
-    }
-    exec(  # noqa: S102
-        manager_console._script_code(
-            operand.code_prelude,
-            f"derived = {operand.code}(data)",
-        ),
-        namespace,
-        namespace,
-    )
-    xr.testing.assert_identical(namespace["derived"], console_helper(data))
-
-    assert manager_console._function_global_names("def f(:", "f") is None
-    assert (
-        manager_console._function_global_names("def f():\n    return missing", "g")
-        is None
-    )
-
-    with monkeypatch.context() as patch:
-        patch.setattr(console_helper, "__name__", "data")
-        patch.setattr(console_helper, "__qualname__", "data")
-        assert manager_console._callable_operand(console_helper) is None
-
-    with monkeypatch.context() as patch:
-        patch.setattr(console_helper, "__module__", "__main__")
-
-        def raise_oserror(_value):
-            raise OSError
-
-        patch.setattr(manager_console.inspect, "getsource", raise_oserror)
-        assert manager_console._callable_operand(console_helper) is None
-
-
-def test_manager_console_callable_operand_rejects_unreplayable_globals(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(console_helper, "__module__", "__main__")
-    monkeypatch.setattr(console_helper_dependency, "__module__", "__main__")
-
-    source_cases = (
-        "def console_helper(value):\n"
-        "    return value\n\n"
-        "def extra():\n"
-        "    return value",
-        "@decorator\ndef console_helper(value):\n    return value",
-    )
-    for source in source_cases:
-        with monkeypatch.context() as patch:
-            patch.setattr(
-                manager_console.inspect,
-                "getsource",
-                lambda _value, source=source: source,
-            )
-            assert manager_console._callable_operand(console_helper) is None
-
-    with monkeypatch.context() as patch:
-        patch.setattr(
-            manager_console, "_function_global_names", lambda _source, _name: None
-        )
-        assert manager_console._callable_operand(console_helper) is None
-
-    for global_names in ({"data_0"}, {"missing_global"}):
-        with monkeypatch.context() as patch:
-            patch.setattr(
-                manager_console,
-                "_function_global_names",
-                lambda _source, _name, names=global_names: names,
-            )
-            assert manager_console._callable_operand(console_helper) is None
-
-    def local_dependency(value):
-        return value
-
-    with monkeypatch.context() as patch:
-        patch.setitem(console_helper.__globals__, "local_dependency", local_dependency)
-        patch.setattr(
-            manager_console,
-            "_function_global_names",
-            lambda _source, _name: {"local_dependency"},
-        )
-        assert manager_console._callable_operand(console_helper) is None
-
-    with monkeypatch.context() as patch:
-        patch.setitem(console_helper.__globals__, "uncopyable_global", object())
-        patch.setattr(
-            manager_console,
-            "_function_global_names",
-            lambda _source, _name: {"uncopyable_global"},
-        )
-        assert manager_console._callable_operand(console_helper) is None
-
-    with monkeypatch.context() as patch:
-        patch.setattr(
-            manager_console,
-            "_validate_script_replay_code",
-            lambda _code: (_ for _ in ()).throw(ValueError),
-        )
-        assert manager_console._callable_operand(console_helper) is None
-
-
 def test_manager_console_assignment_tracks_until_explicit_show(
     qtbot,
     manager_context: Callable[
@@ -2236,10 +2938,11 @@ def test_manager_console_selected_expression_opens_provenance_root(
             "data_0",
             "data_1",
         ]
-        assert (
-            provenance.operations[-1].derivation_entry().code
-            == "derived = data_0 - data_1"
-        )
+        code = provenance.operations[-1].derivation_entry().code
+        assert code is not None
+        with xr.set_options(arithmetic_join="outer"):
+            result = _exec_generated_code(code, {"data_0": data0, "data_1": data1})
+        xr.testing.assert_identical(result["derived"], data0 - data1)
 
         manager.console._console_widget.shutdown_kernel()
         InteractiveShell.clear_instance()
@@ -2428,9 +3131,15 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
         assert manager.dependency_status_for_uid(derived_uid) == "current"
 
         manager._remove_childtool(child_uid)
-        qtbot.wait_until(
-            lambda: manager.dependency_status_for_uid(derived_uid) == "missing",
-            timeout=5000,
+        graph = manager._data_graph.graph
+        assert graph.is_closed(child_uid)
+        assert manager.dependency_status_for_uid(derived_uid) == "current"
+        manager.get_imagetool(1).slicer_area.replace_source_data(data1 + 2)
+        manager.tree_view.clearSelection()
+        select_tools(manager, [2])
+        manager.reload_selected()
+        xr.testing.assert_identical(
+            manager.get_imagetool(2).slicer_area.data, updated_child - (data1 + 2)
         )
         assert intermediate_node._childtool_indices == [second_child_uid]
 
@@ -2489,8 +3198,8 @@ def test_manager_reload_script_input_uses_public_nested_1d_child_data(
         assert shift_handle.data.dims == ("x",)
         assert child_tool.slicer_area.data.dims == ("x", "stack_dim")
 
-        era_proxy = manager_console._ConsoleModuleProxy(erlab.analysis, "era")
-        shifted = era_proxy.transform.shift(
+        shifted = tools.apply(
+            erlab.analysis.transform.shift,
             source,
             -shift_handle,
             along="eV",
@@ -2505,7 +3214,7 @@ def test_manager_reload_script_input_uses_public_nested_1d_child_data(
 
         shifted_tool = itool(shifted.data, manager=False, execute=False)
         assert isinstance(shifted_tool, erlab.interactive.imagetool.ImageTool)
-        shifted_index = manager.add_imagetool(
+        shifted_index = manager.import_imagetool(
             shifted_tool,
             show=False,
             provenance_spec=spec,
@@ -2642,7 +3351,7 @@ def test_manager_console_structures_erlab_and_xarray_calls(
             "data_0",
             "data_1",
         ]
-        assert [operation.op for operation in concat_spec.operations] == ["script_code"]
+        assert [operation.op for operation in concat_spec.operations] == ["concat"]
         xr.testing.assert_identical(
             manager.get_imagetool(6).slicer_area.data,
             xr.concat([data0, data1], dim=xr.IndexVariable("source", [0, 1])),
@@ -2657,7 +3366,7 @@ def test_manager_console_structures_erlab_and_xarray_calls(
         qtbot.wait_until(lambda: manager.ntools == 8, timeout=5000)
         chain_spec = manager._tool_graph.root_wrappers[7].provenance_spec
         assert chain_spec is not None
-        assert chain_spec.seed_code == "chain = data_0"
+        assert chain_spec.replay_primary_input == "data_0"
         assert [operation.op for operation in chain_spec.operations] == [
             "interpolate",
             "transpose",
@@ -2678,7 +3387,7 @@ def test_manager_console_structures_erlab_and_xarray_calls(
             "'erlab.analysis.transform').rotate\n"
             "signature_ok = str(inspect.signature(era.transform.rotate)) "
             "== str(inspect.signature(real_rotate))\n"
-            "wrapped_ok = era.transform.rotate.__wrapped__ is real_rotate\n"
+            "identity_ok = inspect.unwrap(era.transform.rotate) is real_rotate\n"
             "dir_ok = 'rotate' in dir(era.transform)\n"
             "qsel_signature_ok = str(inspect.signature(tools[0].qsel)) "
             "== str(inspect.signature(tools[0].data.qsel))\n"
@@ -2699,7 +3408,7 @@ def test_manager_console_structures_erlab_and_xarray_calls(
             "leading_edge_dir_ok = 'leading_edge' in dir(era.interpolate)"
         )
         assert shell.user_ns["signature_ok"]
-        assert shell.user_ns["wrapped_ok"]
+        assert shell.user_ns["identity_ok"]
         assert shell.user_ns["dir_ok"]
         assert shell.user_ns["qsel_signature_ok"]
         assert shell.user_ns["qsel_wrapped_signature_ok"]
@@ -2717,7 +3426,7 @@ def test_manager_console_structures_erlab_and_xarray_calls(
         InteractiveShell.clear_instance()
 
 
-def test_manager_console_captures_self_contained_function_source(
+def test_manager_console_helpers_keep_handles_and_pipe_uses_snapshots(
     qtbot,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -2748,7 +3457,8 @@ def test_manager_console_captures_self_contained_function_source(
         )
         manager.console._console_widget.execute(
             "import inspect\n"
-            "function_help_ok = offset_data.__wrapped__.__name__ == 'offset_data'\n"
+            "function_help_ok = inspect.isfunction(offset_data) "
+            "and offset_data.__name__ == 'offset_data'\n"
             "function_signature_ok = str(inspect.signature(offset_data)) == '(data)'"
         )
         assert shell.user_ns["function_help_ok"]
@@ -2764,10 +3474,6 @@ def test_manager_console_captures_self_contained_function_source(
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         shifted_spec = manager._tool_graph.root_wrappers[1].provenance_spec
         assert shifted_spec is not None
-        shifted_code = shifted_spec.derivation_entries()[-1].code
-        assert shifted_code is not None
-        assert "def add_scale(data):" in shifted_code
-        assert "def offset_data(data):" in shifted_code
         xr.testing.assert_identical(
             replay_script_provenance(
                 shifted_spec,
@@ -2776,21 +3482,13 @@ def test_manager_console_captures_self_contained_function_source(
             ),
             data + 2.0,
         )
-        manager.console._console_widget.execute("piped = tools[0].pipe(offset_data)")
-        piped = shell.user_ns["piped"]
-        assert piped._copyable is True
-
         manager.console._console_widget.execute(
-            "runtime_object = object()\n"
-            "def uses_runtime_object(data):\n"
-            "    _ = runtime_object\n"
-            "    return data\n"
+            "piped = tools[0].data.pipe(offset_data)"
         )
-        manager.console._console_widget.execute(
-            "opaque = tools[0].pipe(uses_runtime_object)"
-        )
-        opaque = shell.user_ns["opaque"]
-        assert opaque._copyable is False
+        xr.testing.assert_identical(shell.user_ns["piped"], data + 2.0)
+        xr.testing.assert_identical(fetch(0), data)
+        with pytest.raises(TypeError, match=r"\.data"):
+            shell.user_ns["tools"][0].pipe(shell.user_ns["offset_data"])
 
         manager.console._console_widget.shutdown_kernel()
         InteractiveShell.clear_instance()
@@ -2996,9 +3694,14 @@ def test_manager_concat_records_dependencies_and_handles_removed_inputs(
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
         removed_inputs_wrapper = manager._tool_graph.root_wrappers[3]
+        graph = manager._data_graph.graph
+        inputs = graph.follows(removed_inputs_wrapper.uid)
+        assert len(inputs) == 2
+        assert all(graph.is_closed(uid) for uid in inputs)
         assert (
-            manager.dependency_status_for_uid(removed_inputs_wrapper.uid) == "missing"
+            manager.dependency_status_for_uid(removed_inputs_wrapper.uid) == "current"
         )
+        graph.reload(removed_inputs_wrapper.uid)
         xr.testing.assert_identical(
             manager.get_imagetool(3).slicer_area.data,
             expected_removed_inputs,
@@ -3145,13 +3848,13 @@ def test_manager_concat_can_replace_source_tool_and_preserve_children(
 
     with manager_context() as manager:
         manager.show()
-        itool([data0, data1], manager=True)
-        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         old_root_provenance = full_data()
-        manager._tool_graph.root_wrappers[0].set_detached_provenance(
-            old_root_provenance,
-            replay_source_data=None,
+        manager.import_imagetool(
+            itool(data0, manager=False, execute=False),
+            provenance_spec=old_root_provenance,
         )
+        itool(data1, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         manager.get_imagetool(0).slicer_area.apply_filter_operation(
             operation,
             emit_edited=True,
@@ -3165,14 +3868,14 @@ def test_manager_concat_can_replace_source_tool_and_preserve_children(
             "erlab.interactive.imagetool.ImageTool",
             itool(data0.transpose("y", "x"), manager=False, execute=False),
         )
-        compatible_uid = manager.add_imagetool_child(
+        compatible_uid = manager.import_imagetool_child(
             compatible_child,
             0,
             source_spec=full_data(),
             source_auto_update=True,
             show=False,
         )
-        incompatible_uid = manager.add_imagetool_child(
+        incompatible_uid = manager.import_imagetool_child(
             incompatible_child,
             0,
             source_spec=full_data(TransposeOperation(dims=("y", "x"))),
@@ -3322,7 +4025,7 @@ def test_manager_concat_replace_can_remove_unpreserved_sources(
             "erlab.interactive.imagetool.ImageTool",
             itool(data0.copy(deep=True), manager=False, execute=False),
         )
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child,
             0,
             source_spec=full_data(),
@@ -3353,6 +4056,7 @@ def test_manager_concat_replace_can_remove_unpreserved_sources(
         assert child_uid in manager._tool_graph.nodes
         assert child_uid in manager._tool_graph.root_wrappers[0]._childtool_indices
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, expected)
+        qtbot.wait_until(lambda: manager._child_node(child_uid).source_state == "fresh")
         xr.testing.assert_identical(
             manager.get_imagetool(child_uid).slicer_area.data,
             expected,
@@ -3476,8 +4180,8 @@ def test_manager_displayed_script_inputs_track_and_reload_filters(
             operation,
             emit_edited=True,
         )
-        created_index = manager._lineage_controller._show_multi_input_script_result(
-            filtered0 + data1,
+        created_index = show_script_result(
+            manager,
             (0, 1),
             operation_label="Add displayed ImageTools",
             operation_code="derived = data_0 + data_1",
@@ -3529,8 +4233,8 @@ def test_manager_reload_script_inputs_replaces_compatible_and_preserves_cursor(
         itool([data0, data1], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         assert (
-            manager._lineage_controller._show_multi_input_script_result(
-                data0 - data1,
+            show_script_result(
+                manager,
                 (0, 1),
                 operation_label="Subtract inputs",
                 operation_code="derived = data_0 - data_1",
@@ -3566,15 +4270,12 @@ def test_manager_reload_script_inputs_replaces_compatible_and_preserves_cursor(
             badge_rect.center(),
         )
         assert badge is not None
-        assert badge.kind == "dependency_status"
+        assert badge.kind == "source_status"
         manager.tree_view.deselect_all()
         select_tools(manager, [0])
 
         def _cancel_reload(dialog: QtWidgets.QDialog) -> None:
-            assert isinstance(dialog, QtWidgets.QMessageBox)
-            cancel_button = dialog.button(QtWidgets.QMessageBox.StandardButton.Cancel)
-            assert cancel_button is not None
-            cancel_button.click()
+            dialog.reject()
 
         accept_dialog(
             lambda: click_tree_view_pos(manager.tree_view, badge_rect.center()),
@@ -3588,7 +4289,8 @@ def test_manager_reload_script_inputs_replaces_compatible_and_preserves_cursor(
         assert manager._tool_graph.root_wrappers[2].snapshot_token == before_token
 
         accept_dialog(
-            lambda: click_tree_view_pos(manager.tree_view, badge_rect.center())
+            lambda: click_tree_view_pos(manager.tree_view, badge_rect.center()),
+            accept_call=lambda dialog: dialog.update_button.click(),
         )
 
         xr.testing.assert_identical(
@@ -3621,8 +4323,8 @@ def test_manager_reload_script_inputs_normalizes_derived_1d_stack_dim(
         itool([data], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         assert (
-            manager._lineage_controller._show_multi_input_script_result(
-                data.mean("y"),
+            show_script_result(
+                manager,
                 (0,),
                 operation_label="Average input",
                 operation_code='derived = data_0.mean("y")',
@@ -3693,20 +4395,21 @@ def test_manager_reload_script_derived_target_reports_runtime_error(
         itool(data, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         assert (
-            manager._lineage_controller._show_multi_input_script_result(
-                data.copy(deep=True),
+            show_script_result(
+                manager,
                 (0,),
                 operation_label="Runtime failure",
-                operation_code="derived = data_0.isel(not_a_dim=0)",
+                operation_code="derived = data_0.isel(x=[2, 1, 0])",
             )
             == 1
         )
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
+        manager.get_imagetool(0).slicer_area.replace_source_data(data.isel(x=slice(2)))
         assert not manager._lineage_controller._reload_script_derived_target(1)
 
     assert len(critical_calls) == 1
-    assert "ValueError" in str(critical_calls[0][1].get("detailed_text", ""))
+    assert "IndexError" in str(critical_calls[0][1].get("detailed_text", ""))
 
 
 def test_manager_reload_script_derived_target_honors_trust_cancel(
@@ -3817,8 +4520,8 @@ def test_manager_reload_script_inputs_use_physical_nonuniform_dims(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         assert manager.get_imagetool(0).slicer_area.data.dims == ("x_idx", "y")
         assert (
-            manager._lineage_controller._show_multi_input_script_result(
-                data + 1.0,
+            show_script_result(
+                manager,
                 (0,),
                 operation_label="Offset input",
                 operation_code=operation_code,
@@ -3876,8 +4579,8 @@ def test_manager_reload_script_inputs_rebuilds_live_nested_input(
         itool([data0, data1], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         assert (
-            manager._lineage_controller._show_multi_input_script_result(
-                data0 - data1,
+            show_script_result(
+                manager,
                 (0, 1),
                 operation_label="Subtract inputs",
                 operation_code="derived = data_0 - data_1",
@@ -3886,8 +4589,8 @@ def test_manager_reload_script_inputs_rebuilds_live_nested_input(
         )
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
         assert (
-            manager._lineage_controller._show_multi_input_script_result(
-                (data0 - data1) + data0,
+            show_script_result(
+                manager,
                 (2, 0),
                 operation_label="Add derived input",
                 operation_code="derived = data_2 + data_0",
@@ -3946,8 +4649,8 @@ def test_manager_reload_script_inputs_after_workspace_roundtrip(
         itool([data0, data1], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         assert (
-            manager._lineage_controller._show_multi_input_script_result(
-                data0 - data1,
+            show_script_result(
+                manager,
                 (0, 1),
                 operation_label="Subtract inputs",
                 operation_code="derived = data_0 - data_1",
@@ -4026,8 +4729,8 @@ def test_manager_reload_script_inputs_incompatible_prompt_paths(
         itool([data0, data1], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         assert (
-            manager._lineage_controller._show_multi_input_script_result(
-                data0 - data1,
+            show_script_result(
+                manager,
                 (0, 1),
                 operation_label="Subtract inputs",
                 operation_code="derived = data_0 - data_1",
@@ -4072,7 +4775,7 @@ def test_manager_reload_script_inputs_incompatible_prompt_paths(
         xr.testing.assert_identical(manager.get_imagetool(2).slicer_area.data, expected)
 
 
-def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
+def test_manager_reload_script_inputs_keeps_closed_file_revision(
     qtbot,
     tmp_path,
     manager_context: Callable[
@@ -4112,8 +4815,8 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
             replay_source_data=None,
         )
         assert (
-            manager._lineage_controller._show_multi_input_script_result(
-                data0 - data1,
+            show_script_result(
+                manager,
                 (0, 1),
                 operation_label="Subtract inputs",
                 operation_code="derived = data_0 - data_1",
@@ -4125,7 +4828,7 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
         manager.remove_imagetool(1)
         derived_uid = manager._tool_graph.root_wrappers[2].uid
         qtbot.wait_until(
-            lambda: manager.dependency_status_for_uid(derived_uid) == "missing",
+            lambda: manager.dependency_status_for_uid(derived_uid) == "current",
             timeout=5000,
         )
         manager.tree_view.deselect_all()
@@ -4184,7 +4887,8 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
         assert "\n" in details["Inputs"]
         assert "\n\n" not in details["Inputs"]
         assert all(line.strip() for line in details["Inputs"].splitlines())
-        assert "data_1: right.nc" in details["Inputs"]
+        assert "Closed ImageTool" in details["Inputs"]
+        (data1 + 100).to_netcdf(path1, mode="w")
 
         manager.reload_selected()
 
@@ -4199,7 +4903,8 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
             == manager._tool_graph.root_wrappers[0].uid
         )
         assert rebuilt_spec.script_inputs[1].node_uid is None
-        assert rebuilt_spec.script_inputs[1].parsed_provenance_spec() == file_spec
+        assert not rebuilt_spec.script_inputs[1].follow_source
+        assert rebuilt_spec.script_inputs[1].revision_id is not None
 
 
 def test_manager_reload_script_inputs_reuses_shared_recorded_file_prefix(
@@ -4278,19 +4983,13 @@ def test_manager_reload_script_inputs_reuses_shared_recorded_file_prefix(
 
     with manager_context() as manager:
         manager.show()
-        itool([left_data, right_data], manager=True)
-        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
-        manager._tool_graph.root_wrappers[0].set_detached_provenance(
-            left_spec,
-            replay_source_data=None,
-        )
-        manager._tool_graph.root_wrappers[1].set_detached_provenance(
-            right_spec,
-            replay_source_data=None,
-        )
+        for data, history in ((left_data, left_spec), (right_data, right_spec)):
+            manager.import_imagetool(
+                itool(data, manager=False, execute=False), provenance_spec=history
+            )
         assert (
-            manager._lineage_controller._show_multi_input_script_result(
-                left_data - right_data,
+            show_script_result(
+                manager,
                 (0, 1),
                 operation_label="Subtract inputs",
                 operation_code="derived = data_0 - data_1",
@@ -4356,8 +5055,8 @@ def test_manager_reload_script_inputs_missing_parent_uses_captured_input(
         itool([data0, data1], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         assert (
-            manager._lineage_controller._show_multi_input_script_result(
-                data0 - data1,
+            show_script_result(
+                manager,
                 (0, 1),
                 operation_label="Subtract inputs",
                 operation_code="derived = data_0 - data_1",
@@ -4465,11 +5164,14 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
 
     with manager_context() as manager:
         manager.show()
-        itool([data0, data1], manager=True)
+        manager.import_imagetool(
+            itool(data0, manager=False, execute=False), provenance_spec=full_data()
+        )
+        itool(data1, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         assert (
-            manager._lineage_controller._show_multi_input_script_result(
-                data0 - data1,
+            show_script_result(
+                manager,
                 (0, 1),
                 operation_label="Subtract inputs",
                 operation_code="derived = data_0 - data_1",
@@ -4487,7 +5189,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         assert manager.dependency_status_tooltip_for_uid(derived_uid) is not None
         dependency_summary = manager.dependency_input_summary_for_uid(derived_uid)
         assert dependency_summary is not None
-        assert "data_0: ImageTool 0" in dependency_summary
+        assert "data — ImageTool 0" in dependency_summary
         assert manager.dependency_status_label_for_uid("missing") is None
         assert manager.dependency_status_badge_for_uid("missing") is None
         assert manager.dependency_status_tooltip_for_uid("missing") is None
@@ -4687,7 +5389,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         derived_wrapper.set_displayed_provenance(nested_spec)
         tooltip = manager.dependency_status_tooltip_for_uid(derived_uid)
         assert tooltip is not None
-        assert "Recorded source files found" in tooltip
+        assert manager.dependency_status_for_uid(derived_uid) == "current"
 
         child_revision = manager._provenance_revisions.add(data0, file_spec)
         fake_child = types.SimpleNamespace(
@@ -4702,7 +5404,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             provenance_for_role=lambda _role: file_spec,
             type_badge_text="tool",
             data_for_role=lambda _role: data0,
-            revision_id_for_role=lambda _role: child_revision,
+            revision_id_for_role=lambda _role, *, retain_expression: child_revision,
         )
         script_input = manager._lineage_controller._script_input_for_node(fake_child)
         assert script_input.name.startswith("data__1_child")
@@ -4778,8 +5480,8 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
                 erlab.interactive, "itool", lambda *_args, **_kwargs: object()
             )
             assert (
-                manager._lineage_controller._show_multi_input_script_result(
-                    data0,
+                show_script_result(
+                    manager,
                     (0,),
                     operation_label="No tool",
                     operation_code="derived = data_0",
@@ -4904,7 +5606,11 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             )
             assert manager._reload_unavailable_reason_for_target(0)
         with monkeypatch.context() as patch:
-            patch.setattr(manager, "_node_for_target", lambda _target: object())
+            patch.setattr(
+                manager,
+                "_node_for_target",
+                lambda target: types.SimpleNamespace(uid=target),
+            )
             patch.setattr(
                 manager._lineage_controller,
                 "_reload_target_for_child",
@@ -4983,10 +5689,10 @@ def test_manager_reload_self_replacement_uses_recorded_source(
 
     with manager_context() as manager:
         manager.show()
-        itool(data, manager=True)
-        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-        wrapper = manager._tool_graph.root_wrappers[0]
-        wrapper.set_detached_provenance(file_spec, replay_source_data=None)
+        manager.import_imagetool(
+            itool(data, manager=False, execute=False), provenance_spec=file_spec
+        )
+        wrapper = manager._node_for_target(0)
 
         tools = manager_console.ToolsNamespace(manager)
         tool = tools[0]
@@ -5161,7 +5867,9 @@ def test_manager_reload_data_explains_non_replayable_script_provenance(
 
     with manager_context() as manager:
         manager.show()
-        itool(data, manager=True)
+        manager.import_imagetool(
+            itool(data, manager=False, execute=False), provenance_spec=full_data()
+        )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         wrapper = manager._tool_graph.root_wrappers[0]
         wrapper.set_detached_provenance(
@@ -5203,6 +5911,8 @@ def test_manager_reload_data_explains_non_replayable_script_provenance(
 
 def test_manager_console_replacement_updates_provenance_and_descendants(
     qtbot,
+    tmp_path,
+    monkeypatch,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -5243,30 +5953,237 @@ def test_manager_console_replacement_updates_provenance_and_descendants(
         provenance = manager._tool_graph.root_wrappers[0].provenance_spec
         assert provenance is not None
         assert manager._tool_graph.root_wrappers[0].source_spec is None
-        assert [source.name for source in provenance.script_inputs] == [
-            "data_0",
-            "data_1",
-        ]
-        assert (
-            provenance.operations[-1].derivation_entry().code
-            == "data_0 = data_0.assign_coords(time=data_1.time)"
-        )
+        graph = manager._data_graph.graph
+        target = manager._node_for_target(0)
+        assert graph.follows(target.uid) == {manager._node_for_target(1).uid}
+        applied = graph.revision(graph.current_revision(target.uid)).producer
+        xr.testing.assert_identical(graph.data(applied.inputs[1][1]), data1.time)
 
-        tree = manager._workspace_controller.saving._to_datatree()
-        manager.remove_all_tools()
-        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
-        for node in tree.values():
-            manager._workspace_controller.loading._load_workspace_node(
-                typing.cast("xr.DataTree", node)
-            )
-        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        workspace = tmp_path / "console-replacement.itws"
+        manager._workspace_controller.saving._save_workspace_document(workspace)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace, replace=True, associate=True, mark_dirty=False, select=False
+        )
 
         loaded_provenance = manager._tool_graph.root_wrappers[0].provenance_spec
         assert loaded_provenance is not None
-        assert [source.name for source in loaded_provenance.script_inputs] == [
-            "data_0",
-            "data_1",
-        ]
+        tools = manager_console.ToolsNamespace(manager)
+        updated = data1.assign_coords(time=("x", np.arange(5.0)))
+        tools[1].data = updated
+        manager.tree_view.deselect_all()
+        select_tools(manager, [0])
+        reasons = _record_reload_unavailable_dialog(monkeypatch)
+        manager.reload_selected()
+        assert not reasons
+        xr.testing.assert_identical(
+            manager.get_imagetool(0).slicer_area.data,
+            data0.assign_coords(time=updated.time),
+        )
 
         manager.console._console_widget.shutdown_kernel()
         InteractiveShell.clear_instance()
+
+
+def test_console_graph_uses_named_inputs_for_reload_and_historical_code(
+    qtbot, manager_context, monkeypatch
+):
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    with manager_context() as manager:
+        itool([data, data + 10], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2)
+        tools = manager_console.ToolsNamespace(manager)
+        handle = tools[1] - tools[0]
+        assert tools._show_handle(
+            handle, active_name="difference", label="Subtract spectra"
+        )
+        graph = manager._data_graph.graph
+        node = manager._node_for_target(2)
+        a = manager._node_for_target(0)
+        b = manager._node_for_target(1)
+        result = graph.entry(node.uid).revision_id
+        assert graph.follows(node.uid) == {a.uid, b.uid}
+        values = {}
+
+        def name(key, _suggestion, _used_names):
+            name = "left" if graph.owner(key) == a.uid else "right"
+            values[name] = tools.checkpoint(key)
+            return name
+
+        a.slicer_area.replace_source_data(data + 2)
+        assert graph.is_stale(node.uid)
+        code = manager._data_graph.copy_code(node, name)
+        xr.testing.assert_identical(
+            _exec_generated_code(code, values)["difference"], graph.data(result)
+        )
+        authorizations = []
+        authorize = manager._lineage_controller._authorize_provenance_execution
+
+        def allowed(entries, **kwargs):
+            authorizations.append(entries)
+            return authorize(entries, **kwargs)
+
+        monkeypatch.setattr(
+            manager._lineage_controller, "_authorize_provenance_execution", allowed
+        )
+        graph.refresh(node.uid)
+        assert authorizations
+        assert all(authorizations)
+        xr.testing.assert_identical(node.slicer_area._data, (data + 10) - (data + 2))
+
+
+def test_console_assigning_an_imagetool_follows_its_displayed_revision(
+    qtbot, manager_context
+):
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    with manager_context() as manager:
+        itool([data, data + 1], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2)
+        tools = manager_console.ToolsNamespace(manager)
+        target, source = manager._node_for_target(0), manager._node_for_target(1)
+        tools[0].data = tools[1]
+        graph = manager._data_graph.graph
+        recorded = graph.current_revision(source.uid)
+        assert graph.revision(graph.current_revision(target.uid)).producer.inputs == (
+            ("data", recorded),
+        )
+        source.slicer_area.replace_source_data(data + 9)
+        assert graph.is_stale(target.uid)
+        xr.testing.assert_identical(target.slicer_area._data, data + 1)
+        graph.refresh(target.uid)
+        xr.testing.assert_identical(target.slicer_area._data, data + 9)
+
+
+def test_console_graph_replays_imagetool_dtype_conversion(manager_context, qtbot):
+    data = xr.DataArray([[1.5, 2.0], [3.0, 4.5]], dims=("y", "x"))
+    with manager_context() as manager:
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1)
+        tools = manager_console.ToolsNamespace(manager)
+        assert tools._show_handle(
+            tools[0].astype("int16"), active_name="integer_values", label="Cast values"
+        )
+        node = manager._node_for_target(1)
+        graph = manager._data_graph.graph
+        expected = data.astype("int16").astype("float64")
+        code = manager._data_graph.copy_code(node, lambda *_args: "spectrum")
+        replayed = _exec_generated_code(code, {"spectrum": data})["integer_values"]
+        assert replayed.dtype == np.float64
+        xr.testing.assert_identical(replayed, expected)
+        graph.refresh(node.uid)
+        assert node.slicer_area._data.dtype == np.float64
+        xr.testing.assert_identical(node.slicer_area._data, replayed)
+
+
+def test_graph_publication_keeps_an_older_selected_console_input(
+    manager_context, qtbot
+):
+    from erlab.interactive.imagetool._provenance._model import (
+        ReplayStep,
+        full_data,
+        recipe,
+    )
+    from erlab.interactive.imagetool._provenance._operations import (
+        AssignAttrsOperation,
+        IselOperation,
+    )
+
+    data = xr.DataArray(np.arange(12.0).reshape(3, 4), dims=("y", "x"), name="scan")
+    with manager_context() as manager:
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1)
+        source = manager._node_for_target(0)
+        selection = full_data(IselOperation(kwargs={"x": slice(1, 3)}))
+        arg = manager._lineage_controller._script_input_for_node(
+            source, name="spectrum", source_spec=selection
+        )
+        op = AssignAttrsOperation(attrs={"selected": True})
+        spec = recipe(
+            ReplayStep(operation=op),
+            start_label="Label selected data",
+            active_name="selected",
+            script_inputs=(arg,),
+            primary_input=arg.name,
+        )
+        expected = op.apply(selection.apply(data))
+        source.slicer_area.replace_source_data(data + 7)
+        result = itool(expected, manager=False, execute=False)
+        index = manager.import_imagetool(result, provenance_spec=spec, show=False)
+        node = manager._node_for_target(index)
+        graph = manager._data_graph.graph
+        assert graph.is_stale(node.uid)
+        assert graph.follows(node.uid) == {source.uid}
+        selected = graph.revision(graph.current_revision(node.uid)).producer.inputs
+        assert len(selected) == 1
+        assert selected[0][0] == "data"
+        selection_step = graph.revision(selected[0][1]).producer
+        assert isinstance(selection_step.operation, IselOperation)
+        assert selection_step.inputs == (("data", arg.revision_id),)
+        code = manager._data_graph.copy_code(node, lambda *_args: "original")
+        xr.testing.assert_identical(
+            _exec_generated_code(code, {"original": data})["selected"], expected
+        )
+        graph.refresh(node.uid)
+        xr.testing.assert_identical(
+            node.slicer_area._data, op.apply(selection.apply(data + 7))
+        )
+
+
+def test_incomplete_replacement_workflow_preserves_result_with_visible_reason(
+    manager_context,
+):
+    data = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"))
+    with manager_context() as manager:
+        source = manager.add_imagetool(
+            itool(data, manager=False, execute=False), show=False
+        )
+        previous_snapshot = "earlier-without-a-checkpoint"
+        spec = script(
+            ScriptCodeOperation(label="Add one", code="derived = original + 1"),
+            start_label="Console result",
+            active_name="derived",
+            script_inputs=(
+                ScriptInput(
+                    name="original",
+                    node_uid=manager._node_for_target(source).uid,
+                    node_snapshot_token=previous_snapshot,
+                ),
+            ),
+        )
+        result = data + 1
+        index = manager.add_imagetool(
+            itool(data, manager=False, execute=False), show=False
+        )
+        node = manager._node_for_target(index)
+        node.replace_with_detached_data(result, spec, replay_source_data=None)
+        host = manager._data_graph
+        assert host.manages(node.uid)
+        assert not host.graph.has_recipe(node.uid)
+        assert "original" in host.unavailable(node.uid)
+        assert node.derivation_display_rows
+        assert not node.slicer_area.reloadable
+        code = host.copy_code(node, lambda *_: "saved_result")
+        xr.testing.assert_identical(
+            _exec_generated_code(code, {"saved_result": result})["derived"], result
+        )
+
+
+def test_late_console_result_keeps_original_graph_revision(manager_context, qtbot):
+    data = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "y"))
+    with manager_context() as manager:
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1)
+        tools = manager_console.ToolsNamespace(manager)
+        source = manager._node_for_target(0)
+        graph = manager._data_graph.graph
+        handle = tools[0] + 2
+        original = graph.current_revision(source.uid)
+        source.slicer_area.replace_source_data(data + 5)
+        assert tools._show_handle(handle, active_name="offset", label="Add offset")
+        result = manager._node_for_target(1)
+        assert graph.revision(graph.current_revision(result.uid)).producer.inputs == (
+            ("data", original),
+        )
+        assert graph.is_stale(result.uid)
+        xr.testing.assert_identical(result.slicer_area._data, data + 2)
+        graph.refresh(result.uid)
+        xr.testing.assert_identical(result.slicer_area._data, data + 7)

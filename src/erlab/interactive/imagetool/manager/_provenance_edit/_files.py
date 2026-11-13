@@ -49,10 +49,13 @@ class _FileLoadBatchPeer:
     script_input_path: tuple[int, ...] = ()
     display_label: str | None = None
     preserve_loader: bool = False
+    graph_revision: str | None = None
 
     @property
     def target_id(self) -> str:
-        path = ".".join(str(index) for index in self.script_input_path)
+        path = self.graph_revision or ".".join(
+            str(index) for index in self.script_input_path
+        )
         return f"{self.node.uid}\x1f{self.scope}\x1f{path}"
 
     @property

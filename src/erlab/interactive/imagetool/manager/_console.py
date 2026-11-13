@@ -2,25 +2,43 @@
 
 from __future__ import annotations
 
+from erlab._provenance import Follow
 from erlab.interactive.imagetool._provenance._code import (
-    _SCRIPT_REPLAY_ALLOWED_BUILTINS,
     _expression_receiver_code,
-    _validate_script_replay_code,
+    _replace_code_identifiers,
 )
+from erlab.interactive.imagetool._provenance._graph import _REPLAY_PROTECTED_NAMES
 from erlab.interactive.imagetool._provenance._model import (
     ConsoleCall,
+    ReplayStep,
     ScriptInput,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
+    _calculation_options,
+    _SourceViewOperation,
     operation_from_console_call,
+    recipe,
     script,
 )
-from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
+from erlab.interactive.imagetool._provenance._operations import (
+    ConcatOperation,
+    ScriptCodeOperation,
+    ShiftFromInputOperation,
+)
+from erlab.interactive.imagetool._provenance._program import (
+    CalculatedInput,
+    ConsoleInput,
+    RecordedProgram,
+)
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
+from erlab.interactive.imagetool.manager._data_graph import (
+    _CalculatedResult,
+    _InputRevision,
+    _WindowInput,
+)
 
 __all__ = ["ToolNamespace", "ToolsNamespace", "_ImageToolManagerJupyterConsole"]
 
-import ast
 import atexit
 import contextlib
 import functools
@@ -28,13 +46,13 @@ import importlib
 import inspect
 import keyword
 import operator
-import symtable
-import textwrap
+import os
 import types
 import typing
 import unicodedata
 import weakref
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 
 import numpy as np
 import qtconsole.inprocess
@@ -43,6 +61,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.utils
+from erlab._provenance._records import Recipe, capture_display_data
 from erlab.interactive.imagetool import _kspace_conversion
 
 if typing.TYPE_CHECKING:
@@ -75,12 +94,62 @@ def _resolve_console_namespace(
     resolved = {}
     for name, module in namespace.items():
         value = importlib.import_module(module) if isinstance(module, str) else module
-        if name in {"erlab", "era", "eri", "xr"} and isinstance(
-            value, types.ModuleType
-        ):
-            value = _ConsoleModuleProxy(value, name)
+        if _is_console_library_module(value):
+            value = _ConsoleLibraryNamespace(value)
         resolved[name] = value
     return resolved
+
+
+def _is_console_library_module(value: typing.Any) -> bool:
+    return isinstance(value, types.ModuleType) and (
+        value.__name__ in {"xarray", "erlab", "erlab.analysis"}
+        or value.__name__.startswith("erlab.analysis.")
+    )
+
+
+class _ConsoleLibraryFunction:
+    """Dispatch handle arguments without modifying the installed library function."""
+
+    def __init__(self, func: Callable[..., typing.Any]) -> None:
+        self._function = func
+        functools.update_wrapper(self, func)
+
+    def __call__(self, *args: typing.Any, **kwargs: typing.Any) -> typing.Any:
+        owner = _first_console_handle((args, kwargs))
+        if owner is None:
+            return self._function(*args, **kwargs)
+        tools = owner._console_tools
+        if tools is None:
+            _snapshot_required("A library call whose Manager is unavailable")
+        return tools.apply(self._function, *args, **kwargs)
+
+
+class _ConsoleLibraryNamespace(types.ModuleType):
+    """Provide direct recorded calls through the console's supplied library aliases."""
+
+    def __init__(self, module: types.ModuleType) -> None:
+        super().__init__(module.__name__, module.__doc__)
+        self._module = module
+        self._members: dict[str, tuple[typing.Any, typing.Any]] = {}
+
+    def __getattr__(self, name: str) -> typing.Any:
+        value = getattr(self._module, name)
+        cached = self._members.get(name)
+        if cached is not None and cached[0] is value:
+            return cached[1]
+        if _is_console_library_module(value):
+            member: typing.Any = _ConsoleLibraryNamespace(value)
+        elif value is xr.concat or (
+            inspect.isfunction(value) and value.__module__.startswith("erlab.analysis.")
+        ):
+            member = _ConsoleLibraryFunction(value)
+        else:
+            return value
+        self._members[name] = (value, member)
+        return member
+
+    def __dir__(self) -> list[str]:
+        return sorted(dir(self._module))
 
 
 def _tool_data_name(index: int) -> str:
@@ -89,21 +158,6 @@ def _tool_data_name(index: int) -> str:
 
 def _is_local_console_input(script_input: ScriptInput) -> bool:
     return script_input.node_uid is None and script_input.revision_id is None
-
-
-def _console_source_owners(spec: ToolProvenanceSpec) -> set[str]:
-    # Fresh console recipes contain runtime tool inputs or named local expressions.
-    owners: set[str] = set()
-    pending = list(spec.replay_inputs)
-    while pending:
-        script_input = pending.pop()
-        if script_input.node_uid is not None:
-            owners.add(script_input.node_uid)
-        elif _is_local_console_input(script_input):
-            nested = script_input.parsed_provenance_spec()
-            if nested is not None:
-                pending.extend(nested.replay_inputs)
-    return owners
 
 
 def _console_authored_entries(
@@ -151,120 +205,22 @@ def _script_code(prelude: Sequence[str], code: str) -> str:
 
 
 def _replay_name_reserved(name: str) -> bool:
-    return name in {"data", "derived", "tools"} or name.startswith("data_")
-
-
-def _function_global_names(source: str, function_name: str) -> set[str] | None:
-    try:
-        table = symtable.symtable(source, "<ImageTool console function>", "exec")
-    except SyntaxError:
-        return None
-
-    names = {
-        symbol.get_name()
-        for symbol in table.get_symbols()
-        if symbol.get_name() != function_name
-        and symbol.is_referenced()
-        and symbol.is_global()
-    }
-    for child in table.get_children():
-        if child.get_name() != function_name:
-            continue
-        names.update(
-            symbol.get_name()
-            for symbol in child.get_symbols()
-            if symbol.get_name() != function_name
-            and symbol.is_referenced()
-            and (symbol.is_global() or symbol.is_free())
-        )
-        return names
-    return None
-
-
-def _callable_operand(
-    value: typing.Any, seen: set[int] | None = None
-) -> _ConsoleOperand | None:
-    if getattr(value, "_erlab_console_function_proxy", False):
-        value = value.__wrapped__
-    if (
-        not inspect.isfunction(value)
-        or value.__module__ != "__main__"
-        or value.__qualname__ != value.__name__
-        or value.__closure__ is not None
-    ):
-        return None
-
-    name = value.__name__
-    if (
-        not name.isidentifier()
+    return (
+        name in {"data", "derived", "tools"}
+        or name in _REPLAY_PROTECTED_NAMES
+        or name.startswith("data_")
+        or not name.isidentifier()
         or keyword.iskeyword(name)
-        or _replay_name_reserved(name)
-    ):
-        return None
-    if seen is None:
-        seen = set()
-    value_id = id(value)
-    if value_id in seen:
-        return None
-    seen.add(value_id)
+        or unicodedata.normalize("NFKC", name) != name
+    )
 
-    try:
-        source = textwrap.dedent(inspect.getsource(value)).strip()
-        module = ast.parse(source)
-    except (OSError, TypeError, SyntaxError):
-        return None
-    if len(module.body) != 1 or not isinstance(module.body[0], ast.FunctionDef):
-        return None
-    function_node = module.body[0]
-    if function_node.name != name or function_node.decorator_list:
-        return None
 
-    global_names = _function_global_names(source, name)
-    if global_names is None:
-        return None
-
-    prelude: list[str] = []
-    allowed_globals = {
-        "np",
-        "numpy",
-        "xr",
-        "xarray",
-        "erlab",
-        "era",
-        "eri",
-        "eplt",
-        *_SCRIPT_REPLAY_ALLOWED_BUILTINS,
-    }
-    for global_name in sorted(global_names):
-        if global_name in allowed_globals:
-            continue
-        if _replay_name_reserved(global_name) or global_name.startswith("__"):
-            return None
-        try:
-            global_value = value.__globals__[global_name]
-        except KeyError:
-            return None
-        if inspect.isfunction(global_value) or getattr(
-            global_value, "_erlab_console_function_proxy", False
-        ):
-            dependency = _callable_operand(global_value, seen)
-            if dependency is None:
-                return None
-            prelude.extend(dependency.code_prelude)
-            if dependency.code != global_name:
-                prelude.append(f"{global_name} = {dependency.code}")
-            continue
-        global_code, copyable = _literal_code(global_value)
-        if not copyable:
-            return None
-        prelude.append(f"{global_name} = {global_code}")
-
-    code_prelude = _dedupe_code_preludes(prelude, (source,))
-    try:
-        _validate_script_replay_code(_script_code(code_prelude, "derived = data"))
-    except (TypeError, ValueError):
-        return None
-    return _ConsoleOperand(value, name, copyable=True, code_prelude=code_prelude)
+def _snapshot_required(operation: str) -> typing.NoReturn:
+    raise TypeError(
+        f"{operation} is not supported on an ImageTool console handle. "
+        "Use an independent snapshot (a = handle.data), then assign "
+        "tools[index].data = a to apply edits to a window."
+    )
 
 
 @dataclass(frozen=True)
@@ -278,20 +234,55 @@ class _ConsoleOperand:
     operations: tuple[ToolProvenanceOperation, ...] = ()
 
 
+def _expression_operand(operand: _ConsoleOperand) -> _ConsoleOperand:
+    """Keep statement operations when a result becomes part of an expression."""
+    if not any(operation.statement_mutates_input for operation in operand.operations):
+        return operand
+    name = "prepared_data"
+    spec = script(
+        *operand.operations,
+        start_label="Prepare console input",
+        seed_code=_script_code(
+            operand.code_prelude, f"{name} = {operand.seed_expression}"
+        ),
+        active_name=name,
+        script_inputs=operand.script_inputs,
+    )
+    item = ScriptInput(
+        name=name,
+        label="Prepared console input",
+        provenance_spec=spec.model_dump(mode="json"),
+    )
+    retained = list(operand.script_inputs)
+    weakref.finalize(item, retained.clear).atexit = False
+    return _ConsoleOperand(operand.value, name, (item,), operand.copyable)
+
+
 def _literal_code(value: typing.Any) -> tuple[str, bool]:
-    value = erlab.utils.misc._convert_to_native(value)
-    if isinstance(value, float):
+    if isinstance(value, np.ndarray | np.generic):
+        if value.dtype.kind not in "biufcSU":
+            return repr(value), False
+        contents, copyable = _literal_code(value.tolist())
+        code = f"np.array({contents}, dtype={value.dtype.str!r})"
+        return (f"{code}[()]" if isinstance(value, np.generic) else code), copyable
+    if isinstance(value, np.dtype) or (
+        isinstance(value, type) and issubclass(value, np.generic)
+    ):
+        return f"np.dtype({np.dtype(value).str!r})", True
+    if type(value) is float:
         if np.isnan(value):
             return "np.nan", True
         if np.isinf(value):
             return ("np.inf" if value > 0 else "-np.inf"), True
         return repr(value), True
-    if isinstance(value, complex):
+    if type(value) is complex:
         real_code, _ = _literal_code(float(value.real))
         imag_code, _ = _literal_code(float(value.imag))
         return f"complex({real_code}, {imag_code})", True
-    if value is None or isinstance(value, (bool, int, str, bytes)):
+    if value is None or type(value) in (bool, int, str, bytes):
         return repr(value), True
+    if value is Ellipsis:
+        return "...", True
     if isinstance(value, slice):
         start, start_copyable = _literal_code(value.start)
         stop, stop_copyable = _literal_code(value.stop)
@@ -322,42 +313,113 @@ def _literal_code(value: typing.Any) -> tuple[str, bool]:
             dict_parts.append(f"{key_code}: {item_code}")
             copyable = copyable and key_copyable and item_copyable
         return f"{{{', '.join(dict_parts)}}}", copyable
-    return repr(value), False
+    return "", False
 
 
 def _merge_operands(
     *operands: _ConsoleOperand,
 ) -> tuple[
+    tuple[_ConsoleOperand, ...],
     tuple[ScriptInput, ...],
     bool,
     tuple[str, ...],
 ]:
-    return (
-        _dedupe_script_inputs(
-            tuple(
-                script_input
-                for operand in operands
-                for script_input in operand.script_inputs
+    """Bind each operand occurrence to its own name before composing the code."""
+    reserved = {item.name for operand in operands for item in operand.script_inputs}
+    inputs: list[ScriptInput] = []
+    used: set[str] = set()
+    resolved = []
+    for operand in operands:
+        replacements = {}
+        operand_inputs = []
+        for item in operand.script_inputs:
+            name = item.name
+            if not isinstance(item, ConsoleInput) and item in inputs:
+                # A portable expression can repeat one external Python variable.
+                operand_inputs.append(item)
+                continue
+            if name in used:
+                suffix = 2
+                while f"{name}_{suffix}" in reserved:
+                    suffix += 1
+                name = f"{name}_{suffix}"
+            used.add(name)
+            reserved.add(name)
+            assigned = (
+                item if name == item.name else item.model_copy(update={"name": name})
             )
-        ),
-        all(operand.copyable for operand in operands),
-        _dedupe_code_preludes(*(operand.code_prelude for operand in operands)),
+            if assigned is not item and not isinstance(item, ConsoleInput):
+                retained = [item]
+                weakref.finalize(assigned, retained.clear).atexit = False
+            inputs.append(assigned)
+            operand_inputs.append(assigned)
+            if assigned.name != item.name:
+                replacements[item.name] = assigned.name
+        if replacements:
+            operand = replace(
+                operand,
+                code=_replace_code_identifiers(operand.code, replacements),
+                script_inputs=tuple(operand_inputs),
+                code_prelude=tuple(
+                    _replace_code_identifiers(code, replacements)
+                    for code in operand.code_prelude
+                ),
+                seed_expression=(
+                    _replace_code_identifiers(operand.seed_expression, replacements)
+                    if operand.seed_expression is not None
+                    else None
+                ),
+                operations=tuple(
+                    operation.model_copy(
+                        update={
+                            "code": _replace_code_identifiers(
+                                operation.code, replacements
+                            )
+                        }
+                    )
+                    if isinstance(operation, ScriptCodeOperation)
+                    and operation.code is not None
+                    else operation
+                    for operation in operand.operations
+                ),
+            )
+        resolved.append(operand)
+    return (
+        tuple(resolved),
+        tuple(inputs),
+        all(operand.copyable for operand in resolved),
+        _dedupe_code_preludes(*(operand.code_prelude for operand in resolved)),
     )
 
 
-def _unwrap_console_value(value: typing.Any) -> typing.Any:
-    if isinstance(value, _ConsoleDataHandleBase):
-        return value.data
-    if isinstance(value, tuple):
-        return tuple(_unwrap_console_value(item) for item in value)
-    if isinstance(value, list):
-        return [_unwrap_console_value(item) for item in value]
-    if isinstance(value, dict):
-        return {
-            _unwrap_console_value(key): _unwrap_console_value(item)
-            for key, item in value.items()
+def _bound_library_operation(
+    func: Callable[..., typing.Any], count: int, arguments: dict[str, typing.Any]
+) -> ConcatOperation | ShiftFromInputOperation | None:
+    """Use the same operations as the Manager dialogs for direct array inputs."""
+    if func is xr.concat:
+        options = {"dim", "coords", "compat", "join", "combine_attrs"}
+        if arguments.keys() - options or not isinstance(arguments["dim"], str):
+            return None
+        # The public xarray signature resolves its combine defaults against
+        # the user's active xarray options.
+        defaults = inspect.signature(xr.concat).parameters
+        settings = {
+            name: arguments[name] if name in arguments else str(defaults[name].default)
+            for name in options
         }
-    return value
+        try:
+            return ConcatOperation.model_validate({"input_count": count, **settings})
+        except ValueError:
+            # Some xarray options (for example an explicit list of coordinates)
+            # require the general recorded-call executor.
+            return None
+    options = dict(arguments)
+    interpolation = options.pop("shift_kwargs", {})
+    if interpolation.keys() - {"order", "mode", "cval", "prefilter"}:
+        return None
+    if interpolation.get("mode", "constant") != "constant":
+        options["cval"] = 0.0
+    return ShiftFromInputOperation(**(options | interpolation))
 
 
 def _first_console_handle(value: typing.Any) -> _ConsoleDataHandleBase | None:
@@ -375,14 +437,14 @@ def _first_console_handle(value: typing.Any) -> _ConsoleDataHandleBase | None:
 
 
 def _operand_from_value(value: typing.Any) -> _ConsoleOperand:
+    if isinstance(value, _ConsoleOperand):
+        return value
     if isinstance(value, _ConsoleDataHandleBase):
-        return value._console_operand()
-    if (callable_operand := _callable_operand(value)) is not None:
-        return callable_operand
+        return _expression_operand(value._console_operand())
     if isinstance(value, tuple):
         item_operands = tuple(_operand_from_value(item) for item in value)
         suffix = "," if len(item_operands) == 1 else ""
-        inputs, copyable, code_prelude = _merge_operands(*item_operands)
+        item_operands, inputs, copyable, code_prelude = _merge_operands(*item_operands)
         return _ConsoleOperand(
             tuple(operand.value for operand in item_operands),
             f"({', '.join(operand.code for operand in item_operands)}{suffix})",
@@ -392,7 +454,7 @@ def _operand_from_value(value: typing.Any) -> _ConsoleOperand:
         )
     if isinstance(value, list):
         item_operands = tuple(_operand_from_value(item) for item in value)
-        inputs, copyable, code_prelude = _merge_operands(*item_operands)
+        item_operands, inputs, copyable, code_prelude = _merge_operands(*item_operands)
         return _ConsoleOperand(
             [operand.value for operand in item_operands],
             f"[{', '.join(operand.code for operand in item_operands)}]",
@@ -408,7 +470,8 @@ def _operand_from_value(value: typing.Any) -> _ConsoleOperand:
             for pair in zip(key_operands, value_operands, strict=True)
             for operand in pair
         )
-        inputs, copyable, code_prelude = _merge_operands(*pair_operands)
+        pair_operands, inputs, copyable, code_prelude = _merge_operands(*pair_operands)
+        key_operands, value_operands = pair_operands[::2], pair_operands[1::2]
         return _ConsoleOperand(
             {
                 key_operand.value: value_operand.value
@@ -429,11 +492,16 @@ def _operand_from_value(value: typing.Any) -> _ConsoleOperand:
             code_prelude,
         )
     code, copyable = _literal_code(value)
+    if not copyable:
+        _snapshot_required(f"An operand of type {type(value).__name__}")
     return _ConsoleOperand(value, code, copyable=copyable)
 
 
 def _format_call_code(
-    args: tuple[typing.Any, ...], kwargs: dict[str, typing.Any]
+    args: tuple[typing.Any, ...],
+    kwargs: dict[str, typing.Any],
+    *,
+    receiver: _ConsoleOperand | None = None,
 ) -> tuple[
     str,
     tuple[ScriptInput, ...],
@@ -444,9 +512,13 @@ def _format_call_code(
 ]:
     arg_operands = tuple(_operand_from_value(arg) for arg in args)
     kwarg_operands = {key: _operand_from_value(value) for key, value in kwargs.items()}
-    inputs, copyable, code_prelude = _merge_operands(
-        *arg_operands, *tuple(kwarg_operands.values())
-    )
+    operands = (*arg_operands, *kwarg_operands.values())
+    if receiver is not None:
+        merged, _, _, _ = _merge_operands(receiver, *operands)
+        operands = merged[1:]
+    operands, inputs, copyable, code_prelude = _merge_operands(*operands)
+    arg_operands = operands[: len(args)]
+    kwarg_operands = dict(zip(kwargs, operands[len(args) :], strict=True))
     parts = [operand.code for operand in arg_operands]
     for key, operand in kwarg_operands.items():
         if (
@@ -475,6 +547,22 @@ def _structured_operation_from_call(
     return None
 
 
+def _xarray_options(*operands: _ConsoleOperand) -> dict[str, typing.Any]:
+    current = xr.get_options()
+    options = {"keep_attrs": current["keep_attrs"]}
+    if sum(isinstance(operand.value, xr.DataArray) for operand in operands) > 1:
+        for key in ("arithmetic_join", "arithmetic_broadcast", "arithmetic_compat"):
+            if key in current:
+                options[key] = current[key]
+    return options
+
+
+def _apply_console_operation(
+    operation: ToolProvenanceOperation, data: xr.DataArray
+) -> xr.DataArray:
+    return operation.apply(data if operation.reads_input_only else data.copy(deep=True))
+
+
 def _structured_seed_and_operations(
     source: _ConsoleOperand,
     operation: ToolProvenanceOperation | None,
@@ -488,19 +576,54 @@ def _structured_seed_and_operations(
     return seed_expression, (*source.operations, operation)
 
 
+def _console_callable(func: typing.Any, original: typing.Any) -> typing.Any:
+    """Preserve call signatures without retaining a method bound to old data."""
+
+    @functools.wraps(original, updated=())
+    def wrapped(*args: typing.Any, **kwargs: typing.Any) -> typing.Any:
+        return func(*args, **kwargs)
+
+    wrapped.__wrapped__ = func
+    with contextlib.suppress(TypeError, ValueError):
+        signature = inspect.signature(original)
+        func.__signature__ = signature
+        typing.cast("typing.Any", wrapped).__signature__ = signature
+    return wrapped
+
+
+_CONSOLE_ACCESSOR_CALLS = frozenset(
+    {
+        ("qsel",),
+        ("qsel", "average"),
+        ("qsel", "mean"),
+        ("qsel", "min"),
+        ("qsel", "max"),
+        ("qsel", "sum"),
+        ("kspace", "as_configuration"),
+        ("kspace", "set_normal"),
+        ("kspace", "convert"),
+    }
+)
+
+_CONSOLE_COARSEN_REDUCERS = frozenset(
+    {"all", "any", "count", "max", "mean", "median", "min", "prod", "std", "sum", "var"}
+)
+
+
 class _ConsoleAccessorProxy:
+    def __setattr__(self, attr: str, value: typing.Any) -> None:
+        if not attr.startswith("_"):
+            _snapshot_required(f"Setting an accessor attribute ({attr})")
+        object.__setattr__(self, attr, value)
+
     def __init__(
         self,
         owner: _ConsoleDataHandleBase,
-        accessor: typing.Any,
         path: tuple[str, ...],
-        expression: str,
     ) -> None:
         self._owner = owner
-        self._accessor = accessor
         self._path = path
-        self._expression = expression
-        self.__wrapped__ = accessor
+        accessor = operator.attrgetter(".".join(path))(owner._console_operand().value)
         for attr in ("__doc__", "__module__", "__name__", "__qualname__"):
             with contextlib.suppress(Exception):
                 value = getattr(accessor, attr)
@@ -508,15 +631,20 @@ class _ConsoleAccessorProxy:
                     setattr(self, attr, value)
         with contextlib.suppress(TypeError, ValueError):
             self.__signature__ = inspect.signature(accessor)
+        self.__wrapped__ = _console_callable(
+            functools.partial(self._call, owner, path), accessor
+        )
 
+    @staticmethod
     def _call(
-        self,
-        func: Callable[..., typing.Any],
-        expression: str,
+        owner: _ConsoleDataHandleBase,
         path: tuple[str, ...],
         *args: typing.Any,
         **kwargs: typing.Any,
     ) -> typing.Any:
+        if path not in _CONSOLE_ACCESSOR_CALLS:
+            _snapshot_required(".".join(path))
+        source_operand = owner._console_operand()
         (
             call_code,
             call_inputs,
@@ -524,8 +652,12 @@ class _ConsoleAccessorProxy:
             raw_kwargs,
             args_copyable,
             call_prelude,
-        ) = _format_call_code(args, kwargs)
-        source_operand = self._owner._console_operand()
+        ) = _format_call_code(args, kwargs, receiver=source_operand)
+        resolve = operator.attrgetter(".".join(path))
+        func = resolve(source_operand.value)
+        expression = f"{source_operand.code}.{'.'.join(path)}"
+        if not callable(func):
+            raise TypeError(f"{expression} is not callable")
         call = ConsoleCall(
             func=func,
             accessor_path=path,
@@ -536,65 +668,62 @@ class _ConsoleAccessorProxy:
             receiver_data=source_operand.value,
         )
         operation = _structured_operation_from_call(call)
-        if operation is not None and operation.console_applies_to_receiver:
-            result = operation.apply(source_operand.value)
-        else:
-            result = func(*raw_args, **raw_kwargs)
-        inputs, copyable, code_prelude = _merge_operands(
+        if operation is None and path[0] == "kspace":
+            _snapshot_required(f"{'.'.join(path)} with these arguments")
+        options = (
+            {"keep_attrs": xr.get_options()["keep_attrs"]} if operation is None else {}
+        )
+        _, inputs, copyable, code_prelude = _merge_operands(
             source_operand,
             _ConsoleOperand(None, "", call_inputs, args_copyable, call_prelude),
         )
         seed_expression, operations = _structured_seed_and_operations(
             source_operand, operation
         )
-        return self._owner._wrap_console_result(
-            result,
+        return owner._calculate_console_result(
+            lambda: (
+                func(*raw_args, **raw_kwargs)
+                if operation is None
+                else _apply_console_operation(operation, source_operand.value)
+            ),
             call.display_code,
             inputs,
             copyable=copyable,
             code_prelude=code_prelude,
             operations=operations,
             seed_expression=seed_expression,
+            xarray_options=options or None,
         )
 
     def __call__(self, *args: typing.Any, **kwargs: typing.Any) -> typing.Any:
-        if not callable(self._accessor):
-            raise TypeError(f"{self._expression} is not callable")
-        return self._call(
-            self._accessor,
-            self._expression,
-            self._path,
-            *args,
-            **kwargs,
-        )
+        return self._call(self._owner, self._path, *args, **kwargs)
 
     def __getattr__(self, attr: str) -> typing.Any:
-        value = getattr(self._accessor, attr)
-        expression = f"{self._expression}.{attr}"
+        if attr.startswith("_"):
+            raise AttributeError(attr)
         path = (*self._path, attr)
-        if not callable(value):
-            if isinstance(value, xr.DataArray):
-                operand = self._owner._console_operand()
-                return self._owner._wrap_console_result(
-                    value,
-                    expression,
-                    operand.script_inputs,
-                    copyable=operand.copyable,
-                    code_prelude=operand.code_prelude,
-                )
-            return value
+        if path not in _CONSOLE_ACCESSOR_CALLS:
+            _snapshot_required(".".join(path))
+        operand = self._owner._console_operand()
+        value = operator.attrgetter(".".join(path))(operand.value)
 
-        @functools.wraps(value)
         def _method(*args: typing.Any, **kwargs: typing.Any) -> typing.Any:
-            return self._call(value, expression, path, *args, **kwargs)
+            return self._call(self._owner, path, *args, **kwargs)
 
-        return _method
+        return _console_callable(_method, value)
 
     def __dir__(self) -> list[str]:
-        return sorted(set(dir(self._accessor)))
+        return sorted(
+            path[-1] for path in _CONSOLE_ACCESSOR_CALLS if path[:-1] == self._path
+        )
 
 
 class _ConsoleCoarsenProxy:
+    def __setattr__(self, attr: str, value: typing.Any) -> None:
+        if not attr.startswith("_"):
+            _snapshot_required(f"Setting a coarsening attribute ({attr})")
+        object.__setattr__(self, attr, value)
+
     def __init__(
         self,
         owner: _ConsoleDataHandleBase,
@@ -619,11 +748,12 @@ class _ConsoleCoarsenProxy:
         self._code_prelude = tuple(code_prelude)
 
     def __getattr__(self, attr: str) -> typing.Any:
+        if attr.startswith("_"):
+            raise AttributeError(attr)
+        if attr not in _CONSOLE_COARSEN_REDUCERS:
+            _snapshot_required(f"coarsen.{attr}")
         value = getattr(self._coarsened, attr)
-        if not callable(value):
-            return value
 
-        @functools.wraps(value)
         def _method(*args: typing.Any, **kwargs: typing.Any) -> typing.Any:
             (
                 call_code,
@@ -632,9 +762,12 @@ class _ConsoleCoarsenProxy:
                 raw_kwargs,
                 args_copyable,
                 call_prelude,
-            ) = _format_call_code(args, kwargs)
-            result = value(*raw_args, **raw_kwargs)
-            inputs, copyable, code_prelude = _merge_operands(
+            ) = _format_call_code(
+                args,
+                kwargs,
+                receiver=_ConsoleOperand(None, self._expression, self._script_inputs),
+            )
+            _, inputs, copyable, code_prelude = _merge_operands(
                 _ConsoleOperand(
                     None,
                     "",
@@ -662,184 +795,179 @@ class _ConsoleCoarsenProxy:
                     receiver_data=self._source_operand.value,
                 )
                 operation = _structured_operation_from_call(call)
+                if operation is not None:
+                    operation = operation.model_copy(
+                        update={
+                            "keep_attrs": xr.get_options()["keep_attrs"] is not False
+                        }
+                    )
+            options = (
+                {"keep_attrs": xr.get_options()["keep_attrs"]}
+                if operation is None
+                else {}
+            )
             seed_expression, operations = _structured_seed_and_operations(
                 self._source_operand, operation
             )
-            return self._owner._wrap_console_result(
-                result,
+            return self._owner._calculate_console_result(
+                lambda: (
+                    value(*raw_args, **raw_kwargs)
+                    if operation is None
+                    else _apply_console_operation(operation, self._source_operand.value)
+                ),
                 expression,
                 inputs,
                 copyable=copyable,
                 code_prelude=code_prelude,
                 operations=operations,
                 seed_expression=seed_expression,
+                xarray_options=options or None,
             )
 
-        with contextlib.suppress(TypeError, ValueError):
-            typing.cast("typing.Any", _method).__signature__ = inspect.signature(value)
-        return _method
+        return _console_callable(_method, value)
 
     def __dir__(self) -> list[str]:
-        return sorted(set(dir(self._coarsened)))
+        return sorted(_CONSOLE_COARSEN_REDUCERS)
 
 
-class _ConsoleModuleProxy(types.ModuleType):
-    def __init__(self, module: types.ModuleType, alias: str) -> None:
-        super().__init__(module.__name__, module.__doc__)
-        self._module = module
-        self._alias = alias
-        for attr in ("__file__", "__package__", "__spec__", "__all__"):
-            if hasattr(module, attr):
-                setattr(self, attr, getattr(module, attr))
+# These methods have a direct public expression and do not mutate the receiver.
+# Other DataArray APIs remain available through the explicit snapshot boundary.
+_CONSOLE_READ_ONLY_METHODS = frozenset(
+    {
+        "all",
+        "any",
+        "argmax",
+        "argmin",
+        "argsort",
+        "assign_attrs",
+        "assign_coords",
+        "astype",
+        "broadcast_like",
+        "chunk",
+        "clip",
+        "coarsen",
+        "compute",
+        "conj",
+        "conjugate",
+        "copy",
+        "count",
+        "cumprod",
+        "cumsum",
+        "diff",
+        "differentiate",
+        "drop_duplicates",
+        "drop_indexes",
+        "drop_isel",
+        "drop_sel",
+        "drop_vars",
+        "dropna",
+        "expand_dims",
+        "fillna",
+        "integrate",
+        "interp",
+        "interp_like",
+        "interpolate_na",
+        "isin",
+        "isnull",
+        "isel",
+        "item",
+        "max",
+        "mean",
+        "median",
+        "min",
+        "notnull",
+        "pad",
+        "prod",
+        "quantile",
+        "rank",
+        "reindex",
+        "reindex_like",
+        "rename",
+        "roll",
+        "round",
+        "sel",
+        "shift",
+        "sortby",
+        "squeeze",
+        "stack",
+        "std",
+        "sum",
+        "swap_dims",
+        "transpose",
+        "thin",
+        "unstack",
+        "var",
+        "where",
+    }
+)
 
-    def __getattr__(self, attr: str) -> typing.Any:
-        value = getattr(self._module, attr)
-        expression = f"{self._alias}.{attr}"
-        if isinstance(value, types.ModuleType):
-            return _ConsoleModuleProxy(value, expression)
-        if isinstance(value, type):
-            return value
-        if not callable(value):
-            return value
-
-        @functools.wraps(value)
-        def _function(*args: typing.Any, **kwargs: typing.Any) -> typing.Any:
-            (
-                call_code,
-                call_inputs,
-                raw_args,
-                raw_kwargs,
-                args_copyable,
-                call_prelude,
-            ) = _format_call_code(args, kwargs)
-            result = value(*raw_args, **raw_kwargs)
-            if not call_inputs:
-                return result
-            source_operand = None
-            call_args = raw_args
-            call_kwargs = raw_kwargs
-            with contextlib.suppress(TypeError, ValueError):
-                signature = inspect.signature(value)
-                bound_args = signature.bind_partial(*args, **kwargs).arguments
-                raw_bound_args = signature.bind_partial(
-                    *raw_args, **raw_kwargs
-                ).arguments
-                source_param = next(
-                    (
-                        name
-                        for name, arg in bound_args.items()
-                        if isinstance(arg, _ConsoleDataHandleBase)
-                    ),
-                    None,
-                )
-                if source_param is not None:
-                    source = bound_args[source_param]
-                    if isinstance(source, _ConsoleDataHandleBase):
-                        source_operand = source._console_operand()
-                        call_args = ()
-                        call_kwargs = {
-                            key: arg
-                            for key, arg in raw_bound_args.items()
-                            if key != source_param
-                        }
-            operation = None
-            seed_expression = None
-            operations: tuple[
-                ToolProvenanceOperation,
-                ...,
-            ] = ()
-            if source_operand is not None:
-                source_inputs = source_operand.script_inputs
-                source_names = {script_input.name for script_input in source_inputs}
-                call = ConsoleCall(
-                    func=value,
-                    args=call_args,
-                    kwargs=call_kwargs,
-                    display_code=f"{expression}({call_code})",
-                    has_extra_tracked_inputs=any(
-                        script_input.name not in source_names
-                        for script_input in call_inputs
-                    ),
-                    receiver_data=source_operand.value,
-                )
-                operation = _structured_operation_from_call(call)
-                seed_expression, operations = _structured_seed_and_operations(
-                    source_operand, operation
-                )
-            owner = _first_console_handle(args)
-            if owner is None:
-                owner = _first_console_handle(kwargs)
-            if owner is None:
-                return result
-            return owner._wrap_console_result(
-                result,
-                f"{expression}({call_code})",
-                call_inputs,
-                copyable=args_copyable,
-                code_prelude=call_prelude,
-                operations=operations,
-                seed_expression=seed_expression,
-            )
-
-        return _function
-
-    def __dir__(self) -> list[str]:
-        return sorted(set(dir(self._module)))
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, _ConsoleModuleProxy):
-            other = other._module
-        return self._module == other
-
-    def __hash__(self) -> int:
-        return hash(self._module)
+_CONSOLE_INSPECTION_ATTRIBUTES = frozenset(
+    {
+        "dims",
+        "dtype",
+        "ndim",
+        "shape",
+        "size",
+        "nbytes",
+        "chunks",
+        "sizes",
+        "chunksizes",
+        "name",
+    }
+)
 
 
-class _ConsoleFunctionProxy:
-    _erlab_console_function_proxy = True
-
-    def __init__(self, function: typing.Any) -> None:
-        self._function = function
-        functools.update_wrapper(self, function)
-
-    def __call__(self, *args: typing.Any, **kwargs: typing.Any) -> typing.Any:
-        (
-            call_code,
-            call_inputs,
-            raw_args,
-            raw_kwargs,
-            args_copyable,
-            call_prelude,
-        ) = _format_call_code(args, kwargs)
-        result = self._function(*raw_args, **raw_kwargs)
-        owner = _first_console_handle(args)
-        if owner is None:
-            owner = _first_console_handle(kwargs)
-        if owner is None:
-            return result
-
-        function_operand = _callable_operand(self)
-        function_code = typing.cast("str", getattr(self, "__name__", ""))
-        if not function_code:
-            function_code = typing.cast("str", self._function.__name__)
-        function_copyable = False
-        function_prelude: tuple[str, ...] = ()
-        if function_operand is not None:
-            function_code = function_operand.code
-            function_copyable = function_operand.copyable
-            function_prelude = function_operand.code_prelude
-
-        return owner._wrap_console_result(
-            result,
-            f"{function_code}({call_code})",
-            call_inputs,
-            copyable=function_copyable and args_copyable,
-            code_prelude=_dedupe_code_preludes(function_prelude, call_prelude),
+def _console_inspection(value: typing.Any) -> typing.Any:
+    if value is None or isinstance(value, (str, bytes, int, float, complex, np.dtype)):
+        return value
+    if isinstance(value, tuple):
+        return tuple(_console_inspection(item) for item in value)
+    if isinstance(value, Mapping):
+        return types.MappingProxyType(
+            {
+                _console_inspection(key): _console_inspection(item)
+                for key, item in value.items()
+            }
         )
+    _snapshot_required(f"Inspection of {type(value).__name__}")
+
+
+_OPERATOR_SYMBOLS: dict[Callable[..., typing.Any], str] = {
+    operator.add: "+",
+    operator.sub: "-",
+    operator.mul: "*",
+    operator.matmul: "@",
+    operator.truediv: "/",
+    operator.floordiv: "//",
+    operator.mod: "%",
+    operator.pow: "**",
+    operator.and_: "&",
+    operator.or_: "|",
+    operator.xor: "^",
+    operator.lt: "<",
+    operator.le: "<=",
+    operator.gt: ">",
+    operator.ge: ">=",
+    operator.eq: "==",
+    operator.ne: "!=",
+    operator.neg: "-",
+    operator.pos: "+",
+    operator.invert: "~",
+}
 
 
 class _ConsoleDataHandleBase:
     __array_priority__ = 1000
+
+    def __setattr__(self, attr: str, value: typing.Any) -> None:
+        if not attr.startswith("_") and not (
+            attr == "data" and isinstance(self, ToolNamespace)
+        ):
+            _snapshot_required(f"Setting {attr}")
+        object.__setattr__(self, attr, value)
+
+    def __setitem__(self, key: typing.Any, value: typing.Any) -> None:
+        _snapshot_required("Editing a calculated result")
 
     @property
     def data(self) -> xr.DataArray:
@@ -861,9 +989,9 @@ class _ConsoleDataHandleBase:
     ) -> ToolProvenanceSpec | None:
         raise NotImplementedError
 
-    def _wrap_console_result(
+    def _calculate_console_result(
         self,
-        value: typing.Any,
+        detached: Callable[[], xr.DataArray],
         expression: str,
         script_inputs: Sequence[ScriptInput],
         *,
@@ -871,174 +999,194 @@ class _ConsoleDataHandleBase:
         code_prelude: Sequence[str] = (),
         operations: Sequence[ToolProvenanceOperation] = (),
         seed_expression: str | None = None,
+        xarray_options: dict[str, typing.Any] | None = None,
     ) -> typing.Any:
-        if not isinstance(value, xr.DataArray):
-            return value
         return _DerivedDataNamespace(
             self._console_tools,
-            value,
+            detached,
             expression,
             _dedupe_script_inputs(script_inputs),
             copyable=copyable,
             code_prelude=_dedupe_code_preludes(code_prelude),
             operations=operations,
             seed_expression=seed_expression,
+            xarray_options=xarray_options,
+            previous=self,
         )
 
     def _binary_operation(
         self,
         other: typing.Any,
-        symbol: str,
         operation: Callable[[typing.Any, typing.Any], typing.Any],
         *,
         reflected: bool = False,
     ) -> typing.Any:
         left_operand = (
-            _operand_from_value(other) if reflected else self._console_operand()
+            _operand_from_value(other) if reflected else _operand_from_value(self)
         )
         right_operand = (
-            self._console_operand() if reflected else _operand_from_value(other)
+            _operand_from_value(self) if reflected else _operand_from_value(other)
         )
-        inputs, copyable, code_prelude = _merge_operands(left_operand, right_operand)
-        result = operation(left_operand.value, right_operand.value)
+        (left_operand, right_operand), inputs, copyable, code_prelude = _merge_operands(
+            left_operand, right_operand
+        )
+        options = _xarray_options(left_operand, right_operand)
+        symbol = _OPERATOR_SYMBOLS[operation]
         left_code = (
             _expression_receiver_code(left_operand.code)
             if symbol == "**"
             else left_operand.code
         )
         expression = f"{left_code} {symbol} {right_operand.code}"
-        return self._wrap_console_result(
-            result,
+        return self._calculate_console_result(
+            lambda: operation(left_operand.value, right_operand.value),
             expression,
             inputs,
             copyable=copyable,
             code_prelude=code_prelude,
+            xarray_options=options,
         )
 
     def _unary_operation(
-        self, symbol: str, operation: Callable[[typing.Any], typing.Any]
+        self, operation: Callable[[typing.Any], typing.Any]
     ) -> typing.Any:
-        operand = self._console_operand()
-        result = operation(operand.value)
-        return self._wrap_console_result(
-            result,
-            f"{symbol}{operand.code}",
+        operand = _operand_from_value(self)
+        options = _xarray_options(operand)
+        return self._calculate_console_result(
+            lambda: operation(operand.value),
+            f"{_OPERATOR_SYMBOLS[operation]}{operand.code}",
             operand.script_inputs,
             copyable=operand.copyable,
             code_prelude=operand.code_prelude,
+            xarray_options=options,
         )
 
     def __add__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "+", operator.add)
+        return self._binary_operation(other, operator.add)
 
     def __radd__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "+", operator.add, reflected=True)
+        return self._binary_operation(other, operator.add, reflected=True)
 
     def __sub__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "-", operator.sub)
+        return self._binary_operation(other, operator.sub)
 
     def __rsub__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "-", operator.sub, reflected=True)
+        return self._binary_operation(other, operator.sub, reflected=True)
 
     def __mul__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "*", operator.mul)
+        return self._binary_operation(other, operator.mul)
 
     def __rmul__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "*", operator.mul, reflected=True)
+        return self._binary_operation(other, operator.mul, reflected=True)
 
     def __matmul__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "@", operator.matmul)
+        return self._binary_operation(other, operator.matmul)
 
     def __rmatmul__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "@", operator.matmul, reflected=True)
+        return self._binary_operation(other, operator.matmul, reflected=True)
 
     def __truediv__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "/", operator.truediv)
+        return self._binary_operation(other, operator.truediv)
 
     def __rtruediv__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "/", operator.truediv, reflected=True)
+        return self._binary_operation(other, operator.truediv, reflected=True)
 
     def __floordiv__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "//", operator.floordiv)
+        return self._binary_operation(other, operator.floordiv)
 
     def __rfloordiv__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "//", operator.floordiv, reflected=True)
+        return self._binary_operation(other, operator.floordiv, reflected=True)
 
     def __mod__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "%", operator.mod)
+        return self._binary_operation(other, operator.mod)
 
     def __rmod__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "%", operator.mod, reflected=True)
+        return self._binary_operation(other, operator.mod, reflected=True)
 
     def __pow__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "**", operator.pow)
+        return self._binary_operation(other, operator.pow)
 
     def __rpow__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "**", operator.pow, reflected=True)
+        return self._binary_operation(other, operator.pow, reflected=True)
 
     def __and__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "&", operator.and_)
+        return self._binary_operation(other, operator.and_)
 
     def __rand__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "&", operator.and_, reflected=True)
+        return self._binary_operation(other, operator.and_, reflected=True)
 
     def __or__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "|", operator.or_)
+        return self._binary_operation(other, operator.or_)
 
     def __ror__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "|", operator.or_, reflected=True)
+        return self._binary_operation(other, operator.or_, reflected=True)
 
     def __xor__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "^", operator.xor)
+        return self._binary_operation(other, operator.xor)
 
     def __rxor__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "^", operator.xor, reflected=True)
+        return self._binary_operation(other, operator.xor, reflected=True)
 
     def __lt__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "<", operator.lt)
+        return self._binary_operation(other, operator.lt)
 
     def __le__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, "<=", operator.le)
+        return self._binary_operation(other, operator.le)
 
     def __gt__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, ">", operator.gt)
+        return self._binary_operation(other, operator.gt)
 
     def __ge__(self, other: typing.Any) -> typing.Any:
-        return self._binary_operation(other, ">=", operator.ge)
+        return self._binary_operation(other, operator.ge)
 
     def __eq__(self, other: object) -> typing.Any:
-        return self._binary_operation(other, "==", operator.eq)
+        return self._binary_operation(other, operator.eq)
 
     def __ne__(self, other: object) -> typing.Any:
-        return self._binary_operation(other, "!=", operator.ne)
+        return self._binary_operation(other, operator.ne)
 
     def __neg__(self) -> typing.Any:
-        return self._unary_operation("-", operator.neg)
+        return self._unary_operation(operator.neg)
 
     def __pos__(self) -> typing.Any:
-        return self._unary_operation("+", operator.pos)
+        return self._unary_operation(operator.pos)
 
     def __abs__(self) -> typing.Any:
-        operand = self._console_operand()
-        return self._wrap_console_result(
-            abs(operand.value),
+        operand = _operand_from_value(self)
+        options = _xarray_options(operand)
+        return self._calculate_console_result(
+            lambda: abs(operand.value),
             f"abs({operand.code})",
             operand.script_inputs,
             copyable=operand.copyable,
             code_prelude=operand.code_prelude,
+            xarray_options=options,
         )
 
     def __invert__(self) -> typing.Any:
-        return self._unary_operation("~", operator.invert)
+        return self._unary_operation(operator.invert)
+
+    def __len__(self) -> int:
+        return len(self._console_operand().value)
+
+    def __bool__(self) -> bool:
+        return bool(self._console_operand().value)
+
+    def __float__(self) -> float:
+        return float(self._console_operand().value)
+
+    def __int__(self) -> int:
+        return int(self._console_operand().value)
+
+    def __complex__(self) -> complex:
+        return complex(self._console_operand().value)
 
     def __array__(
         self,
         dtype: np.dtype[typing.Any] | None = None,
         copy: bool | None = None,
-    ) -> np.ndarray:
-        if copy is None:
-            return np.asarray(self.data, dtype=dtype)
-        return np.array(self.data, dtype=dtype, copy=copy)
+    ) -> typing.NoReturn:
+        _snapshot_required("Raw NumPy conversion")
 
     def __array_ufunc__(
         self,
@@ -1047,38 +1195,48 @@ class _ConsoleDataHandleBase:
         *inputs: typing.Any,
         **kwargs: typing.Any,
     ) -> typing.Any:
-        if method != "__call__":
-            return NotImplemented
+        if (
+            method != "__call__"
+            or ufunc.nout != 1
+            or getattr(np, ufunc.__name__, None) is not ufunc
+            or kwargs.get("out") is not None
+            or kwargs.get("where", True) is not True
+        ):
+            _snapshot_required(f"np.{ufunc.__name__}.{method} with these arguments")
         input_operands = tuple(_operand_from_value(value) for value in inputs)
         kwarg_operands = {
             key: _operand_from_value(value) for key, value in kwargs.items()
         }
-        script_inputs, copyable, code_prelude = _merge_operands(
+        operands, script_inputs, copyable, code_prelude = _merge_operands(
             *input_operands, *tuple(kwarg_operands.values())
         )
+        input_operands = operands[: len(inputs)]
+        kwarg_operands = dict(zip(kwargs, operands[len(inputs) :], strict=True))
         raw_kwargs = {key: operand.value for key, operand in kwarg_operands.items()}
-        result = ufunc(*(operand.value for operand in input_operands), **raw_kwargs)
+        options = _xarray_options(*input_operands)
         arg_code = ", ".join(
             (
                 *(operand.code for operand in input_operands),
                 *(f"{key}={operand.code}" for key, operand in kwarg_operands.items()),
             )
         )
-        return self._wrap_console_result(
-            result,
+        return self._calculate_console_result(
+            lambda: ufunc(*(operand.value for operand in input_operands), **raw_kwargs),
             f"np.{ufunc.__name__}({arg_code})",
             script_inputs,
             copyable=copyable,
             code_prelude=code_prelude,
+            xarray_options=options,
         )
 
     def __getitem__(self, key: typing.Any) -> typing.Any:
         key_operand = _operand_from_value(key)
-        self_operand = self._console_operand()
-        result = self.data[key_operand.value]
-        inputs, copyable, code_prelude = _merge_operands(self_operand, key_operand)
-        return self._wrap_console_result(
-            result,
+        self_operand = _operand_from_value(self)
+        (self_operand, key_operand), inputs, copyable, code_prelude = _merge_operands(
+            self_operand, key_operand
+        )
+        return self._calculate_console_result(
+            lambda: self_operand.value[key_operand.value],
             f"{self_operand.code}[{key_operand.code}]",
             inputs,
             copyable=copyable,
@@ -1088,33 +1246,38 @@ class _ConsoleDataHandleBase:
     def qshow(self, *args: typing.Any, **kwargs: typing.Any) -> typing.Any:
         tools = self._console_tools
         if tools is None:
-            return self.data.qshow(*args, **kwargs)
+            _snapshot_required("Displaying a handle whose Manager is unavailable")
         return tools._qshow_handle(self, *args, **kwargs)
 
     def __getattr__(self, attr: str) -> typing.Any:
-        data_attr = getattr(self.data, attr)
-        if attr in {"qsel", "qshow", "qplot", "qinfo", "kspace", "xlm", "modelfit"}:
-            operand = self._console_operand()
-            return _ConsoleAccessorProxy(
-                self,
-                data_attr,
-                (attr,),
-                f"{operand.code}.{attr}",
+        if attr.startswith("_"):
+            raise AttributeError(attr)
+        if attr in {"coords", "attrs", "encoding", "values", "variable", "loc"}:
+            _snapshot_required(f"Access to {attr}")
+        operand = self._console_operand()
+        if attr in {"qsel", "kspace"}:
+            return _ConsoleAccessorProxy(self, (attr,))
+        if attr in _CONSOLE_INSPECTION_ATTRIBUTES:
+            return _console_inspection(getattr(operand.value, attr))
+        if attr in operand.value.coords or attr in {"T", "real", "imag"}:
+            operand = _expression_operand(operand)
+            return self._calculate_console_result(
+                lambda: getattr(operand.value, attr),
+                f"{operand.code}.{attr}"
+                if attr.isidentifier()
+                and not keyword.iskeyword(attr)
+                and unicodedata.normalize("NFKC", attr) == attr
+                else f"{operand.code}[{str(attr)!r}]",
+                operand.script_inputs,
+                copyable=operand.copyable,
+                code_prelude=operand.code_prelude,
             )
-        if not callable(data_attr):
-            if isinstance(data_attr, xr.DataArray):
-                operand = self._console_operand()
-                return self._wrap_console_result(
-                    data_attr,
-                    f"{operand.code}.{attr}",
-                    operand.script_inputs,
-                    copyable=operand.copyable,
-                    code_prelude=operand.code_prelude,
-                )
-            return data_attr
+        if attr not in _CONSOLE_READ_ONLY_METHODS:
+            _snapshot_required(attr)
+        data_attr = getattr(operand.value, attr)
 
-        @functools.wraps(data_attr)
         def _method(*args: typing.Any, **kwargs: typing.Any) -> typing.Any:
+            self_operand = self._console_operand()
             (
                 call_code,
                 call_inputs,
@@ -1122,18 +1285,45 @@ class _ConsoleDataHandleBase:
                 raw_kwargs,
                 args_copyable,
                 call_prelude,
-            ) = _format_call_code(args, kwargs)
-            self_operand = self._console_operand()
-            result = data_attr(*raw_args, **raw_kwargs)
-            inputs, copyable, code_prelude = _merge_operands(
-                self_operand,
-                _ConsoleOperand(None, "", call_inputs, args_copyable, call_prelude),
-            )
+            ) = _format_call_code(args, kwargs, receiver=self_operand)
+            receiver = self_operand.value
+            func = getattr(receiver, attr)
             expression = f"{self_operand.code}.{attr}({call_code})"
-            if attr == "coarsen" and not isinstance(result, xr.DataArray):
+            call = ConsoleCall(
+                func=func,
+                dataarray_method=attr,
+                args=raw_args,
+                kwargs=raw_kwargs,
+                display_code=expression,
+                has_extra_tracked_inputs=bool(call_inputs),
+                receiver_data=receiver,
+            )
+            operation = _structured_operation_from_call(call)
+            options = (
+                {"keep_attrs": xr.get_options()["keep_attrs"]}
+                if operation is None
+                else {}
+            )
+            if operation is None:
+                self_operand = _expression_operand(self_operand)
+            (self_operand, call_operand), inputs, copyable, code_prelude = (
+                _merge_operands(
+                    self_operand,
+                    _ConsoleOperand(
+                        None, call_code, call_inputs, args_copyable, call_prelude
+                    ),
+                )
+            )
+            expression = f"{self_operand.code}.{attr}({call_operand.code})"
+            if attr == "item":
+                scalar = func(*raw_args, **raw_kwargs)
+                return _console_inspection(
+                    scalar.item() if isinstance(scalar, np.generic) else scalar
+                )
+            if attr == "coarsen":
                 return _ConsoleCoarsenProxy(
                     self,
-                    result,
+                    func(*raw_args, **raw_kwargs),
                     self_operand,
                     expression,
                     raw_args,
@@ -1142,38 +1332,33 @@ class _ConsoleDataHandleBase:
                     copyable=copyable,
                     code_prelude=code_prelude,
                 )
-            call = ConsoleCall(
-                func=data_attr,
-                dataarray_method=attr,
-                args=raw_args,
-                kwargs=raw_kwargs,
-                display_code=expression,
-                has_extra_tracked_inputs=bool(call_inputs),
-                receiver_data=self_operand.value,
-            )
             seed_expression, operations = _structured_seed_and_operations(
-                self_operand, _structured_operation_from_call(call)
+                self_operand, operation
             )
-            return self._wrap_console_result(
-                result,
+            return self._calculate_console_result(
+                lambda: (
+                    func(*raw_args, **raw_kwargs)
+                    if operation is None
+                    else _apply_console_operation(operation, receiver)
+                ),
                 expression,
                 inputs,
                 copyable=copyable,
                 code_prelude=code_prelude,
                 operations=operations,
                 seed_expression=seed_expression,
+                xarray_options=options or None,
             )
 
-        with contextlib.suppress(TypeError, ValueError):
-            typing.cast("typing.Any", _method).__signature__ = inspect.signature(
-                data_attr
-            )
-        return _method
+        return _console_callable(_method, data_attr)
 
     def __dir__(self) -> list[str]:
         names = set(super().__dir__())
+        names.update(_CONSOLE_READ_ONLY_METHODS)
+        names.update(_CONSOLE_INSPECTION_ATTRIBUTES)
+        names.update({"qsel", "kspace", "T", "real", "imag"})
         with contextlib.suppress(Exception):
-            names.update(dir(self.data))
+            names.update(str(name) for name in self._console_operand().value.coords)
         return sorted(names)
 
 
@@ -1183,10 +1368,11 @@ class ToolNamespace(_ConsoleDataHandleBase):
     In the manager console, ``tools[idx]`` accesses a top-level ImageTool, and
     ``tools[idx].children[j]`` accesses a child manager row in tree order. Child rows
     that are ImageTools are also ``ToolNamespace`` handles; child rows that are
-    analysis tools are navigable manager-row handles. The handle delegates DataArray
-    attributes, methods, operators, and supported ERLab calls to the underlying array
-    while preserving provenance for derived results. ``.data`` remains exact current
-    :class:`xarray.DataArray` access for compatibility and is not provenance-aware.
+    analysis tools are navigable manager-row handles. Handles record supported array
+    operations. Use ``dir(handle)`` to inspect them and :meth:`ToolsNamespace.apply`
+    for supported library transformations. ``.data`` returns an independent
+    :class:`xarray.DataArray` snapshot for ordinary xarray and NumPy use. Its edits
+    are not tracked until it is assigned back to a window.
 
     Examples
     --------
@@ -1210,14 +1396,16 @@ class ToolNamespace(_ConsoleDataHandleBase):
         tools: ToolsNamespace | None = None,
     ) -> None:
         self._wrapper_ref = weakref.ref(wrapper)
-        self._tools_ref = weakref.ref(tools) if tools is not None else None
+        self._tools = tools if tools is not None else ToolsNamespace(wrapper.manager)
 
     @property
     def _wrapper(self) -> _ImageToolWrapper | _ManagedWindowNode:
         wrapper = self._wrapper_ref()
-        if wrapper:
+        if wrapper and wrapper.manager._tool_graph.nodes.get(wrapper.uid) is wrapper:
             return wrapper
-        raise LookupError("Parent was destroyed")
+        raise LookupError(
+            "This ImageTool window is closed. Obtain a new handle from tools[index]."
+        )
 
     @property
     def tool(self) -> ImageTool:
@@ -1251,55 +1439,83 @@ class ToolNamespace(_ConsoleDataHandleBase):
 
     @property
     def data(self) -> xr.DataArray:
-        """Current :class:`xarray.DataArray` displayed by the ImageTool."""
-        return self.tool.slicer_area.displayed_data
+        """Return an independent, editable snapshot of the displayed data.
+
+        Assign a plain DataArray to this property to replace the window data with
+        a new checkpoint. Use ``tools[index][key] = value`` to edit the window
+        directly and record the operation.
+
+        .. versionchanged:: 3.30.0
+           Reading this property returns a snapshot. Item, coordinate, and attribute
+           edits to the returned DataArray do not change the ImageTool.
+        """
+        return self._wrapper.manager._data_graph.console_data(self._wrapper)
 
     @data.setter
     def data(self, value: xr.DataArray | _ConsoleDataHandleBase) -> None:
         manager = self._wrapper.manager
-        provenance_spec = None
+        publication: _CalculatedResult | None = None
         source_owners: set[str] = set()
+        if isinstance(value, _ConsoleDataHandleBase):
+            operand = value._console_operand()
+            if isinstance(value, ToolNamespace):
+                if value._wrapper.manager is not manager:
+                    _snapshot_required("Assignment from another Manager")
+                publication = value._view_publication(
+                    self._console_input_name, operand, replace_uid=self.uid
+                )
+                source_owners.add(value.uid)
+            else:
+                if (
+                    value._console_tools is not None
+                    and value._console_tools._manager is not manager
+                ):
+                    _snapshot_required("Assignment from another Manager")
+                if (
+                    isinstance(value, _DerivedDataNamespace)
+                    and value._captured_input is not None
+                ):
+                    publication = _CalculatedResult(
+                        value._captured_input._capture, self._console_input_name
+                    )
+                else:
+                    _snapshot_required("Assignment of an unrecorded result")
+        self._commit_console_data(
+            publication
+            if publication is not None
+            else typing.cast("xr.DataArray", value),
+            source_owners=source_owners,
+            authored=isinstance(value, _DerivedDataNamespace),
+        )
+
+    def _commit_console_data(
+        self,
+        data: xr.DataArray | _CalculatedResult,
+        *,
+        source_owners: Iterable[str],
+        authored: bool,
+        item_edit: bool = False,
+    ) -> None:
+        if not isinstance(data, xr.DataArray | _CalculatedResult):
+            raise TypeError("Assign a DataArray or a console handle to .data.")
+        manager = self._wrapper.manager
+        graph = manager._data_graph
         with manager._workspace_controller.local_provenance_change(
             edited_entries=lambda: (
                 _console_authored_entries(
-                    manager,
-                    self._wrapper,
-                    provenance_spec,
+                    manager, self._wrapper, self._wrapper.provenance_spec
                 )
-                if isinstance(value, _DerivedDataNamespace)
+                if authored
                 else ()
             ),
-            source_owners=lambda: {self.uid: source_owners},
+            source_owners=lambda: {
+                self.uid: graph.graph.follows(self.uid) | set(source_owners)
+            },
         ):
-            if isinstance(value, _ConsoleDataHandleBase):
-                raw_value = value.data
-                provenance_spec = value._console_provenance_spec(
-                    active_name=self._console_input_name,
-                    label=f"Replace {self._console_label} data from console",
-                )
-            else:
-                raw_value = value
-            if provenance_spec is not None:
-                if isinstance(value, ToolNamespace):
-                    if value._wrapper.manager is manager:
-                        source_owners.add(value.uid)
-                elif isinstance(value, _DerivedDataNamespace):
-                    source_owners.update(_console_source_owners(provenance_spec))
-                provenance_spec = provenance_spec.with_replay_inputs(
-                    tuple(
-                        script_input.model_copy(
-                            update={"node_uid": None, "node_snapshot_token": None}
-                        )
-                        if script_input.node_uid == self.uid
-                        else script_input
-                        for script_input in provenance_spec.replay_inputs
-                    )
-                )
-                self._wrapper.set_detached_provenance(
-                    provenance_spec,
-                    replay_source_data=None,
-                )
-            self.tool.slicer_area.replace_source_data(raw_value, emit_edited=True)
+            self._wrapper.publish_replacement(
+                data,
+                edit="item" if item_edit else "edited",
+            )
 
     @property
     def children(self) -> _ToolChildren:
@@ -1310,37 +1526,9 @@ class ToolNamespace(_ConsoleDataHandleBase):
         """Return a subset of the tool data."""
         return self.tool.slicer_area.displayed_data[key]
 
-    def _prepare_data_item_assignment(self, key, value) -> xr.DataArray | None:
-        """Validate a console item assignment before changing provenance."""
-        value = _unwrap_console_value(value)
-        slicer_area = self.tool.slicer_area
-        if not slicer_area.has_active_filter:
-            return None
-        data = slicer_area.displayed_data.copy(deep=True)
-        data[key] = value
-        return data
-
-    def _set_data_item(
-        self,
-        key,
-        value,
-        *,
-        prepared_data: xr.DataArray | None = None,
-        emit_signals: bool = True,
-    ) -> None:
-        """Safely mutate a subset of the tool data from the console."""
-        value = _unwrap_console_value(value)
-        slicer_area = self.tool.slicer_area
-        if prepared_data is not None:
-            slicer_area.replace_source_data(prepared_data, emit_edited=emit_signals)
-            return
-        slicer_area._set_source_item(key, value, emit_signals=emit_signals)
-
     @property
-    def _console_tools(self) -> ToolsNamespace | None:
-        if self._tools_ref is None:
-            return None
-        return self._tools_ref()
+    def _console_tools(self) -> ToolsNamespace:
+        return self._tools
 
     @property
     def _console_is_source(self) -> bool:
@@ -1348,31 +1536,65 @@ class ToolNamespace(_ConsoleDataHandleBase):
 
     @property
     def _console_input_name(self) -> str:
-        tools = self._console_tools
-        if tools is not None:
-            return tools._node_data_name(self._wrapper)
-        return _tool_data_name(typing.cast("_ImageToolWrapper", self._wrapper).index)
+        return self._tools._node_data_name(self._wrapper)
 
     @property
     def _console_label(self) -> str:
-        tools = self._console_tools
-        if tools is not None:
-            return tools._node_label(self._wrapper, include_name=False)
-        return f"ImageTool {typing.cast('_ImageToolWrapper', self._wrapper).index}"
+        return self._tools._node_label(self._wrapper, include_name=False)
 
     def _script_input(
         self,
     ) -> ScriptInput:
-        return self._wrapper.manager._lineage_controller._script_input_for_node(
+        graph = self._wrapper.manager._data_graph
+        graph.require_published(self.uid)
+        recorded = graph.owns_result(self.uid)
+        item = self._wrapper.manager._lineage_controller._script_input_for_node(
             self._wrapper,
             name=self._console_input_name,
+            input_type=ConsoleInput,
+        )
+        if not recorded:
+            graph.capture_input(self._wrapper, item)
+        return item
+
+    def _view_publication(
+        self, name: str, operand: _ConsoleOperand, *, replace_uid: str | None = None
+    ) -> _CalculatedResult:
+        item = operand.script_inputs[0]
+        revision = typing.cast("ConsoleInput", item)._capture.revision_id
+        adapter = self._wrapper.manager._data_graph
+        source = _WindowInput(
+            operand.value,
+            _InputRevision(Follow(self.uid), revision),
+            adapter.observe_input(self.uid),
+        )
+        return adapter.calculate(
+            (_SourceViewOperation(source_kind="public_data"),),
+            (source,),
+            input_names=(item.name,),
+            output_name=name,
+            replace_uid=replace_uid,
+            source_kind="public_data",
+        )
+
+    def _bound_data_recipe(
+        self, active_name: str, source: ScriptInput
+    ) -> ToolProvenanceSpec:
+        return recipe(
+            ReplayStep(operation=_SourceViewOperation(source_kind="public_data")),
+            start_label=f"Use {self._console_label} data",
+            active_name=active_name,
+            script_inputs=(source,),
+            primary_input=source.name,
         )
 
     def _console_operand(self) -> _ConsoleOperand:
+        source = typing.cast("ConsoleInput", self._script_input())
+        graph = self._wrapper.manager._data_graph.graph
         return _ConsoleOperand(
-            self.data,
+            graph.calculation_data(source._capture.revision_id),
             self._console_input_name,
-            (self._script_input(),),
+            (source,),
         )
 
     def _console_provenance_spec(
@@ -1381,74 +1603,53 @@ class ToolNamespace(_ConsoleDataHandleBase):
         return self._wrapper.displayed_provenance_spec
 
     def __setitem__(self, key: typing.Any, value: typing.Any) -> None:
-        manager = self._wrapper.manager
-        with manager._workspace_controller.local_provenance_change(
-            edited_entries=lambda: _console_authored_entries(
-                manager, self._wrapper, provenance_spec
+        key_operand = _operand_from_value(key)
+        value_operand = _operand_from_value(value)
+        self_operand = self._console_operand()
+        (
+            (self_operand, key_operand, value_operand),
+            script_inputs,
+            copyable,
+            code_prelude,
+        ) = _merge_operands(self_operand, key_operand, value_operand)
+        target_name = self._console_input_name
+        code = _script_code(
+            code_prelude,
+            "\n".join(
+                (
+                    f"{target_name} = {self_operand.code}.copy(deep=True)",
+                    f"{target_name}[{key_operand.code}] = {value_operand.code}",
+                )
             ),
-            source_owners=lambda: {self.uid: _console_source_owners(provenance_spec)},
-        ):
-            key_operand = _operand_from_value(key)
-            value_operand = _operand_from_value(value)
-            self_operand = self._console_operand()
-            script_inputs, copyable, code_prelude = _merge_operands(
-                self_operand, key_operand, value_operand
-            )
-            target_name = self._console_input_name
-            code = _script_code(
-                code_prelude,
-                "\n".join(
-                    (
-                        f"{target_name} = {self_operand.code}.copy(deep=True)",
-                        f"{target_name}[{key_operand.code}] = {value_operand.code}",
-                    )
-                ),
-            )
-            provenance_spec = script(
-                ScriptCodeOperation(
-                    label=f"Set {self._console_label} data item from console",
-                    code=code,
-                    copyable=copyable,
-                ),
-                start_label="Run ImageTool manager console code",
-                active_name=target_name,
-                script_inputs=script_inputs,
-            )
-            prepared_data = self._prepare_data_item_assignment(
-                key_operand.value, value_operand.value
-            )
-            if prepared_data is None:
-                self._set_data_item(
-                    key_operand.value,
-                    value_operand.value,
-                    emit_signals=False,
-                )
-                self._wrapper.set_detached_provenance(
-                    provenance_spec,
-                    replay_source_data=None,
-                )
-                slicer_area = self.tool.slicer_area
-                slicer_area.sigSourceDataChanged.emit()
-                slicer_area.sigSourceDataReplaced.emit(
-                    slicer_area._tool_source_parent_data()
-                )
-                slicer_area.sigDataEdited.emit()
-                return
-            self._wrapper.set_detached_provenance(
-                provenance_spec,
-                replay_source_data=None,
-            )
-            self._set_data_item(
-                key_operand.value,
-                value_operand.value,
-                prepared_data=prepared_data,
-            )
+        )
+        provenance_spec = script(
+            ScriptCodeOperation(
+                label=f"Set {self._console_label} data item from console",
+                code=code,
+                copyable=copyable,
+            ),
+            start_label="Run ImageTool manager console code",
+            active_name=target_name,
+            script_inputs=script_inputs,
+        )
+        if not copyable:
+            _snapshot_required("An item edit with an unrecorded operand")
+        recorded = CalculatedInput(name=target_name)
+        self._wrapper.manager._data_graph.calculate_console(
+            RecordedProgram(spec=provenance_spec),
+            script_inputs,
+            recorded._capture,
+        )
+        self._commit_console_data(
+            _CalculatedResult(recorded._capture, target_name),
+            source_owners=(),
+            authored=True,
+            item_edit=True,
+        )
 
-    def __getattr__(self, attr):  # implicitly wrap methods from ImageToolWrapper
-        if hasattr(self._wrapper, attr):
-            m = getattr(self._wrapper, attr)
-            if callable(m):
-                return m
+    def __getattr__(self, attr):
+        if attr in {"show", "hide", "dispose"}:
+            return getattr(self._wrapper, attr)
         return super().__getattr__(attr)
 
     def __repr__(self) -> str:
@@ -1700,7 +1901,7 @@ class _DerivedDataNamespace(_ConsoleDataHandleBase):
     def __init__(
         self,
         tools: ToolsNamespace | None,
-        data: xr.DataArray,
+        detached: xr.DataArray | Callable[[], xr.DataArray] | None,
         expression: str,
         script_inputs: Sequence[ScriptInput],
         *,
@@ -1708,26 +1909,112 @@ class _DerivedDataNamespace(_ConsoleDataHandleBase):
         code_prelude: Sequence[str] = (),
         operations: Sequence[ToolProvenanceOperation] = (),
         seed_expression: str | None = None,
+        bound_step: ReplayStep | None = None,
+        xarray_options: dict[str, typing.Any] | None = None,
+        previous: _ConsoleDataHandleBase | None = None,
     ) -> None:
-        self._tools_ref = weakref.ref(tools) if tools is not None else None
-        self._data = data
+        self._tools = tools
         self._expression = expression
         self._script_inputs = _dedupe_script_inputs(script_inputs)
         self._copyable = copyable
         self._code_prelude = _dedupe_code_preludes(code_prelude)
         self._operations = _kspace_conversion.stamp_kspace_conversion_groups(operations)
         self._seed_expression = seed_expression
+        self._bound_step = bound_step
         self._console_name: str | None = None
+        self._xarray_options = (
+            _calculation_options() | (xarray_options or {})
+            if tools is not None
+            else xarray_options
+        )
+        self._captured_input: CalculatedInput | None = None
+        if tools is None:
+            if detached is None:
+                raise ValueError("A detached console result needs its data")
+            value = detached() if callable(detached) else detached
+            self._data = capture_display_data(value, live=True)
+        else:
+            if not self._script_inputs or not copyable:
+                _snapshot_required("A console calculation without recorded inputs")
+            item = CalculatedInput(name="calculated", label="Console calculation")
+            if (
+                isinstance(previous, _DerivedDataNamespace)
+                and previous._console_name is None
+                and previous._operations
+                and len(self._operations) == 1
+                and len(self._script_inputs) == 1
+                and isinstance(source := self._script_inputs[0], CalculatedInput)
+                and source._capture.revision_id == previous._calculation_revision
+            ):
+                # The portable recipe presents a chain of typed steps together.
+                # The new application takes only its immediate graph operand.
+                self._operations = _kspace_conversion.stamp_kspace_conversion_groups(
+                    (*previous._operations, *self._operations)
+                )
+                self._script_inputs = previous._script_inputs
+                self._seed_expression = previous._seed_expression
+                self._code_prelude = _dedupe_code_preludes(
+                    previous._code_prelude, self._code_prelude
+                )
+                operation = self._operations[-1]
+                marker = operation.group
+                if marker is not None and marker.index == marker.size - 1:
+                    prefix = tuple(
+                        (getattr(member, "op", ""), member.group.focus)
+                        for member in self._operations[-marker.size : -1]
+                        if member.group is not None
+                    )
+                    operation = operation.model_copy(
+                        update={
+                            "group": marker.model_copy(
+                                update={"console_prefix": prefix}
+                            )
+                        }
+                    )
+                operands: Sequence[ScriptInput] = (source,)
+            else:
+                operands = script_inputs
+                if bound_step is not None:
+                    operation = bound_step.operation
+                elif self._operations:
+                    # Each managed handle captures the result of its preceding call.
+                    # The receiver therefore supplies the only input to this step.
+                    (operation,) = self._operations
+                else:
+                    operation = RecordedProgram(
+                        spec=self._expression_spec(
+                            "derived", "Evaluate console expression", operands
+                        )
+                    )
+            if not isinstance(operation, RecordedProgram):
+                operation = operation.capture_execution_options()
+                if self._bound_step is not None:
+                    self._bound_step = self._bound_step.model_copy(
+                        update={"operation": operation}
+                    )
+                elif self._operations:
+                    self._operations = (*self._operations[:-1], operation)
+            tools._manager._data_graph.calculate_console(
+                operation, operands, item._capture
+            )
+            self._captured_input = item
+            self._data = item._capture.calculated_data
 
     @property
     def data(self) -> xr.DataArray:
-        return self._data
+        return self._data.copy(deep=True)
 
     @property
     def _console_tools(self) -> ToolsNamespace | None:
-        if self._tools_ref is None:
-            return None
-        return self._tools_ref()
+        return self._tools
+
+    @property
+    def _calculation_revision(self) -> str | None:
+        return (
+            self._captured_input._capture.revision_id
+            if self._captured_input is not None
+            else None
+        )
 
     def _set_console_name(self, name: str) -> None:
         if _replay_name_reserved(name):
@@ -1735,9 +2022,14 @@ class _DerivedDataNamespace(_ConsoleDataHandleBase):
         self._console_name = name
 
     def _console_operand(self) -> _ConsoleOperand:
-        if self._console_name is None:
+        if (
+            self._captured_input is None
+            and self._console_name is None
+            and self._bound_step is None
+            and self._xarray_options is None
+        ):
             return _ConsoleOperand(
-                self.data,
+                self._data,
                 _expression_receiver_code(self._expression),
                 self._script_inputs,
                 self._copyable,
@@ -1745,33 +2037,71 @@ class _DerivedDataNamespace(_ConsoleDataHandleBase):
                 self._seed_expression,
                 self._operations,
             )
+        return self._named_operand(self._console_name or "calculated")
+
+    def _named_operand(self, name: str) -> _ConsoleOperand:
+        if self._captured_input is not None:
+            item = self._captured_input
+            if item.name != name:
+                alias = item.model_copy(
+                    update={"name": name, "label": f"console variable {name!r}"}
+                )
+                item = alias
+            return _ConsoleOperand(self._data, name, (item,), self._copyable)
         provenance_spec = self._console_provenance_spec(
-            active_name=self._console_name,
-            label=f"Assign console variable {self._console_name!r}",
+            active_name=name, label=f"Use calculated input {name!r}"
         )
-        provenance_payload = (
-            provenance_spec.model_dump(mode="json")
-            if provenance_spec is not None
-            else None
+        item = ScriptInput(
+            name=name,
+            label=f"console variable {name!r}",
+            provenance_spec=provenance_spec.model_dump(mode="json")
+            if provenance_spec
+            else None,
         )
+        retained = list(self._script_inputs)
+        weakref.finalize(item, retained.clear).atexit = False
         return _ConsoleOperand(
-            self.data,
-            self._console_name,
-            (
-                ScriptInput(
-                    name=self._console_name,
-                    label=f"console variable {self._console_name!r}",
-                    provenance_spec=provenance_payload,
-                ),
-            ),
+            self._data,
+            name,
+            (item,),
             provenance_spec is not None,
         )
 
     def _console_provenance_spec(
         self, *, active_name: str, label: str
     ) -> ToolProvenanceSpec | None:
-        if not self._script_inputs:
+        tools = self._console_tools
+        inputs = self._script_inputs
+        if tools is not None and self._calculation_revision is not None:
+            adapter = tools._manager._data_graph
+            # Export nested histories only when a caller needs the portable form.
+            inputs = tuple(
+                item.model_copy(
+                    update={
+                        "provenance_spec": adapter.export_spec(
+                            item._capture.revision_id
+                        ).model_dump(mode="json")
+                    }
+                )
+                if isinstance(item, CalculatedInput)
+                else item
+                for item in inputs
+            )
+            step = adapter.graph.recipe_for(self._calculation_revision)
+            if isinstance(step, Recipe) and isinstance(step.operation, RecordedProgram):
+                return step.operation.with_output_name(
+                    active_name
+                ).spec.with_replay_inputs(inputs)
+        if not inputs:
             return None
+        if self._bound_step is not None:
+            return recipe(
+                self._bound_step,
+                start_label=label,
+                active_name=active_name,
+                script_inputs=inputs,
+                primary_input=inputs[0].name,
+            )
         if self._operations and self._seed_expression is not None:
             seed_code = _script_code(
                 self._code_prelude,
@@ -1782,9 +2112,20 @@ class _DerivedDataNamespace(_ConsoleDataHandleBase):
                 start_label="Run ImageTool manager console code",
                 seed_code=seed_code,
                 active_name=active_name,
-                script_inputs=self._script_inputs,
+                script_inputs=inputs,
             )
-        code = _script_code(self._code_prelude, f"{active_name} = {self._expression}")
+        return self._expression_spec(active_name, label, inputs)
+
+    def _expression_spec(
+        self, active_name: str, label: str, inputs: Sequence[ScriptInput]
+    ) -> ToolProvenanceSpec:
+        assignment = f"{active_name} = {self._expression}"
+        if self._xarray_options:
+            options = ", ".join(
+                f"{key}={value!r}" for key, value in self._xarray_options.items()
+            )
+            assignment = f"with xr.set_options({options}):\n    {assignment}"
+        code = _script_code(self._code_prelude, assignment)
         return script(
             ScriptCodeOperation(
                 label=label,
@@ -1793,11 +2134,11 @@ class _DerivedDataNamespace(_ConsoleDataHandleBase):
             ),
             start_label="Run ImageTool manager console code",
             active_name=active_name,
-            script_inputs=self._script_inputs,
+            script_inputs=inputs,
         )
 
     def __repr__(self) -> str:
-        return repr(self.data)
+        return repr(self._data)
 
 
 class ToolsNamespace:
@@ -1833,11 +2174,168 @@ class ToolsNamespace:
             return manager
         raise LookupError("Parent was destroyed")
 
+    def checkpoint(self, revision_id: str) -> xr.DataArray:
+        """Return a copy of a recorded source array named by Copy Full Code."""
+        graph = self._manager._data_graph.graph
+        if not graph.revision(revision_id).checkpointed:
+            raise ValueError(f"Revision {revision_id!r} is not a source checkpoint")
+        return graph.data(revision_id)
+
+    def apply(
+        self, func: Callable[..., typing.Any], *args: typing.Any, **kwargs: typing.Any
+    ) -> _DerivedDataNamespace:
+        """Calculate a supported library operation from console handles.
+
+        The console's supplied library aliases use this interface for direct calls
+        such as ``xr.concat([tools[0], tools[1]], dim="scan")``. Use it explicitly
+        with functions imported separately. It supports registered ERLab
+        transformations, multi-input ``era.transform.shift``, and ``xr.concat``.
+        Arguments can contain handles and literal settings. Other functions and
+        callbacks require ordinary snapshots obtained through ``.data``.
+
+        Examples
+        --------
+        >>> tools.apply(xr.concat, [tools[0], tools[1]], dim="scan")
+        >>> tools.apply(era.transform.rotate, tools[0], 5.0, reshape=False)
+
+        .. versionadded:: 3.30.0
+        """
+        if isinstance(func, _ConsoleLibraryFunction):
+            func = func._function
+        owner = _first_console_handle((args, kwargs))
+        if owner is None:
+            _snapshot_required("tools.apply without a handle input")
+        options = {}
+        if func is xr.concat or func is erlab.analysis.transform.shift:
+            bound = inspect.signature(func).bind(*args, **kwargs)
+            arguments = dict(bound.arguments)
+            handles = (
+                arguments.pop("objs")
+                if func is xr.concat
+                else (arguments.pop("darr"), arguments.pop("shift"))
+            )
+            if (
+                isinstance(handles, (tuple, list))
+                and len(handles) >= 2
+                and all(
+                    isinstance(handle, _ConsoleDataHandleBase) for handle in handles
+                )
+            ):
+                operation = _bound_library_operation(func, len(handles), arguments)
+                if operation is not None:
+                    captured: dict[int, _ConsoleOperand] = {}
+                    for index, handle in enumerate(handles):
+                        if id(handle) not in captured:
+                            captured[id(handle)] = (
+                                handle._named_operand(
+                                    handle._console_name or f"operand_{index}"
+                                )
+                                if isinstance(handle, _DerivedDataNamespace)
+                                else handle._console_operand()
+                            )
+                    operands, inputs, copyable, prelude = _merge_operands(
+                        *(captured[id(handle)] for handle in handles)
+                    )
+                    primary, *others = operands
+                    slots = operation.input_slots()
+                    names = dict(
+                        zip(slots, (item.code for item in others), strict=True)
+                    )
+                    return _DerivedDataNamespace(
+                        self,
+                        None,
+                        operation.expression_code_with_inputs(primary.code, names),
+                        inputs,
+                        copyable=copyable,
+                        code_prelude=prelude,
+                        bound_step=ReplayStep(
+                            operation=operation, input_bindings=names
+                        ),
+                    )
+            call_code, inputs, _, _, copyable, prelude = _format_call_code(args, kwargs)
+            current = xr.get_options()
+            options = {
+                key: current[key]
+                for key in ("keep_attrs", "use_new_combine_kwarg_defaults")
+                if key in current
+            }
+            function_code = "xr.concat" if func is xr.concat else "era.transform.shift"
+            expression = f"{function_code}({call_code})"
+            seed_expression, operations = None, ()
+        else:
+            module_name = getattr(func, "__module__", "")
+            name = getattr(func, "__name__", "")
+            if not module_name.startswith("erlab.") or not name.isidentifier():
+                _snapshot_required("This tools.apply function")
+            module = importlib.import_module(module_name)
+            if getattr(module, name, None) is not func:
+                _snapshot_required("This tools.apply function")
+            signature = inspect.signature(func)
+            supplied = signature.bind(*args, **kwargs)
+            settings = dict(supplied.arguments)
+            source_name = next(iter(signature.parameters))
+            receiver = settings.pop(source_name, None)
+            if (
+                not isinstance(receiver, _ConsoleDataHandleBase)
+                or _first_console_handle(settings) is not None
+            ):
+                _snapshot_required("tools.apply with these input bindings")
+            source = receiver._console_operand()
+            for key, value in settings.items():
+                if (
+                    isinstance(value, xr.Dataset)
+                    and key == "modelresult"
+                    and func is erlab.analysis.gold.correct_with_edge
+                ):
+                    if any(
+                        str(var).endswith("modelfit_results") for var in value.data_vars
+                    ):
+                        _snapshot_required("A console call with serialized fit results")
+                elif isinstance(value, os.PathLike) and key == "model_path":
+                    settings[key] = os.fsdecode(value)
+                else:
+                    # Check literal arguments before running a library operation.
+                    settings[key] = _operand_from_value(value).value
+            for param in signature.parameters.values():
+                if param.kind == inspect.Parameter.VAR_KEYWORD:
+                    settings.update(settings.pop(param.name, {}))
+            inputs, copyable, prelude = (
+                source.script_inputs,
+                source.copyable,
+                source.code_prelude,
+            )
+            call = ConsoleCall(
+                func=func,
+                kwargs=settings,
+                receiver_data=source.value,
+                display_code=f"{module_name}.{name}",
+                has_extra_tracked_inputs=False,
+            )
+            operation = _structured_operation_from_call(call)
+            if operation is None:
+                _snapshot_required(f"{module_name}.{name} with these arguments")
+            expression = operation.expression_code(source.code)
+            seed_expression, operations = _structured_seed_and_operations(
+                source, operation
+            )
+        return _DerivedDataNamespace(
+            self,
+            None,
+            expression,
+            inputs,
+            copyable=copyable,
+            xarray_options=options or None,
+            code_prelude=prelude,
+            seed_expression=seed_expression,
+            operations=operations,
+            previous=owner,
+        )
+
     @property
     def selected_data(self) -> list[xr.DataArray]:
         """Current DataArrays from selected root or child ImageTools."""
         return [
-            self._manager.get_imagetool(target).slicer_area.displayed_data
+            ToolNamespace(self._manager._node_for_target(target), self).data
             for target in self._manager._selected_imagetool_targets()
         ]
 
@@ -1964,14 +2462,6 @@ class ToolsNamespace:
                     value
                 ):
                     continue
-                if (
-                    inspect.isfunction(value)
-                    and value.__module__ == "__main__"
-                    and value.__qualname__ == value.__name__ == name
-                    and not inspect.iscoroutinefunction(value)
-                ):
-                    shell.user_ns[name] = _ConsoleFunctionProxy(value)
-                    continue
                 if not isinstance(value, _DerivedDataNamespace):
                     continue
                 value._set_console_name(name)
@@ -1996,8 +2486,7 @@ class ToolsNamespace:
 
     def _show_dataarray_with_provenance(
         self,
-        data: xr.DataArray,
-        provenance_spec: ToolProvenanceSpec,
+        publication: _CalculatedResult,
         *,
         authored: bool = False,
         source_owners: Iterable[str] = (),
@@ -2005,30 +2494,29 @@ class ToolsNamespace:
     ) -> bool:
         display_kwargs = dict(kwargs)
         display_kwargs.pop("execute", None)
-        tool = erlab.interactive.itool(
-            data, manager=False, execute=False, **display_kwargs
-        )
-        if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
-            return False
         manager = self._manager
         with manager._workspace_controller.local_provenance_change(
             edited_entries=lambda: (
                 _console_authored_entries(
                     manager,
-                    manager._node_for_target(index),
-                    provenance_spec,
+                    node,
+                    node.provenance_spec,
                 )
                 if authored
                 else ()
             ),
-            source_owners=lambda: {manager._node_for_target(index).uid: source_owners},
+            source_owners=lambda: {
+                node.uid: manager._data_graph.graph.follows(node.uid)
+                | set(source_owners)
+            },
         ):
             index = manager.add_imagetool(
-                tool,
+                publication,
                 show=True,
                 activate=True,
-                provenance_spec=provenance_spec,
+                _display_options=display_kwargs,
             )
+            node = manager._node_for_target(index)
         return True
 
     def _show_handle(
@@ -2039,25 +2527,58 @@ class ToolsNamespace:
         label: str,
         **kwargs: typing.Any,
     ) -> bool:
-        provenance_spec = handle._console_provenance_spec(
-            active_name=active_name,
-            label=label,
-        )
-        if provenance_spec is None:
-            return False
+        replace_target = kwargs.pop("replace", None)
+        if replace_target is not None:
+            if isinstance(replace_target, str):
+                target = replace_target
+            else:
+                try:
+                    target = operator.index(replace_target)
+                except TypeError:
+                    targets = list(replace_target)
+                    if len(targets) != 1:
+                        raise ValueError(
+                            "One console handle requires one replacement target"
+                        ) from None
+                    target = operator.index(targets[0])
+            if isinstance(target, int) and target < 0:
+                target = sorted(self._manager._tool_graph.root_wrappers)[target]
+            if target != self._manager.next_idx:
+                node = self._manager._node_for_target(target)
+                if not node.is_imagetool:
+                    raise TypeError("The replacement target must be an ImageTool")
+                ToolNamespace(node, self).data = handle
+                self._manager._sigDataReplaced.emit()
+                return True
+            # Replacement accepts the next unused index as a new window. As in
+            # the public itool API, display options are ignored for replacement.
+            kwargs = {}
+        publication: _CalculatedResult | None = None
+        operand = handle._console_operand()
         authored = isinstance(handle, _DerivedDataNamespace)
-        if authored:
-            source_owners = _console_source_owners(provenance_spec)
-        elif (
-            isinstance(handle, ToolNamespace)
-            and handle._wrapper.manager is self._manager
-        ):
+        if isinstance(handle, ToolNamespace):
+            if handle._wrapper.manager is not self._manager:
+                _snapshot_required("Displaying a handle outside its Manager")
+            publication = handle._view_publication(active_name, operand)
             source_owners = {handle.uid}
         else:
-            source_owners = set()
+            if (
+                handle._console_tools is not None
+                and handle._console_tools._manager is not self._manager
+            ):
+                _snapshot_required("Displaying a calculation outside its Manager")
+            if (
+                isinstance(handle, _DerivedDataNamespace)
+                and handle._captured_input is not None
+            ):
+                publication = _CalculatedResult(
+                    handle._captured_input._capture, active_name
+                )
+                source_owners = set()
+            else:
+                _snapshot_required("Displaying an unrecorded result")
         return self._show_dataarray_with_provenance(
-            handle.data,
-            provenance_spec,
+            publication,
             authored=authored,
             source_owners=source_owners,
             **kwargs,
@@ -2066,17 +2587,13 @@ class ToolsNamespace:
     def itool(
         self, data: typing.Any, *args: typing.Any, **kwargs: typing.Any
     ) -> typing.Any:
-        manager = kwargs.get("manager")
-        replace = kwargs.get("replace")
-        if (
-            isinstance(data, _ConsoleDataHandleBase)
-            and not args
-            and replace is None
-            and self._manager_argument_targets_this_manager(manager)
-        ):
+        if isinstance(data, _ConsoleDataHandleBase):
+            if args or not self._manager_argument_targets_this_manager(
+                kwargs.get("manager")
+            ):
+                _snapshot_required("Displaying a handle outside its Manager")
             display_kwargs = dict(kwargs)
             display_kwargs.pop("manager", None)
-            display_kwargs.pop("replace", None)
             if self._show_handle(
                 data,
                 active_name=(
@@ -2089,7 +2606,10 @@ class ToolsNamespace:
                 **display_kwargs,
             ):
                 return None
-        return erlab.interactive.itool(_unwrap_console_value(data), *args, **kwargs)
+            _snapshot_required("Displaying this result as one ImageTool")
+        if _first_console_handle(data) is not None:
+            _snapshot_required("Displaying a collection of console handles")
+        return erlab.interactive.itool(data, *args, **kwargs)
 
     def _qshow_handle(
         self,
@@ -2097,23 +2617,7 @@ class ToolsNamespace:
         *args: typing.Any,
         **kwargs: typing.Any,
     ) -> typing.Any:
-        manager = kwargs.get("manager")
-        if not args and self._manager_argument_targets_this_manager(manager):
-            display_kwargs = dict(kwargs)
-            display_kwargs.pop("manager", None)
-            if self._show_handle(
-                data,
-                active_name=(
-                    data._console_name
-                    if isinstance(data, _DerivedDataNamespace)
-                    and data._console_name is not None
-                    else "derived"
-                ),
-                label="Evaluate console expression",
-                **display_kwargs,
-            ):
-                return None
-        return data.data.qshow(*args, **kwargs)
+        return self.itool(data, *args, **kwargs)
 
     def __repr__(self) -> str:
         output = []

@@ -172,6 +172,7 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
     "cov-qt-manager-provenance-console": (
         "tests/interactive/imagetool/manager/provenance",
         "tests/interactive/imagetool/manager/test_console.py",
+        "tests/interactive/imagetool/manager/test_console_contract.py",
         "tests/interactive/imagetool/manager/test_app.py",
         "tests/interactive/imagetool/manager/test_dialogs.py",
         "tests/interactive/imagetool/manager/test_registry_server.py",

@@ -15,6 +15,7 @@ if typing.TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
     from erlab.interactive.imagetool._provenance._model import ScriptInput
+    from erlab.interactive.imagetool.manager._data_graph import _ManagerDataGraph
     from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
     from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
 
@@ -36,7 +37,10 @@ def _combine_source_states(states: Iterable[_SourceState]) -> _SourceState:
 class _ManagerDependencyTracker:
     """Track script-input dependencies and deferred source refresh requests."""
 
-    def __init__(self, graph: _ManagerToolGraph) -> None:
+    def __init__(
+        self, graph: _ManagerToolGraph, data_graph: _ManagerDataGraph | None = None
+    ) -> None:
+        self._data_graph = data_graph
         self._graph = graph
         self._ref_cache: dict[
             str,
@@ -74,6 +78,13 @@ class _ManagerDependencyTracker:
         if node is None:
             self.invalidate_uid(uid)
             return ()
+        if self._data_graph is not None and self._data_graph.owns_result(uid):
+            self._remove_reverse_refs(uid)
+            self._unindexed_uids.pop(uid, None)
+            return tuple(
+                ScriptInputDependencyRef(source, self._data_graph.label(source), source)
+                for source in sorted(self._data_graph.graph.follows(uid))
+            )
         if node.is_imagetool:
             spec = node.provenance_spec
             script_inputs = () if spec is None else spec.replay_inputs
@@ -144,7 +155,11 @@ class _ManagerDependencyTracker:
         dependents = self._dependents_by_source_uid.get(uid, {})
         for dependent_uid in dependents:
             self._status_cache.pop(dependent_uid, None)
-        return list(dependents)
+        if self._data_graph is None:
+            return list(dependents)
+        return list(
+            dict.fromkeys((*dependents, *sorted(self._data_graph.graph.followers(uid))))
+        )
 
     def transitively_depends_on(self, dependent_uid: str, source_uid: str) -> bool:
         """Return whether one node has a direct or indirect live dependency."""
@@ -161,6 +176,7 @@ class _ManagerDependencyTracker:
                 node is not None
                 and node.is_imagetool
                 and node.parent_uid is not None
+                and (self._data_graph is None or not self._data_graph.owns_result(uid))
                 and node.has_source_binding
             ):
                 source_uids.add(node.parent_uid)

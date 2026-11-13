@@ -38,6 +38,7 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._console import (
         _ImageToolManagerJupyterConsole,
     )
+    from erlab.interactive.imagetool.manager._data_graph import _ManagerDataGraph
     from erlab.interactive.imagetool.manager._dependency import (
         _ManagerDependencyTracker,
     )
@@ -266,6 +267,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _standalone_app_pending_states: dict[str, dict[str, typing.Any]]
     _standalone_app_specs: dict[str, _StandaloneAppSpec]
     _standalone_app_windows: dict[str, QtWidgets.QWidget]
+    _data_graph: _ManagerDataGraph
     _tool_graph: _ManagerToolGraph
     _details_refresh_queue: _ManagerDetailsRefreshQueue
     _warning_handler: _WarningNotificationHandler
@@ -495,6 +497,11 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         return child_imagetool_uids[0]
 
     def _selected_source_update_child_uid(self) -> str | None:
+        targets = self._selected_imagetool_targets()
+        if len(targets) == 1 and not self._selected_tool_uids():
+            node = self._node_for_target(targets[0])
+            if self._data_graph.manages(node.uid):
+                return node.uid
         selected_child_uids = self.tree_view.selected_childtool_uids
         if len(selected_child_uids) != 1 or self.tree_view.selected_imagetool_indices:
             return None

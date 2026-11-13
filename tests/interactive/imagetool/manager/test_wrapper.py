@@ -190,8 +190,9 @@ def test_wrapper_provenance_owner_remap_rolls_back_atomically(
         assert len(applied) == 2
         assert applied[-1] == before
 
-        monkeypatch.setattr(node, "_manager", lambda: None)
-        node.commit_provenance_owner_remap()
+        with monkeypatch.context() as patch:
+            patch.setattr(node, "_manager", lambda: None)
+            node.commit_provenance_owner_remap()
 
 
 def test_wrapper_applies_tool_owned_script_inputs(qtbot) -> None:
@@ -315,17 +316,21 @@ def test_wrapper_remaps_saved_data_references(
 def test_wrapper_parent_refresh_marks_missing_output_unavailable() -> None:
     states: list[str] = []
     node = types.SimpleNamespace(
+        uid="output",
         tool_window=None,
         _output_id="missing-output",
         _source_auto_update=True,
         imagetool=object(),
         source_state="fresh",
         manager=types.SimpleNamespace(
+            _data_graph=types.SimpleNamespace(
+                manages=lambda _uid: False, owns_result=lambda _uid: False
+            ),
             _extensions=types.SimpleNamespace(
                 execution=types.SimpleNamespace(
                     capture_replay_sources=lambda: contextlib.nullcontext()
                 )
-            )
+            ),
         ),
         _resolved_output_payload=lambda: None,
         _set_source_state=states.append,

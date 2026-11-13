@@ -65,6 +65,7 @@ from erlab.interactive.imagetool._provenance._operations import (
 from erlab.interactive.imagetool._provenance._trust import (
     provenance_operation_code_trust_entries,
 )
+from erlab.interactive.imagetool.manager._data_graph import _ManagerDataGraph
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._modelview import (
     _FIGURE_SOURCE_MIME,
@@ -6867,7 +6868,7 @@ def test_managed_imagetool_duplicates_transfer_host_provenance_approval(
     )
     with manager_context() as manager:
         source = ImageTool(corrected, _in_manager=True)
-        manager.add_imagetool(
+        manager.import_imagetool(
             source,
             provenance_spec=released_input.parsed_provenance_spec(),
             replay_source_data=data,
@@ -7592,6 +7593,7 @@ def test_managed_window_node_kind_specific_source_branches(qtbot, monkeypatch) -
             self.retired_windows: list[QtWidgets.QWidget] = []
             self.interaction_activity_count = 0
             self._tool_graph = _ManagerToolGraph(self._handle_node_change)
+            self._data_graph = _ManagerDataGraph(self)
             self._metadata_node_uid: str | None = None
             self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
             self._workspace_controller = types.SimpleNamespace(
@@ -7880,6 +7882,7 @@ def test_managed_imagetool_node_detached_update_branches(qtbot) -> None:
             self.retired_windows: list[QtWidgets.QWidget] = []
             self.interaction_activity_count = 0
             self._tool_graph = _ManagerToolGraph()
+            self._data_graph = _ManagerDataGraph(self)
             self._provenance_revisions = _ProvenanceRevisionStore()
             self._metadata_node_uid: str | None = None
             self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
@@ -8123,6 +8126,7 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
             super().__init__()
             self.tree_view = _FakeTreeView()
             self._tool_graph = _ManagerToolGraph()
+            self._data_graph = _ManagerDataGraph(self)
             self._metadata_node_uid: str | None = None
             self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
             self._workspace_controller = types.SimpleNamespace(

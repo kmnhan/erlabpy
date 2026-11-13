@@ -37,6 +37,7 @@ __all__ = [
     "minimum_gradient",
     "ml",
     "ndsavgol",
+    "normalize",
     "remove_stripe",
     "scaled_laplace",
 ]
@@ -72,6 +73,71 @@ if typing.TYPE_CHECKING:
 
 else:
     findiff = _lazy.load("findiff")
+
+
+def normalize(
+    data: xr.DataArray,
+    dims: str | Sequence[Hashable],
+    *,
+    mode: typing.Literal["area", "minmax", "min", "min_area"] = "area",
+    denominator_rtol: float = 1e-12,
+    keep_attrs: bool | typing.Literal["default"] | None = None,
+) -> xr.DataArray:
+    """Normalize each slice along the specified dimensions.
+
+    Parameters
+    ----------
+    data
+        Input array.
+    dims
+        Dimensions over which to compute the mean or extrema.
+    mode
+        The area mode divides by the mean. The min mode subtracts the minimum.
+        The minmax and min_area modes subtract the minimum and divide by the
+        range or mean, respectively.
+    denominator_rtol
+        Mask denominators at or below this fraction of the largest finite
+        absolute value in the slice. For minmax, use the larger absolute
+        extremum as the scale.
+    keep_attrs
+        Attribute policy for xarray operations. If omitted, use the current
+        xarray setting.
+
+    Returns
+    -------
+    xarray.DataArray
+        Normalized values in the input dimensions. A masked or nonfinite
+        denominator gives NaN.
+    """
+    if isinstance(dims, str):
+        dims = (dims,)
+    if mode not in ("area", "minmax", "min", "min_area"):
+        raise ValueError(f"Unknown normalization mode {mode!r}")
+    if not dims:
+        return data
+    with xr.set_options(
+        keep_attrs=xr.get_options()["keep_attrs"] if keep_attrs is None else keep_attrs
+    ):
+        if mode == "area":
+            numerator = data
+        else:
+            minimum = data.min(dims)
+            numerator = data - minimum
+            if mode == "min":
+                return numerator
+        if mode == "minmax":
+            maximum = data.max(dims)
+            scale = xr.where(abs(minimum) > abs(maximum), abs(minimum), abs(maximum))
+            denominator = maximum - minimum
+        else:
+            scale = abs(data).where(np.isfinite(data)).max(dims, skipna=True)
+            denominator = data.mean(dims)
+        threshold = np.maximum(scale * denominator_rtol, np.finfo(np.float64).tiny)
+        return numerator / denominator.where(
+            np.isfinite(denominator)
+            & np.isfinite(scale)
+            & (abs(denominator) > threshold)
+        )
 
 
 def _parse_dict_arg(

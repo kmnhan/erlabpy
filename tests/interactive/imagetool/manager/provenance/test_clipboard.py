@@ -61,9 +61,11 @@ from tests.interactive.imagetool.manager.helpers import (
     _exec_generated_code,
     metadata_derivation_texts,
     select_child_tool,
+    select_metadata_items,
     select_metadata_rows,
     select_tools,
     set_transform_launch_mode,
+    top_level_operation_items,
     trigger_menu_action,
 )
 
@@ -91,6 +93,7 @@ def derivation_panel(qtbot, monkeypatch):
         qtbot.addWidget(tree)
         manager = types.SimpleNamespace(
             metadata_derivation_list=tree,
+            _data_graph=types.SimpleNamespace(owns_result=lambda _uid: False),
             _metadata_node_uid=None,
             _tool_graph=(
                 types.SimpleNamespace(
@@ -473,6 +476,7 @@ def test_manager_selected_derivation_step_payload_filters_rows() -> None:
     )
     selected_items: list[QtWidgets.QTreeWidgetItem] = []
     manager = types.SimpleNamespace(
+        _data_graph=types.SimpleNamespace(owns_result=lambda _uid: False),
         _metadata_node_uid="node",
         _tool_graph=types.SimpleNamespace(nodes={"node": object()}),
         _selected_derivation_items=lambda: selected_items,
@@ -1028,6 +1032,7 @@ def test_manager_unavailable_replay_details_skip_replayable_script_inputs() -> N
         ),
     )
     node = types.SimpleNamespace(
+        uid="derived",
         displayed_provenance_spec=spec,
         passive_displayed_provenance_spec=spec,
         derivation_display_rows=spec.display_rows(),
@@ -1036,6 +1041,7 @@ def test_manager_unavailable_replay_details_skip_replayable_script_inputs() -> N
         typing.cast(
             "typing.Any",
             types.SimpleNamespace(
+                _data_graph=types.SimpleNamespace(owns_result=lambda _uid: False),
                 _tool_graph=types.SimpleNamespace(nodes={}),
                 _lineage_controller=types.SimpleNamespace(
                     _has_recorded_script_input=lambda _input: False
@@ -1097,19 +1103,14 @@ def test_manager_paste_steps_validation_error_branches(
     )
     assert unavailable
 
-    node = _fake_edit_node(
-        full_data(),
-        parent_uid="parent",
-        source_display_spec=full_data(),
-    )
-    parent = _fake_edit_node(full_data(), uid="parent")
-    parent.current_source_data = lambda: xr.DataArray([1.0], dims=("x",))
-    controller = _fake_edit_controller(node, parent=parent)
-    monkeypatch.setattr(
-        controller,
-        "_replay_candidate_result",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("bad replay")),
-    )
+    node = _fake_edit_node(full_data())
+    controller = _fake_edit_controller(node)
+
+    def reject(_edits):
+        raise ValueError("Invalid dimensions")
+
+    controller._manager._data_graph.displayed_edit_revision = lambda _node: "displayed"
+    controller._manager._data_graph.edit_displayed = reject
     with pytest.raises(provenance_edit_controller._ProvenanceReplayFailure) as exc_info:
         controller._paste_structured_steps(
             node,
@@ -1150,55 +1151,6 @@ def test_manager_paste_steps_targets_editable_imagetools_only() -> None:
             start_label="Copied attribute",
         )
     ) == (True, "")
-
-
-def test_manager_paste_detached_steps_uses_replay_spec_fallback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    data = _provenance_paste_test_data()
-    replay_source = data.copy(deep=True)
-    local = full_data(AverageOperation(dims=("z",)))
-    controller = _fake_edit_controller(None, metadata_uid=None)
-    replaced: list[
-        tuple[xr.DataArray, ToolProvenanceSpec, bool, xr.DataArray | None]
-    ] = []
-
-    def _replace_with_detached_data(
-        result: xr.DataArray,
-        spec: ToolProvenanceSpec,
-        *,
-        preserve_filter: bool,
-        replay_source_data: xr.DataArray | None,
-        on_commit: Callable[[], None] | None = None,
-    ) -> None:
-        replaced.append((result, spec, preserve_filter, replay_source_data))
-        if on_commit is not None:
-            on_commit()
-
-    node = types.SimpleNamespace(
-        uid="node",
-        displayed_provenance_spec=full_data(),
-        current_public_data=lambda: data,
-        resolved_replay_source_data=lambda: replay_source,
-        replace_with_detached_data=_replace_with_detached_data,
-    )
-    monkeypatch.setattr(
-        provenance_edit_controller,
-        "compose_full_provenance",
-        lambda _parent, _local: None,
-    )
-
-    controller._paste_detached_steps(
-        typing.cast("typing.Any", node),
-        local,
-        where="testing fallback",
-    )
-
-    assert len(replaced) == 1
-    xr.testing.assert_identical(replaced[0][0], local.apply(data))
-    assert replaced[0][1] == local.to_replay_spec()
-    assert replaced[0][2] is False
-    assert replaced[0][3] is replay_source
 
 
 def test_manager_can_delete_row_reports_unavailable_branches(
@@ -1463,7 +1415,7 @@ def test_manager_delete_invalid_script_step_rolls_back(
     with manager_context() as manager:
         tool = itool(displayed, manager=False, execute=False)
         assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
-        index = manager.add_imagetool(tool, show=False, provenance_spec=spec)
+        index = manager.import_imagetool(tool, show=False, provenance_spec=spec)
 
         select_tools(manager, [index])
         manager._update_info()
@@ -1521,14 +1473,14 @@ def test_manager_copy_paste_structured_provenance_steps(
     with manager_context() as manager:
         source_tool = itool(source_data, manager=False, execute=False)
         assert isinstance(source_tool, erlab.interactive.imagetool.ImageTool)
-        source_index = manager.add_imagetool(
+        source_index = manager.import_imagetool(
             source_tool,
             show=False,
             provenance_spec=source_spec,
         )
         dest_tool = itool(dest_data, manager=False, execute=False)
         assert isinstance(dest_tool, erlab.interactive.imagetool.ImageTool)
-        dest_index = manager.add_imagetool(
+        dest_index = manager.import_imagetool(
             dest_tool,
             show=False,
             provenance_spec=dest_spec,
@@ -1628,7 +1580,7 @@ def test_manager_copied_nonuniform_steps_use_physical_inputs(
     with manager_context() as manager:
         tool = itool(expected, manager=False, execute=False)
         assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
-        index = manager.add_imagetool(tool, show=False, provenance_spec=spec)
+        index = manager.import_imagetool(tool, show=False, provenance_spec=spec)
         select_tools(manager, [index])
         manager._update_info()
         select_metadata_rows(manager, [1])
@@ -1681,7 +1633,7 @@ def test_manager_copied_partial_script_steps_keep_selected_output(
     with manager_context() as manager:
         tool = itool(data, manager=False, execute=False)
         assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
-        index = manager.add_imagetool(tool, show=False, provenance_spec=spec)
+        index = manager.import_imagetool(tool, show=False, provenance_spec=spec)
         select_tools(manager, [index])
         manager._update_info()
         select_metadata_rows(manager, selected_rows)
@@ -1743,7 +1695,7 @@ def test_manager_copy_paste_bound_shift_steps_keeps_live_dependency(
         )
         source_child = itool(source_expected, manager=False, execute=False)
         assert isinstance(source_child, erlab.interactive.imagetool.ImageTool)
-        source_child_uid = manager.add_imagetool_child(
+        source_child_uid = manager.import_imagetool_child(
             source_child,
             source_index,
             show=False,
@@ -1889,12 +1841,12 @@ def test_manager_nested_copied_steps_keep_pinned_shift_after_source_closes(
             "_show_failed",
             fail_paste,
         )
-        primary = manager.add_imagetool(
+        primary = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(prepared, _in_manager=True),
             show=False,
             provenance_spec=primary_spec,
         )
-        auxiliary = manager.add_imagetool(
+        auxiliary = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(correction, _in_manager=True),
             show=False,
             provenance_spec=auxiliary_spec,
@@ -1923,7 +1875,7 @@ def test_manager_nested_copied_steps_keep_pinned_shift_after_source_closes(
             }
         )
         expected = erlab.analysis.transform.shift(prepared, correction, along="eV")
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             erlab.interactive.imagetool.ImageTool(expected, _in_manager=True),
             primary,
             show=False,
@@ -2139,7 +2091,7 @@ def test_manager_copied_primary_chain_connects_nested_outputs(
                 ),
             )
             expected = erlab.analysis.transform.shift(prepared, correction, along="eV")
-        source = manager.add_imagetool(
+        source = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(expected, _in_manager=True),
             show=False,
             provenance_spec=spec,
@@ -2296,7 +2248,7 @@ def test_manager_copied_branches_keep_display_order(
     )
     displayed = erlab.analysis.transform.shift(data + 1, offsets * 2, along="eV") * 2
     with manager_context() as manager:
-        source = manager.add_imagetool(
+        source = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(displayed, _in_manager=True),
             show=False,
             provenance_spec=spec,
@@ -2386,7 +2338,7 @@ def test_manager_copied_nested_scopes_preserve_outputs_across_generated_aliases(
         ),
     )
     with manager_context() as manager:
-        source_index = manager.add_imagetool(
+        source_index = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(source, _in_manager=True),
             show=False,
             provenance_spec=spec,
@@ -2456,7 +2408,7 @@ def test_manager_copied_nested_scopes_publish_swapped_inputs_together(
         ),
     )
     with manager_context() as manager:
-        index = manager.add_imagetool(
+        index = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(source, _in_manager=True),
             show=False,
             provenance_spec=spec,
@@ -2521,7 +2473,7 @@ def test_manager_copied_bound_operation_runs_selected_input_history_first(
         ),
     )
     with manager_context() as manager:
-        index = manager.add_imagetool(
+        index = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(source, _in_manager=True),
             show=False,
             provenance_spec=spec,
@@ -2597,7 +2549,7 @@ def test_manager_copied_auxiliary_precedes_reused_bound_input(
     )
     expected = erlab.analysis.transform.shift(data + 1, offsets * 2, along="eV")
     with manager_context() as manager:
-        source = manager.add_imagetool(
+        source = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(expected, _in_manager=True),
             show=False,
             provenance_spec=spec,
@@ -2726,7 +2678,7 @@ def test_manager_paste_foreign_bound_shift_uses_recorded_fallback(
                 ),
                 source_manager_id="another-manager",
             )
-        assert node.provenance_spec is before_spec
+        assert node.provenance_spec == before_spec
         xr.testing.assert_identical(tool.slicer_area._data, before_data)
 
 
@@ -2751,12 +2703,12 @@ def test_manager_paste_structured_provenance_steps_into_selected_imagetools(
         tool_b = itool(dest_data_b.copy(deep=True), manager=False, execute=False)
         assert isinstance(tool_a, erlab.interactive.imagetool.ImageTool)
         assert isinstance(tool_b, erlab.interactive.imagetool.ImageTool)
-        index_a = manager.add_imagetool(
+        index_a = manager.import_imagetool(
             tool_a,
             show=False,
             provenance_spec=full_data(),
         )
-        index_b = manager.add_imagetool(
+        index_b = manager.import_imagetool(
             tool_b,
             show=False,
             provenance_spec=full_data(),
@@ -2798,12 +2750,12 @@ def test_manager_pasted_scalar_coordinate_offset_uses_each_destination_value(
         tool_b = itool(data_b.copy(deep=True), manager=False, execute=False)
         assert isinstance(tool_a, erlab.interactive.imagetool.ImageTool)
         assert isinstance(tool_b, erlab.interactive.imagetool.ImageTool)
-        index_a = manager.add_imagetool(
+        index_a = manager.import_imagetool(
             tool_a,
             show=False,
             provenance_spec=full_data(),
         )
-        index_b = manager.add_imagetool(
+        index_b = manager.import_imagetool(
             tool_b,
             show=False,
             provenance_spec=full_data(),
@@ -2863,7 +2815,7 @@ def test_manager_paste_steps_preserves_nonuniform_public_dimension(
         if target_kind == "root":
             tool = itool(data.copy(deep=True), manager=False, execute=False)
             assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
-            index = manager.add_imagetool(
+            index = manager.import_imagetool(
                 tool,
                 show=False,
                 provenance_spec=full_data(),
@@ -2876,7 +2828,7 @@ def test_manager_paste_steps_preserves_nonuniform_public_dimension(
             parent_index = manager.add_imagetool(parent_tool, show=False)
             tool = itool(data.copy(deep=True), manager=False, execute=False)
             assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
-            child_uid = manager.add_imagetool_child(
+            child_uid = manager.import_imagetool_child(
                 tool,
                 parent_index,
                 show=False,
@@ -2951,7 +2903,7 @@ def test_manager_paste_steps_starts_from_public_target_data(
     with manager_context() as manager:
         tool = itool(data.copy(deep=True), manager=False, execute=False)
         assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
-        index = manager.add_imagetool(
+        index = manager.import_imagetool(
             tool,
             show=False,
             provenance_spec=full_data(),
@@ -2970,6 +2922,10 @@ def test_manager_paste_steps_starts_from_public_target_data(
         xr.testing.assert_identical(tool.slicer_area._data, expected)
         xr.testing.assert_identical(tool.slicer_area.displayed_data, displayed_expected)
         xr.testing.assert_identical(node.current_public_data(), expected)
+        graph = manager._data_graph.graph
+        xr.testing.assert_identical(
+            graph.data(graph.current_revision(node.uid)), displayed_expected
+        )
         assert isinstance(node.info_text, str)
 
 
@@ -2987,7 +2943,7 @@ def test_manager_paste_structured_provenance_steps_into_pending_memory_imagetool
     with manager_context() as manager:
         tool = itool(data.copy(deep=True), manager=False, execute=False)
         assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
-        index = manager.add_imagetool(
+        index = manager.import_imagetool(
             tool,
             show=False,
             provenance_spec=full_data(),
@@ -3066,12 +3022,12 @@ def test_manager_paste_structured_provenance_steps_reports_partial_failures(
         bad_tool = itool(bad_data.copy(deep=True), manager=False, execute=False)
         assert isinstance(good_tool, erlab.interactive.imagetool.ImageTool)
         assert isinstance(bad_tool, erlab.interactive.imagetool.ImageTool)
-        good_index = manager.add_imagetool(
+        good_index = manager.import_imagetool(
             good_tool,
             show=False,
             provenance_spec=full_data(),
         )
-        bad_index = manager.add_imagetool(
+        bad_index = manager.import_imagetool(
             bad_tool,
             show=False,
             provenance_spec=full_data(),
@@ -3139,7 +3095,7 @@ def test_manager_copy_paste_kspace_conversion_steps_remain_group_editable(
     with manager_context() as manager:
         source_tool = itool(source_data, manager=False, execute=False)
         assert isinstance(source_tool, erlab.interactive.imagetool.ImageTool)
-        source_index = manager.add_imagetool(
+        source_index = manager.import_imagetool(
             source_tool,
             show=False,
             provenance_spec=source_spec,
@@ -3149,7 +3105,7 @@ def test_manager_copy_paste_kspace_conversion_steps_remain_group_editable(
         parent_index = manager.add_imagetool(parent_tool, show=False)
         child_tool = itool(dest_base, manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child_tool,
             parent_index,
             show=False,
@@ -3157,7 +3113,7 @@ def test_manager_copy_paste_kspace_conversion_steps_remain_group_editable(
         )
         partial_child_tool = itool(dest_base, manager=False, execute=False)
         assert isinstance(partial_child_tool, erlab.interactive.imagetool.ImageTool)
-        partial_child_uid = manager.add_imagetool_child(
+        partial_child_uid = manager.import_imagetool_child(
             partial_child_tool,
             parent_index,
             show=False,
@@ -3170,7 +3126,7 @@ def test_manager_copy_paste_kspace_conversion_steps_remain_group_editable(
         select_tools(manager, [source_index])
         manager._update_info()
 
-        select_metadata_rows(manager, [1, 2])
+        select_metadata_items(manager, top_level_operation_items(manager)[:2])
         qtbot.keyClick(
             manager.metadata_derivation_list,
             QtCore.Qt.Key.Key_C,
@@ -3196,9 +3152,9 @@ def test_manager_copy_paste_kspace_conversion_steps_remain_group_editable(
         assert partial_node.displayed_source_spec is not None
         assert partial_node.displayed_source_spec.operations == partial_operations
         manager._update_info(uid=partial_child_uid)
-        for row_index in (1, 2):
-            row_item = manager.metadata_derivation_list.item(row_index)
-            assert row_item is not None
+        items = top_level_operation_items(manager)
+        assert len(items) == 2
+        for row_item in items:
             row = row_item.data(0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
             assert isinstance(row, _ProvenanceDisplayRow)
             editable, reason = manager._provenance_edit_controller.can_edit_row(row)
@@ -3210,7 +3166,7 @@ def test_manager_copy_paste_kspace_conversion_steps_remain_group_editable(
         manager.tree_view.clearSelection()
         select_tools(manager, [source_index])
         manager._update_info()
-        select_metadata_rows(manager, [1, 2, 3])
+        select_metadata_items(manager, top_level_operation_items(manager))
         qtbot.keyClick(
             manager.metadata_derivation_list,
             QtCore.Qt.Key.Key_C,
@@ -3253,9 +3209,9 @@ def test_manager_copy_paste_kspace_conversion_steps_remain_group_editable(
         manager.tree_view.clearSelection()
         select_child_tool(manager, child_uid)
         manager._update_info(uid=child_uid)
-        for row_index in (1, 2, 3):
-            row_item = manager.metadata_derivation_list.item(row_index)
-            assert row_item is not None
+        items = top_level_operation_items(manager)
+        assert len(items) == 3
+        for row_item in items:
             row = row_item.data(0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
             assert isinstance(row, _ProvenanceDisplayRow)
             editable, reason = manager._provenance_edit_controller.can_edit_row(row)
@@ -3280,7 +3236,7 @@ def test_manager_paste_structured_steps_preserves_source_binding(
         parent_index = manager.add_imagetool(parent_tool, show=False)
         child_tool = itool(child_data, manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child_tool,
             parent_index,
             show=False,
@@ -3294,7 +3250,7 @@ def test_manager_paste_structured_steps_preserves_source_binding(
         assert displayed_child_source is not None
         source_tool = itool(source_data, manager=False, execute=False)
         assert isinstance(source_tool, erlab.interactive.imagetool.ImageTool)
-        source_index = manager.add_imagetool(
+        source_index = manager.import_imagetool(
             source_tool,
             show=False,
             provenance_spec=source_spec,
@@ -3359,7 +3315,7 @@ def test_manager_copy_paste_script_provenance_steps_detaches_and_rolls_back(
         parent_index = manager.add_imagetool(parent_tool, show=False)
         child_tool = itool(child_data, manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child_tool,
             parent_index,
             show=False,
@@ -3368,7 +3324,7 @@ def test_manager_copy_paste_script_provenance_steps_detaches_and_rolls_back(
         )
         source_tool = itool(script_data, manager=False, execute=False)
         assert isinstance(source_tool, erlab.interactive.imagetool.ImageTool)
-        source_index = manager.add_imagetool(
+        source_index = manager.import_imagetool(
             source_tool,
             show=False,
             provenance_spec=script_spec,
@@ -3403,7 +3359,7 @@ def test_manager_copy_paste_script_provenance_steps_detaches_and_rolls_back(
         )
         xr.testing.assert_identical(child_tool.slicer_area._data, expected)
         assert child_node.source_spec is None
-        assert child_node.source_auto_update is False
+        assert child_node.source_auto_update
         pasted_code = child_node.displayed_provenance_spec.derivation_code()
         assert pasted_code is not None
         replay_namespace = _exec_generated_code(
@@ -3431,7 +3387,7 @@ def test_manager_copy_paste_script_provenance_steps_detaches_and_rolls_back(
         )
         bad_tool = itool(data, manager=False, execute=False)
         assert isinstance(bad_tool, erlab.interactive.imagetool.ImageTool)
-        bad_index = manager.add_imagetool(
+        bad_index = manager.import_imagetool(
             bad_tool,
             show=False,
             provenance_spec=bad_spec,
@@ -3513,14 +3469,14 @@ def test_manager_paste_script_steps_replays_from_current_output_name(
         )
         dest_tool = itool(dest_data, manager=False, execute=False)
         assert isinstance(dest_tool, erlab.interactive.imagetool.ImageTool)
-        dest_index = manager.add_imagetool(
+        dest_index = manager.import_imagetool(
             dest_tool,
             show=False,
             provenance_spec=dest_base_spec,
         )
         source_tool = itool(source_data, manager=False, execute=False)
         assert isinstance(source_tool, erlab.interactive.imagetool.ImageTool)
-        source_index = manager.add_imagetool(
+        source_index = manager.import_imagetool(
             source_tool,
             show=False,
             provenance_spec=source_spec,
@@ -3638,9 +3594,9 @@ def test_manager_divide_by_coord_child_refresh_and_code(
             lambda text: copied.append(text) or text,
         )
         monkeypatch.setattr(
-            manager,
-            "_prompt_replay_input_name",
-            lambda _node: "source_data",
+            manager._details_panel,
+            "_checkpoint_name",
+            lambda _key, _suggestion, _used_names: "source_data",
         )
         menu = manager._build_metadata_derivation_menu()
         assert menu is not None

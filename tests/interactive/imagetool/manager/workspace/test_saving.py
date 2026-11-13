@@ -35,6 +35,7 @@ from erlab.interactive._options.schema import AppOptions
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._provenance._model import (
+    FileDataSelection,
     ReplayStep,
     ScriptInput,
     full_data,
@@ -250,7 +251,7 @@ def test_manager_workspace_restores_hidden_ktool_added_coordinates_and_angle_sca
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         root = itool(source_data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(
+        manager.import_imagetool(
             root,
             show=False,
             provenance_spec=full_data().to_replay_spec(),
@@ -377,14 +378,22 @@ def test_manager_workspace_restores_revision_history_without_recipe_execution(
         second = node.current_revision_id
         manager._workspace_controller.saving._save_workspace_document(path)
         assert node.current_revision_id == second
-        assert manager._provenance_revisions.revision_ids == {first, second}
+        expected_revisions = {first, second}
+        if replace_external:
+            graph = manager._data_graph.graph
+            raw = graph.recorded_lineage(graph.current_revision(node.uid))[
+                0
+            ].revision_id
+            expected_revisions.add(raw)
+            assert graph.data(raw).dtype == test_data.dtype
+            xr.testing.assert_identical(graph.data(raw), test_data + 10)
+        assert manager._provenance_revisions.revision_ids == expected_revisions
         assert second is not None
         manifest = _current_workspace_manifest(path)
         assert manifest["nodes"][0]["current_revision_id"] == second
-        assert {entry["revision_id"] for entry in manifest["provenance_revisions"]} == {
-            first,
-            second,
-        }
+        assert {
+            entry["revision_id"] for entry in manifest["provenance_revisions"]
+        } == expected_revisions
         assert orphan not in {
             entry["revision_id"] for entry in manifest["provenance_revisions"]
         }
@@ -404,7 +413,7 @@ def test_manager_workspace_restores_revision_history_without_recipe_execution(
             manager._provenance_revisions.resolve_data(first).compute(), expected_first
         )
         records = manager._provenance_revisions.reachable([second])
-        assert len(records) == 2
+        assert {record.revision_id for record in records} == expected_revisions
         assert all(
             record.checkpoint.source.file_path == str(path) for record in records
         )
@@ -460,33 +469,37 @@ def test_manager_workspace_captures_lazy_input_before_source_changes(
 
 
 def test_manager_reload_retains_exact_pinned_input_and_shares_current_checkpoint(
-    qtbot, tmp_path, test_data, manager_context, monkeypatch
+    tmp_path, test_data, manager_context, monkeypatch
 ):
     path = tmp_path / "refreshed.itws"
+    source_path = tmp_path / "source.h5"
+    test_data.to_netcdf(source_path, engine="h5netcdf")
     with manager_context() as manager:
-        target = manager.add_imagetool(
-            erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True),
-            show=False,
-        )
-        node = manager._node_for_target(target)
+        assert manager._data_ingress.receive_data(
+            [xr.load_dataarray(source_path, engine="h5netcdf")],
+            {
+                "file_path": source_path,
+                "load_func": (
+                    xr.load_dataarray,
+                    {"engine": "h5netcdf"},
+                    FileDataSelection(kind="dataarray"),
+                ),
+            },
+        ) == [True]
+        node = manager._node_for_target(0)
         registry = manager._provenance_revisions
         first = node.revision_id_for_role("source")
         expected = registry.resolve_data(first)
         pinned_input = ScriptInput(name="data", revision_id=first, follow_source=False)
-        manager.add_imagetool(
+        manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(test_data + 100, _in_manager=True),
             show=False,
             provenance_spec=script(start_label="Pinned input", root_input=pinned_input),
         )
         slicer = node.slicer_area
-        monkeypatch.setattr(slicer, "_direct_reloadable", lambda: True)
         revisions = []
         for increment in (10, 20, 30):
-            monkeypatch.setattr(
-                slicer,
-                "_fetch_reload_data",
-                lambda *, authorize, increment=increment: (test_data + increment, {}),
-            )
+            (test_data + increment).to_netcdf(source_path, engine="h5netcdf")
             assert slicer._reload()
             revisions.append(node.current_revision_id)
             assert not registry.get(revisions[-1]).primary_checkpoint_required
@@ -834,7 +847,7 @@ def test_workspace_adoption_normalizes_legacy_seed_before_pure_save(
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         root = erlab.interactive.imagetool.ImageTool(test_data + 1, _in_manager=True)
-        index = manager.add_imagetool(root, show=False)
+        index = manager.import_imagetool(root, show=False, provenance_spec=full_data())
         node = manager._node_for_target(index)
         path = tmp_path / "legacy-live-seed.itws"
         manager._workspace_controller.saving._save_workspace_document(path)
@@ -5336,11 +5349,11 @@ def test_manager_offload_to_workspace_preserves_child_source_state(
 
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(root, show=False, provenance_spec=full_data())
+        manager.import_imagetool(root, show=False, provenance_spec=full_data())
 
         child = itool(data.copy(deep=False), manager=False, execute=False)
         assert isinstance(child, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child,
             0,
             show=False,
@@ -6333,9 +6346,9 @@ def test_manager_workspace_compact_drops_history_and_keeps_store(
             assert h5_file.id.valid
         _assert_no_workspace_internal_groups(fname)
         with store.read_session() as h5_file:
-            assert set(h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]) == {
-                current_entry["payload_object_id"]
-            }
+            assert set(
+                h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]
+            ) == workspace_store.WorkspaceStore.manifest_object_ids(current_manifest)
         generations = store.generations()
         assert len(generations) == 2
         assert generations[0].manifest == generations[1].manifest == current_manifest
@@ -6969,7 +6982,13 @@ def test_manager_workspace_save_collects_old_generations_in_background(
         with store.read_session() as h5_file:
             object_group = h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]
             assert first_object_id not in object_group
-            assert len(object_group) == 2
+            expected_ids = set().union(
+                *(
+                    store.manifest_object_ids(generation.manifest)
+                    for generation in store.generations()
+                )
+            )
+            assert set(object_group) == expected_ids
 
 
 def test_manager_workspace_save_snapshot_uses_compression_override(
@@ -8036,8 +8055,10 @@ def test_manager_workspace_load_keeps_visible_saved_data_in_memory(
         assert not loaded.data_file_backed
         assert loaded.data_loadable is False
         assert workspace_arrays.dataarray_is_numpy_backed(loaded._data)
-        assert loaded._data.values.flags.writeable
         np.testing.assert_array_equal(loaded._data.values, data.values)
+        loaded._set_source_item((0, 0), -1.0)
+        assert loaded._data.values[0, 0] == -1.0
+        assert data.values[0, 0] == 0.0
 
 
 def test_manager_workspace_lazy_data_delta_save_uses_pending_group_before_replacing(
@@ -8262,18 +8283,16 @@ def test_background_save_owns_removed_revision_sources(
     destination = tmp_path / "destination.itws"
     expected = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
     with manager_context() as manager:
-        index = manager.add_imagetool(
+        revision_id = manager._provenance_revisions.add(expected)
+        manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(expected, _in_manager=True),
             show=False,
-        )
-        revision_id = manager._node_for_target(index).revision_id_for_role("source")
-        manager._node_for_target(index).set_displayed_provenance(
-            script(
+            provenance_spec=script(
                 start_label="Saved",
                 active_name="data",
                 primary_input="data",
                 script_inputs=(ScriptInput(name="data", revision_id=revision_id),),
-            )
+            ),
         )
         manager._workspace_controller.saving._save_workspace_document(source_path)
 

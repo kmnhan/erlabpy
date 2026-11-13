@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import contextlib
+import inspect
 import keyword
 import os
 import typing
-from collections.abc import Collection, Hashable, Mapping, Sequence
+from collections.abc import Callable, Collection, Hashable, Mapping, Sequence
 from numbers import Integral
 
 import numpy as np
@@ -24,12 +25,13 @@ from erlab.interactive.imagetool._provenance._model import (
     ConsoleCall,
     ConsoleOperationPattern,
     DerivationEntry,
-    ProvenanceFloatMapping,
     ProvenanceHashable,
     ProvenanceHashablePair,
     ProvenanceHashableTuple,
     ProvenanceIntMapping,
+    ProvenanceKeywords,
     ProvenanceMapping,
+    ProvenanceNumericVector,
     ToolProvenanceOperation,
     _coerce_float_mapping_field,
     _console_mapping_values,
@@ -58,6 +60,7 @@ def _require_integer_mapping(value: typing.Any, *, field_name: str) -> typing.An
 class ConcatOperation(ToolProvenanceOperation):
     """Concatenate the current array and ordered, separately bound input arrays."""
 
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
     op: typing.Literal["concat"] = "concat"
     live_applicable: typing.ClassVar[bool] = False
     input_count: int = pydantic.Field(strict=True, ge=2)
@@ -194,47 +197,88 @@ class DenoiseOperation(ToolProvenanceOperation):
         )
 
 
-class RotateOperation(ToolProvenanceOperation):
-    op: typing.Literal["rotate"] = "rotate"
+_ROTATION_DEFAULTS = {
+    "axes": (0, 1),
+    "center": (0.0, 0.0),
+    "reshape": True,
+    "order": 1,
+    "mode": "constant",
+    "cval": np.nan,
+    "prefilter": True,
+}
+
+
+class _RotationPlaneOperation(ToolProvenanceOperation):
     batch_available: typing.ClassVar[bool] = True
-    console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
-        ConsoleOperationPattern(
-            target="erlab.analysis.transform.rotate",
-            fields=("angle", "axes", "center"),
-            defaults={
-                "axes": (0, 1),
-                "center": (0.0, 0.0),
-                "reshape": True,
-                "order": 1,
-            },
-            ignored_defaults={"mode": "constant", "cval": np.nan, "prefilter": True},
-        ),
-    )
-    angle: float
-    axes: ProvenanceHashablePair
-    center: tuple[float, float]
+    axes: ProvenanceHashablePair = (0, 1)
+    center: tuple[float, float] | dict[Hashable, float] = (0.0, 0.0)
     reshape: bool = True
     order: int = 1
+    mode: str = "constant"
+    cval: float = pydantic.Field(default=np.nan, exclude_if=np.isnan)
+    prefilter: bool = True
 
     @pydantic.field_validator("center", mode="before")
     @classmethod
-    def _validate_center(cls, value: typing.Any) -> tuple[float, float]:
-        return typing.cast(
-            "tuple[float, float]",
-            _ensure_float_tuple(
-                typing.cast("Sequence[typing.Any]", value), expected_len=2
-            ),
+    def _validate_center(cls, value: typing.Any) -> typing.Any:
+        decoded = decode_provenance_value(value)
+        if isinstance(decoded, Mapping):
+            return _coerce_float_mapping_field(decoded)
+        return _ensure_float_tuple(
+            typing.cast("Sequence[typing.Any]", decoded), expected_len=2
         )
 
+    @pydantic.field_serializer("center", when_used="json")
+    def _serialize_center(self, value: typing.Any) -> typing.Any:
+        return encode_provenance_value(value)
+
     @property
-    def kwargs(self) -> dict[str, typing.Any]:
-        return {
-            "angle": self.angle,
+    def _plane_kwargs(self) -> dict[str, typing.Any]:
+        kwargs: dict[str, typing.Any] = {
             "axes": self.axes,
             "center": self.center,
             "reshape": self.reshape,
             "order": self.order,
         }
+        if self.mode != "constant":
+            kwargs["mode"] = self.mode
+        if not np.isnan(self.cval):
+            kwargs["cval"] = self.cval
+        if not self.prefilter:
+            kwargs["prefilter"] = False
+        return kwargs
+
+    def _rotation_code(
+        self,
+        func: Callable[..., xr.DataArray],
+        input_name: str,
+        kwargs: dict[str, typing.Any],
+    ) -> str:
+        if self.axes != (0, 1):
+            kwargs["axes"] = f"|{_provenance_value_code(self.axes)}|"
+        if "cval" in kwargs:
+            kwargs["cval"] = f"|{_provenance_value_code(self.cval)}|"
+        if isinstance(self.center, Mapping):
+            kwargs["center"] = f"|{_provenance_value_code(self.center)}|"
+        return erlab.interactive.utils.generate_code(
+            func, [f"|{input_name}|"], kwargs, module="era.transform"
+        )
+
+
+class RotateOperation(_RotationPlaneOperation):
+    op: typing.Literal["rotate"] = "rotate"
+    console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
+        ConsoleOperationPattern(
+            target="erlab.analysis.transform.rotate",
+            fields=("angle", "axes", "center"),
+            defaults=_ROTATION_DEFAULTS,
+        ),
+    )
+    angle: float
+
+    @property
+    def kwargs(self) -> dict[str, typing.Any]:
+        return {"angle": self.angle, **self._plane_kwargs}
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
         return erlab.analysis.transform.rotate(data, **self.kwargs)
@@ -245,11 +289,8 @@ class RotateOperation(ToolProvenanceOperation):
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
-        return erlab.interactive.utils.generate_code(
-            erlab.analysis.transform.rotate,
-            [f"|{input_name}|"],
-            self.kwargs,
-            module="era.transform",
+        return self._rotation_code(
+            erlab.analysis.transform.rotate, input_name, self.kwargs
         )
 
 
@@ -696,12 +737,14 @@ class LeadingEdgeOperation(ToolProvenanceOperation):
                 "fraction": 0.5,
                 "dim": "eV",
                 "direction": "positive",
+                "on_failure": "nan",
             },
         ),
     )
-    fraction: float = pydantic.Field(default=0.5, gt=0.0, le=1.0)
+    fraction: float = 0.5
     dim: ProvenanceHashable = "eV"
     direction: typing.Literal["positive", "negative"] = "positive"
+    on_failure: typing.Literal["nan", "raise"] = "nan"
 
     @property
     def kwargs(self) -> dict[str, typing.Any]:
@@ -709,6 +752,7 @@ class LeadingEdgeOperation(ToolProvenanceOperation):
             "fraction": self.fraction,
             "dim": self.dim,
             "direction": self.direction,
+            **({"on_failure": self.on_failure} if self.on_failure != "nan" else {}),
         }
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
@@ -720,10 +764,13 @@ class LeadingEdgeOperation(ToolProvenanceOperation):
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
+        kwargs = self.kwargs
+        if not np.isfinite(self.fraction):
+            kwargs["fraction"] = f"|{_provenance_value_code(self.fraction)}|"
         return erlab.interactive.utils.generate_code(
             erlab.analysis.interpolate.leading_edge,
             [f"|{input_name}|"],
-            self.kwargs,
+            kwargs,
             module="era.interpolate",
         )
 
@@ -762,28 +809,80 @@ class DivideByCoordOperation(ToolProvenanceOperation):
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
-        return f"{input_name} / {self.divisor_code(input_name)}"
+        quotient = f"{input_name} / {self.divisor_code(input_name)}"
+        return f"({quotient}).rename({input_name}.name)"
+
+
+_AxisArgT = typing.TypeVar("_AxisArgT")
+_FilterArg = typing.Annotated[
+    _AxisArgT | tuple[_AxisArgT, ...] | dict[Hashable, _AxisArgT],
+    pydantic.BeforeValidator(decode_provenance_value),
+    pydantic.PlainSerializer(encode_provenance_value, when_used="json"),
+]
 
 
 class GaussianFilterOperation(ToolProvenanceOperation):
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
     op: typing.Literal["gaussian_filter"] = "gaussian_filter"
     batch_available: typing.ClassVar[bool] = True
-    sigma: ProvenanceFloatMapping = pydantic.Field(default_factory=dict)
+    console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
+        ConsoleOperationPattern(
+            target="erlab.analysis.image.gaussian_filter",
+            fields=("sigma", "order", "mode", "cval", "truncate"),
+            defaults={
+                "order": 0,
+                "mode": "nearest",
+                "cval": 0.0,
+                "truncate": 4.0,
+                "radius": None,
+            },
+        ),
+    )
+    sigma: _FilterArg[float] = pydantic.Field(default_factory=dict)
+    order: _FilterArg[pydantic.StrictInt] = 0
+    mode: _FilterArg[str] = "nearest"
+    cval: float = 0.0
+    truncate: float = 4.0
+    radius: _FilterArg[float] | None = None
+
+    @property
+    def kwargs(self) -> dict[str, typing.Any]:
+        kwargs: dict[str, typing.Any] = {"sigma": self.sigma}
+        if self.order != 0:
+            kwargs["order"] = self.order
+        if self.mode != "nearest":
+            kwargs["mode"] = self.mode
+        if self.cval != 0.0:
+            kwargs["cval"] = self.cval
+        if self.truncate != 4.0:
+            kwargs["truncate"] = self.truncate
+        if self.radius is not None:
+            kwargs["radius"] = self.radius
+        return kwargs
+
+    def sigma_for_dims(self, dims: tuple[Hashable, ...]) -> dict[Hashable, float]:
+        if isinstance(self.sigma, dict):
+            return dict(self.sigma)
+        return erlab.analysis.image._parse_dict_arg(
+            dims, self.sigma, "sigma", "DataArray", allow_subset=True
+        )
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
-        return erlab.analysis.image.gaussian_filter(data, sigma=self.sigma)
+        return erlab.analysis.image.gaussian_filter(data, **self.kwargs)
 
     def derivation_label(self) -> str:
-        label_kwargs = {"sigma": self.sigma}
-        return f"Gaussian Filter({_format_derivation_value(label_kwargs)})"
+        return f"Gaussian Filter({_format_derivation_value(self.kwargs)})"
 
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
+        kwargs = self.kwargs
+        if "cval" in kwargs:
+            kwargs["cval"] = f"|{_provenance_value_code(self.cval)}|"
         return erlab.interactive.utils.generate_code(
             erlab.analysis.image.gaussian_filter,
             [f"|{input_name}|"],
-            {"sigma": self.sigma},
+            kwargs,
             module="era.image",
         )
 
@@ -791,10 +890,18 @@ class GaussianFilterOperation(ToolProvenanceOperation):
 class BoxcarFilterOperation(ToolProvenanceOperation):
     """Apply a coordinate-preserving boxcar filter along selected dimensions."""
 
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
     op: typing.Literal["boxcar_filter"] = "boxcar_filter"
     batch_available: typing.ClassVar[bool] = True
-    size: ProvenanceIntMapping = pydantic.Field(default_factory=dict)
-    mode: typing.Literal["reflect", "constant", "nearest", "mirror", "wrap"] = "nearest"
+    console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
+        ConsoleOperationPattern(
+            target="erlab.analysis.image.boxcar_filter",
+            fields=("size", "mode", "cval"),
+            defaults={"mode": "nearest", "cval": 0.0},
+        ),
+    )
+    size: _FilterArg[pydantic.StrictInt] = pydantic.Field(default_factory=dict)
+    mode: ShiftMode = "nearest"
     cval: float = 0.0
 
     @pydantic.field_validator("size", mode="before")
@@ -804,13 +911,26 @@ class BoxcarFilterOperation(ToolProvenanceOperation):
 
     @pydantic.model_validator(mode="after")
     def _validate_boxcar_filter(self) -> typing.Self:
-        if not self.size:
+        sizes = (
+            self.size.values()
+            if isinstance(self.size, dict)
+            else ((self.size,) if isinstance(self.size, int) else self.size)
+        )
+        if not sizes:
             raise ValueError("boxcar filter requires at least one dimension")
-        if any(value <= 0 for value in self.size.values()):
+        if any(value <= 0 for value in sizes):
             raise ValueError("boxcar filter sizes must be positive integers")
-        if not np.isfinite(self.cval):
-            raise ValueError("boxcar filter cval must be finite")
         return self
+
+    def size_for_dims(self, dims: tuple[Hashable, ...]) -> dict[Hashable, int]:
+        if isinstance(self.size, dict):
+            return dict(self.size)
+        return {
+            dim: int(value)
+            for dim, value in erlab.analysis.image._parse_dict_arg(
+                dims, self.size, "size", "DataArray", allow_subset=True
+            ).items()
+        }
 
     @property
     def kwargs(self) -> dict[str, typing.Any]:
@@ -825,10 +945,13 @@ class BoxcarFilterOperation(ToolProvenanceOperation):
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
+        kwargs = self.kwargs
+        if not np.isfinite(self.cval):
+            kwargs["cval"] = f"|{_provenance_value_code(self.cval)}|"
         return erlab.interactive.utils.generate_code(
             erlab.analysis.image.boxcar_filter,
             [f"|{input_name}|"],
-            self.kwargs,
+            kwargs,
             module="era.image",
         )
 
@@ -880,13 +1003,36 @@ class ImageDerivativeOperation(ToolProvenanceOperation):
     ]
     kwargs: ProvenanceMapping = pydantic.Field(default_factory=dict)
 
+    @classmethod
+    def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:
+        func = call.func
+        name = getattr(func, "__name__", "")
+        if (
+            func is None
+            or name not in _IMAGE_DERIVATIVE_KWARGS
+            or func is not getattr(erlab.analysis.image, name)
+            or call.has_extra_tracked_inputs
+        ):
+            return None
+        signature = inspect.signature(func)
+        with contextlib.suppress(TypeError, ValueError):
+            arguments = signature.bind(None, *call.args, **call.kwargs)
+            arguments.apply_defaults()
+            settings = dict(arguments.arguments)
+            del settings[next(iter(signature.parameters))]
+            settings.update(settings.pop("kwargs", {}))
+            return cls.model_validate({"method": name, "kwargs": settings})
+        return None
+
     @pydantic.model_validator(mode="after")
     def _validate_derivative(self) -> typing.Self:
         if any(not isinstance(key, str) for key in self.kwargs):
             raise ValueError("image derivative keyword names must be strings")
         expected = _IMAGE_DERIVATIVE_KWARGS[self.method]
         actual = frozenset(typing.cast("dict[str, typing.Any]", self.kwargs))
-        if actual != expected:
+        if not expected.issubset(actual) or (
+            self.method == "minimum_gradient" and actual - {"mode", "cval"}
+        ):
             raise ValueError(
                 f"{self.method} requires keyword arguments {sorted(expected)!r}"
             )
@@ -925,10 +1071,13 @@ class ImageDerivativeOperation(ToolProvenanceOperation):
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
+        kwargs = typing.cast("dict[str, typing.Any]", dict(self.kwargs))
+        if "cval" in kwargs:
+            kwargs["cval"] = f"|{_provenance_value_code(kwargs['cval'])}|"
         return erlab.interactive.utils.generate_code(
             getattr(erlab.analysis.image, self.method),
             [f"|{input_name}|"],
-            typing.cast("dict[str, typing.Any]", dict(self.kwargs)),
+            kwargs,
             module="era.image",
             remove_defaults=False,
         )
@@ -1111,69 +1260,18 @@ class NormalizeOperation(ToolProvenanceOperation):
     dims: ProvenanceHashableTuple = ()
     mode: typing.Literal["area", "minmax", "min", "min_area"] = "area"
     denominator_rtol: float = 1e-12
+    keep_attrs: bool | typing.Literal["default"] = "default"
 
-    @staticmethod
-    def _safe_denominator(
-        denominator: xr.DataArray, scale: xr.DataArray, rtol: float
-    ) -> xr.DataArray:
-        threshold = np.maximum(
-            scale * rtol,
-            np.finfo(np.float64).tiny,
-        )
-        return denominator.where(
-            np.isfinite(denominator)
-            & np.isfinite(scale)
-            & (np.abs(denominator) > threshold)
-        )
-
-    @staticmethod
-    def _dims_code(dims: tuple[Hashable, ...]) -> str:
-        return _format_qsel_dims_arg(dims)
+    @property
+    def kwargs(self) -> dict[str, typing.Any]:
+        return {
+            "mode": self.mode,
+            "denominator_rtol": self.denominator_rtol,
+            "keep_attrs": self.keep_attrs,
+        }
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
-        if not self.dims:
-            return data
-
-        if self.mode == "area":
-            finite_abs_scale = (
-                abs(data).where(np.isfinite(data)).max(self.dims, skipna=True)
-            )
-            area = self._safe_denominator(
-                data.mean(self.dims),
-                finite_abs_scale,
-                self.denominator_rtol,
-            )
-            return data / area
-
-        if self.mode == "minmax":
-            minimum = data.min(self.dims)
-            maximum = data.max(self.dims)
-            finite_abs_scale = xr.where(
-                abs(minimum) > abs(maximum),
-                abs(minimum),
-                abs(maximum),
-            )
-            denominator = self._safe_denominator(
-                maximum - minimum,
-                finite_abs_scale,
-                self.denominator_rtol,
-            )
-            return (data - minimum) / denominator
-
-        if self.mode == "min":
-            minimum = data.min(self.dims)
-            return data - minimum
-
-        minimum = data.min(self.dims)
-        finite_abs_scale = (
-            abs(data).where(np.isfinite(data)).max(self.dims, skipna=True)
-        )
-        area = self._safe_denominator(
-            data.mean(self.dims),
-            finite_abs_scale,
-            self.denominator_rtol,
-        )
-        return (data - minimum) / area
+        return erlab.analysis.image.normalize(data, self.dims, **self.kwargs)
 
     def derivation_label(self) -> str:
         label_kwargs = {
@@ -1186,17 +1284,13 @@ class NormalizeOperation(ToolProvenanceOperation):
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
-        dims_code = self._dims_code(self.dims)
-        if self.mode == "area":
-            return f"{input_name} / {input_name}.mean({dims_code})"
-        if self.mode == "minmax":
-            minimum: str = f"{input_name}.min({dims_code})"
-            maximum: str = f"{input_name}.max({dims_code})"
-            return f"({input_name} - {minimum}) / ({maximum} - {minimum})"
-        if self.mode == "min":
-            return f"{input_name} - {input_name}.min({dims_code})"
-        minimum = f"{input_name}.min({dims_code})"
-        return f"({input_name} - {minimum}) / {input_name}.mean({dims_code})"
+        return erlab.interactive.utils.generate_code(
+            erlab.analysis.image.normalize,
+            [f"|{input_name}|", self.dims],
+            self.kwargs,
+            module="era.image",
+            name="normalize",
+        )
 
 
 class CoarsenOperation(ToolProvenanceOperation):
@@ -1207,6 +1301,7 @@ class CoarsenOperation(ToolProvenanceOperation):
     side: str
     coord_func: str
     reducer: str
+    keep_attrs: bool | None = None
 
     @classmethod
     def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:
@@ -1258,7 +1353,9 @@ class CoarsenOperation(ToolProvenanceOperation):
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
         coarsened = data.coarsen(**self.coarsen_kwargs)
-        return typing.cast("xr.DataArray", getattr(coarsened, self.reducer)())
+        return typing.cast(
+            "xr.DataArray", getattr(coarsened, self.reducer)(keep_attrs=self.keep_attrs)
+        )
 
     def _code_coarsen_kwargs(self) -> Mapping[typing.Any, typing.Any]:
         coarsen_kwargs: Mapping[typing.Any, typing.Any]
@@ -1286,7 +1383,12 @@ class CoarsenOperation(ToolProvenanceOperation):
         formatted_kwargs = erlab.interactive.utils.format_kwargs(
             self._code_coarsen_kwargs()
         )
-        return f"{input_name}.coarsen({formatted_kwargs}).{self.reducer}()"
+        reducer_args = (
+            "" if self.keep_attrs is None else f"keep_attrs={self.keep_attrs}"
+        )
+        return (
+            f"{input_name}.coarsen({formatted_kwargs}).{self.reducer}({reducer_args})"
+        )
 
 
 class ThinOperation(ToolProvenanceOperation):
@@ -1372,8 +1474,8 @@ class SymmetrizeOperation(ToolProvenanceOperation):
                 "average": False,
                 "mode": "full",
                 "part": "both",
+                "interp_kw": None,
             },
-            ignored_defaults={"interp_kw": None},
         ),
     )
     dim: ProvenanceHashable
@@ -1382,6 +1484,7 @@ class SymmetrizeOperation(ToolProvenanceOperation):
     average: bool = False
     mode: typing.Literal["full", "valid"] = "full"
     part: typing.Literal["both", "below", "above"] = "both"
+    interp_kw: ProvenanceKeywords | None = None
 
     @property
     def kwargs(self) -> dict[str, typing.Any]:
@@ -1392,6 +1495,11 @@ class SymmetrizeOperation(ToolProvenanceOperation):
             "average": self.average,
             "mode": self.mode,
             "part": self.part,
+            **(
+                {"interp_kw": dict(self.interp_kw)}
+                if self.interp_kw is not None
+                else {}
+            ),
         }
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
@@ -1403,59 +1511,31 @@ class SymmetrizeOperation(ToolProvenanceOperation):
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
+        kwargs = self.kwargs
+        if self.interp_kw is not None:
+            kwargs["interp_kw"] = f"|{_provenance_value_code(self.interp_kw)}|"
         return erlab.interactive.utils.generate_code(
             erlab.analysis.transform.symmetrize,
             [f"|{input_name}|"],
-            self.kwargs,
+            kwargs,
             module="era.transform",
         )
 
 
-class SymmetrizeNfoldOperation(ToolProvenanceOperation):
+class SymmetrizeNfoldOperation(_RotationPlaneOperation):
     op: typing.Literal["symmetrize_nfold"] = "symmetrize_nfold"
-    batch_available: typing.ClassVar[bool] = True
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
         ConsoleOperationPattern(
             target="erlab.analysis.transform.symmetrize_nfold",
             fields=("fold", "axes", "center"),
-            defaults={
-                "axes": (0, 1),
-                "center": (0.0, 0.0),
-                "reshape": True,
-                "order": 1,
-            },
-            ignored_defaults={"mode": "constant", "cval": np.nan, "prefilter": True},
+            defaults=_ROTATION_DEFAULTS,
         ),
     )
     fold: int
-    axes: ProvenanceHashablePair
-    center: typing.Any = (0.0, 0.0)
-    reshape: bool = True
-    order: int = 1
-
-    @pydantic.field_validator("center", mode="before")
-    @classmethod
-    def _validate_center(cls, value: typing.Any) -> typing.Any:
-        decoded = decode_provenance_value(value)
-        if isinstance(decoded, Mapping):
-            return _coerce_float_mapping_field(decoded)
-        return _ensure_float_tuple(
-            typing.cast("Sequence[typing.Any]", decoded), expected_len=2
-        )
-
-    @pydantic.field_serializer("center", when_used="json")
-    def _serialize_center(self, value: typing.Any) -> typing.Any:
-        return encode_provenance_value(value)
 
     @property
     def kwargs(self) -> dict[str, typing.Any]:
-        return {
-            "fold": self.fold,
-            "axes": self.axes,
-            "center": self.center,
-            "reshape": self.reshape,
-            "order": self.order,
-        }
+        return {"fold": self.fold, **self._plane_kwargs}
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
         return erlab.analysis.transform.symmetrize_nfold(data, **self.kwargs)
@@ -1466,11 +1546,8 @@ class SymmetrizeNfoldOperation(ToolProvenanceOperation):
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
-        return erlab.interactive.utils.generate_code(
-            erlab.analysis.transform.symmetrize_nfold,
-            [f"|{input_name}|"],
-            self.kwargs,
-            module="era.transform",
+        return self._rotation_code(
+            erlab.analysis.transform.symmetrize_nfold, input_name, self.kwargs
         )
 
 
@@ -1481,10 +1558,14 @@ class CorrectWithEdgeOperation(ToolProvenanceOperation):
             target="erlab.analysis.gold.correct_with_edge",
             fields=("edge_fit",),
             field_aliases={"modelresult": "edge_fit"},
-            defaults={"shift_coords": True},
+            defaults={"along": "alpha", "shift_coords": True},
+            ignored_defaults={"plot": False, "plot_kw": None},
+            extra_kwargs_field="shift_kwargs",
         ),
     )
     edge_fit: typing.Any
+    along: str = "alpha"
+    shift_kwargs: ProvenanceKeywords = pydantic.Field(default_factory=dict)
     shift_coords: bool = True
 
     @pydantic.field_validator("edge_fit", mode="before")
@@ -1494,6 +1575,16 @@ class CorrectWithEdgeOperation(ToolProvenanceOperation):
             _DATASET_MARKER in value or _FIT_DATASET_MARKER in value
         ):
             return value
+        if isinstance(value, np.ndarray | ProvenanceNumericVector) or (
+            isinstance(value, Mapping) and "dtype" in value and "values" in value
+        ):
+            return ProvenanceNumericVector.model_validate(value)
+        if isinstance(value, tuple) or (
+            isinstance(value, Mapping) and _TUPLE_MARKER in value
+        ):
+            return encode_provenance_value(
+                tuple(float(x) for x in decode_provenance_value(value))
+            )
         return cls._validate_encoded_field(
             value,
             error="correct_with_edge edge_fit must be an xarray.Dataset",
@@ -1504,18 +1595,24 @@ class CorrectWithEdgeOperation(ToolProvenanceOperation):
         )
 
     @property
-    def decoded_edge_fit(self) -> xr.Dataset:
+    def decoded_edge_fit(self) -> xr.Dataset | np.ndarray | tuple[float, ...]:
         return self._decode_edge_fit()
 
     def _decode_edge_fit(
         self,
         authorization: object | None = None,
-    ) -> xr.Dataset:
+    ) -> xr.Dataset | np.ndarray | tuple[float, ...]:
         from erlab.interactive._code_trust import execution_capability_allows
         from erlab.interactive.imagetool._provenance._trust import (
             provenance_operation_code_trust_entries,
         )
 
+        if isinstance(self.edge_fit, ProvenanceNumericVector):
+            return self.edge_fit.array()
+        if _TUPLE_MARKER in self.edge_fit:
+            return typing.cast(
+                "tuple[float, ...]", decode_provenance_value(self.edge_fit)
+            )
         entries = provenance_operation_code_trust_entries(
             self,
             location_prefix="operation",
@@ -1527,6 +1624,14 @@ class CorrectWithEdgeOperation(ToolProvenanceOperation):
             decode_provenance_value(self.edge_fit, allow_code_payload=True),
         )
 
+    @property
+    def kwargs(self) -> dict[str, typing.Any]:
+        return {
+            "along": self.along,
+            "shift_coords": self.shift_coords,
+            **self.shift_kwargs,
+        }
+
     def apply(
         self,
         data: xr.DataArray,
@@ -1536,13 +1641,13 @@ class CorrectWithEdgeOperation(ToolProvenanceOperation):
         return erlab.analysis.gold.correct_with_edge(
             data,
             self._decode_edge_fit(authorization),
-            shift_coords=self.shift_coords,
+            **self.kwargs,
         )
 
     def derivation_label(self) -> str:
         label_kwargs = {
             "edge_fit": self.edge_fit,
-            "shift_coords": self.shift_coords,
+            **self.kwargs,
         }
         return f"Edge Correction({_format_derivation_value(label_kwargs)})"
 
@@ -1558,13 +1663,25 @@ class CorrectWithEdgeOperation(ToolProvenanceOperation):
             raise NotImplementedError(
                 "Copied code cannot represent a serialized lmfit result cleanly"
             )
-        edge_fit_expr = "xr.Dataset.from_dict({})".format(
-            _provenance_value_code(self.decoded_edge_fit.to_dict(data="list"))
+        edge_fit = self.decoded_edge_fit
+        if isinstance(edge_fit, xr.Dataset):
+            payload = _provenance_value_code(edge_fit.to_dict(data="list"))
+            edge_fit_expr = f"xr.Dataset.from_dict({payload})"
+        elif isinstance(self.edge_fit, ProvenanceNumericVector):
+            edge_fit_expr = self.edge_fit.expression_code()
+        else:
+            edge_fit_expr = _provenance_value_code(edge_fit)
+        kwargs = self.kwargs
+        kwargs.update(
+            {
+                str(key): f"|{_provenance_value_code(value)}|"
+                for key, value in self.shift_kwargs.items()
+            }
         )
         return erlab.interactive.utils.generate_code(
             erlab.analysis.gold.correct_with_edge,
             [f"|{input_name}|", f"|{edge_fit_expr}|"],
-            {"shift_coords": self.shift_coords},
+            kwargs,
             module="era.gold",
             name="correct_with_edge",
         )

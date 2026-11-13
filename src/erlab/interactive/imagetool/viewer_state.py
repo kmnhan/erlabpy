@@ -45,6 +45,25 @@ class _PreparedInputData:
     source_ndim: int
     source_dtype: np.dtype[typing.Any]
     operations: tuple[ToolProvenanceOperation, ...] = ()
+    raw: xr.DataArray | None = None
+
+
+_T = typing.TypeVar("_T")
+
+
+def restore_source_order(data: _T, state: collections.abc.Mapping | None) -> _T:
+    """Restore the axis order used for calculations before restoring the display."""
+    if (
+        isinstance(data, xr.DataArray)
+        and state
+        and (dims := state.get("source_dims"))
+        and isinstance(dims, (tuple, list))
+        and len(dims) == data.ndim
+        and all(dim in data.dims for dim in dims)
+        and len(set(dims)) == data.ndim
+    ):
+        return typing.cast("_T", data.transpose(*dims))
+    return data
 
 
 class ColorMapState(typing.TypedDict):
@@ -87,6 +106,7 @@ class ImageSlicerState(typing.TypedDict):
     current_cursor: int
     manual_limits: dict[str, list[float]]
     axis_inversions: typing.NotRequired[dict[str, bool]]
+    source_dims: typing.NotRequired[tuple[Hashable, ...]]
     filter_operation: typing.NotRequired[dict[str, typing.Any] | None]
     cursor_colors: list[str]
     controls_visible: typing.NotRequired[bool]
@@ -676,8 +696,9 @@ def _prepare_parsed_input_data(
         prepared_data.append(
             dataclasses.replace(
                 prepared,
+                raw=prepared.data,
                 data=dialog.result_data,
-                operations=tuple(dialog.source_operations()),
+                operations=dialog.accepted_operations,
             )
         )
     return tuple(prepared_data)

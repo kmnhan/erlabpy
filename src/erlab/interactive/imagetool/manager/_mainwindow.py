@@ -25,6 +25,13 @@ from erlab.interactive.imagetool.manager._acquisition_context import (
 )
 from erlab.interactive.imagetool.manager._actions import _ActionsController
 from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
+from erlab.interactive.imagetool.manager._data_graph import (
+    _CalculatedResult,
+    _ImageToolInput,
+    _ImportedHistory,
+    _ManagerDataGraph,
+    _ResultWindowUnavailable,
+)
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
 from erlab.interactive.imagetool.manager._extensions._controller import (
@@ -136,6 +143,42 @@ logger = logging.getLogger(__name__)
 
 _NOTE_COMMIT_DELAY_MS = 400
 _DEFERRED_NODE_CHANGES = _ManagedNodeChange.PROVENANCE | _ManagedNodeChange.INFO
+
+
+class _PlacementOptions(typing.TypedDict, total=False):
+    show: bool
+    activate: bool
+    uid: str | None
+    source_auto_update: bool
+    source_state: _ManagedWindowNode._source_state_type
+    created_time: datetime.datetime | str | bytes | None
+    note: str | bytes | None
+
+
+class _RootOptions(_PlacementOptions, total=False):
+    watched_var: tuple[str, str] | None
+    watched_workspace_link_id: str | None
+    watched_source_label: str | None
+    watched_source_uid: str | None
+    watched_connected: bool
+    source_input_ndim: int | None
+    source_input_dtype: np.dtype[typing.Any] | str | None
+    index: int | None
+    _on_commit: Callable[[], None] | None
+
+
+class _SavedOptions(typing.TypedDict, total=False):
+    replay_source_data: xr.DataArray | None
+    snapshot_token: str | None
+    source_snapshot_token: str | None
+
+
+class _RootImportOptions(_RootOptions, _SavedOptions):
+    pass
+
+
+class _ChildImportOptions(_PlacementOptions, _SavedOptions, total=False):
+    output_id: str | None
 
 
 class _NotesPlainTextEdit(QtWidgets.QPlainTextEdit):
@@ -263,9 +306,12 @@ class ImageToolManager(_ImageToolManagerBase):
         self._tool_graph = _ManagerToolGraph(self._handle_tool_graph_node_changed)
         self._workspace_link_color_indices: dict[str, int] = {}
         self._workspace_link_color_cache_dirty = True
-        self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
         # This map is the single coalescing boundary for expensive node-derived work.
         self._pending_node_changes: dict[str, _ManagedNodeChange] = {}
+        self._data_graph = _ManagerDataGraph(self)
+        self._dependency_tracker = _ManagerDependencyTracker(
+            self._tool_graph, self._data_graph
+        )
         self._lineage_controller = _LineageController(self)
         self._provenance_edit_controller = _ProvenanceEditController(self)
         self._details_panel = _DetailsPanelController(self)
@@ -1016,6 +1062,41 @@ class ImageToolManager(_ImageToolManagerBase):
         self.metadata_derivation_list.setVisible(False)
         metadata_provenance_page_layout.addWidget(self.metadata_derivation_list, 1)
 
+        self.update_inputs_panel = QtWidgets.QWidget(self.metadata_provenance_page)
+        update_layout = QtWidgets.QVBoxLayout(self.update_inputs_panel)
+        update_layout.setContentsMargins(
+            inspector_margin, 0, inspector_margin, inspector_spacing
+        )
+        update_layout.setSpacing(0)
+        header = QtWidgets.QHBoxLayout()
+        self.update_inputs_button = QtWidgets.QToolButton(self.update_inputs_panel)
+        self.update_inputs_button.setText("Inputs for next update")
+        self.update_inputs_button.setToolTip(
+            "Show the inputs that Update Now or Auto will use."
+        )
+        self.update_inputs_button.setCheckable(True)
+        self.update_inputs_button.setAutoRaise(True)
+        self.update_inputs_button.setToolButtonStyle(
+            QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.update_inputs_button.setArrowType(QtCore.Qt.ArrowType.RightArrow)
+        header.addWidget(self.update_inputs_button)
+        header.addStretch()
+        self.update_auto_label = QtWidgets.QLabel(self.update_inputs_panel)
+        header.addWidget(self.update_auto_label)
+        update_layout.addLayout(header)
+        self.update_inputs_text = QtWidgets.QPlainTextEdit(self.update_inputs_panel)
+        self.update_inputs_text.setAccessibleName(self.update_inputs_button.text())
+        self.update_inputs_text.setReadOnly(True)
+        self.update_inputs_text.setTabChangesFocus(True)
+        self.update_inputs_text.setVisible(False)
+        update_layout.addWidget(self.update_inputs_text)
+        self.update_inputs_button.toggled.connect(
+            self._details_panel._update_pending_inputs
+        )
+        self.update_inputs_panel.hide()
+        metadata_provenance_page_layout.addWidget(self.update_inputs_panel)
+
         self.notes_page = QtWidgets.QWidget(self.inspector_tabs)
         self.notes_page.setObjectName("managerNotesPage")
         notes_page_layout = QtWidgets.QVBoxLayout(self.notes_page)
@@ -1215,6 +1296,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self._workspace_state.closing_document = True
         close_completed = False
         try:
+            self._data_graph.graph.set_auto_paused(True)
             save_choice = self._workspace_controller._dirty_workspace_save_choice(
                 "Closing this manager will discard unsaved workspace changes."
             )
@@ -1362,6 +1444,9 @@ class ImageToolManager(_ImageToolManagerBase):
                 self._workspace_state.closing_document = (
                     previous_closing_workspace_document
                 )
+                self._data_graph.graph.set_auto_paused(
+                    previous_closing_workspace_document
+                )
 
     @property
     def ntools(self) -> int:
@@ -1374,7 +1459,10 @@ class ImageToolManager(_ImageToolManagerBase):
         return self._tool_graph.next_index
 
     def _next_node_uid(self, preferred: str | None = None) -> str:
-        return self._tool_graph.next_uid(preferred)
+        uid = self._tool_graph.next_uid(preferred)
+        while self._data_graph.graph.is_closed(uid):
+            uid = self._tool_graph.next_uid()
+        return uid
 
     def _register_root_wrapper(self, wrapper: _ImageToolWrapper) -> None:
         self._tool_graph.register_root(wrapper)
@@ -1426,6 +1514,8 @@ class ImageToolManager(_ImageToolManagerBase):
             return
         if node.workspace_link_key is not None:
             self._invalidate_workspace_link_color_cache()
+        if refresh_dependents:
+            self._data_graph.remove(uid)
         self._cancel_managed_node_change(uid)
         self._dependency_tracker.clear_uid(uid)
         if refresh_dependents and not self._workspace_state.closing_document:
@@ -1726,6 +1816,7 @@ class ImageToolManager(_ImageToolManagerBase):
                 self.tree_view.imagetool_removed(index)
 
             self._tool_graph.unregister_root(index)
+            self._data_graph.remove(wrapper.uid)
             removed_uids.add(wrapper.uid)
             self._cancel_managed_node_change(wrapper.uid)
             self._dependency_tracker.clear_uid(wrapper.uid)
@@ -2755,23 +2846,6 @@ class ImageToolManager(_ImageToolManagerBase):
             input_bindings=input_bindings,
         )
 
-    def _show_multi_input_script_result(
-        self,
-        data: xr.DataArray,
-        input_targets: Iterable[int | str],
-        *,
-        operation_label: str,
-        operation_code: str,
-        data_role: ScriptInputDataRole = "displayed",
-    ) -> int | None:
-        return self._lineage_controller._show_multi_input_script_result(
-            data,
-            input_targets,
-            operation_label=operation_label,
-            operation_code=operation_code,
-            data_role=data_role,
-        )
-
     def _resolve_live_script_input_for_reload(
         self,
         script_input: ScriptInput,
@@ -3206,44 +3280,61 @@ class ImageToolManager(_ImageToolManagerBase):
             node.show()
         return node.uid
 
+    def _window_for_input(
+        self,
+        value: ImageTool | _CalculatedResult,
+        display_options: dict[str, typing.Any] | None,
+        checks: Iterable[Callable[[], None]],
+    ) -> tuple[ImageTool, _CalculatedResult | _ImageToolInput]:
+        if isinstance(value, _CalculatedResult):
+            tool = erlab.interactive.itool(
+                data=value.data, manager=False, execute=False, **(display_options or {})
+            )
+            if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
+                raise _ResultWindowUnavailable("Could not create the ImageTool window.")
+            self._data_graph.verify_new_window(tool, *checks)
+            return tool, value
+        return value, _ImageToolInput.from_window(value)
+
     def add_imagetool_child(
+        self,
+        tool: ImageTool | _CalculatedResult,
+        parent: int | str,
+        *,
+        _display_options: dict[str, typing.Any] | None = None,
+        _input_checks: Iterable[Callable[[], None]] = (),
+        **options: typing.Unpack[_PlacementOptions],
+    ) -> str:
+        """Place a new result under its display parent.
+
+        .. versionchanged:: 3.30.0
+           Use :meth:`import_imagetool_child` to retain a transferred recipe.
+        """
+        self._ensure_accepting_windows()
+        if isinstance(tool, _CalculatedResult) and tool.window_uid is not None:
+            options.setdefault("uid", tool.window_uid)
+        window, origin = self._window_for_input(tool, _display_options, _input_checks)
+        return self._actions_controller.add_imagetool_child(
+            window, parent, origin, **options
+        )
+
+    def import_imagetool_child(
         self,
         tool: ImageTool,
         parent: int | str,
         *,
-        show: bool = True,
-        activate: bool = False,
-        uid: str | None = None,
         provenance_spec: ToolProvenanceSpec | None = None,
         source_spec: ToolProvenanceSpec | None = None,
         source_binding: ImageToolSelectionSourceBinding | None = None,
-        source_auto_update: bool = False,
-        source_state: _ManagedWindowNode._source_state_type = "fresh",
-        output_id: str | None = None,
-        replay_source_data: xr.DataArray | None = None,
-        snapshot_token: str | None = None,
-        source_snapshot_token: str | None = None,
-        created_time: datetime.datetime | str | bytes | None = None,
-        note: str | bytes | None = None,
+        **options: typing.Unpack[_ChildImportOptions],
     ) -> str:
+        """Place an existing ImageTool with its saved or transferred history."""
         self._ensure_accepting_windows()
         return self._actions_controller.add_imagetool_child(
             tool,
             parent,
-            show=show,
-            activate=activate,
-            uid=uid,
-            provenance_spec=provenance_spec,
-            source_spec=source_spec,
-            source_binding=source_binding,
-            source_auto_update=source_auto_update,
-            source_state=source_state,
-            output_id=output_id,
-            replay_source_data=replay_source_data,
-            snapshot_token=snapshot_token,
-            source_snapshot_token=source_snapshot_token,
-            created_time=created_time,
-            note=note,
+            _ImportedHistory(provenance_spec, source_spec, source_binding),
+            **options,
         )
 
     def index_from_slicer_area(self, slicer_area: ImageSlicerArea) -> int | None:
@@ -3302,7 +3393,42 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def add_imagetool(
         self,
+        tool: ImageTool | _CalculatedResult,
+        *,
+        _display_options: dict[str, typing.Any] | None = None,
+        _input_checks: Iterable[Callable[[], None]] = (),
+        **options: typing.Unpack[_RootOptions],
+    ) -> int:
+        """Register a new input or a calculated result as a top-level window.
+
+        .. versionchanged:: 3.30.0
+           Use :meth:`import_imagetool` to retain an existing window's saved history.
+        """
+        if isinstance(tool, _CalculatedResult) and tool.window_uid is not None:
+            options.setdefault("uid", tool.window_uid)
+        window, origin = self._window_for_input(tool, _display_options, _input_checks)
+        return self._register_imagetool(window, origin, **options)
+
+    def import_imagetool(
+        self,
         tool: ImageTool,
+        *,
+        provenance_spec: ToolProvenanceSpec | None = None,
+        source_spec: ToolProvenanceSpec | None = None,
+        source_binding: ImageToolSelectionSourceBinding | None = None,
+        **options: typing.Unpack[_RootImportOptions],
+    ) -> int:
+        """Register an existing ImageTool with its saved or transferred history."""
+        return self._register_imagetool(
+            tool,
+            _ImportedHistory(provenance_spec, source_spec, source_binding),
+            **options,
+        )
+
+    def _register_imagetool(
+        self,
+        tool: ImageTool,
+        origin: _ImageToolInput | _CalculatedResult | _ImportedHistory,
         *,
         show: bool = True,
         activate: bool = False,
@@ -3314,9 +3440,6 @@ class ImageToolManager(_ImageToolManagerBase):
         source_input_ndim: int | None = None,
         source_input_dtype: np.dtype[typing.Any] | str | None = None,
         uid: str | None = None,
-        provenance_spec: ToolProvenanceSpec | None = None,
-        source_spec: ToolProvenanceSpec | None = None,
-        source_binding: ImageToolSelectionSourceBinding | None = None,
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         replay_source_data: xr.DataArray | None = None,
@@ -3327,46 +3450,52 @@ class ImageToolManager(_ImageToolManagerBase):
         note: str | bytes | None = None,
         _on_commit: Callable[[], None] | None = None,
     ) -> int:
-        """Add a new ImageTool window to the manager and show it.
-
-        Parameters
-        ----------
-        tool
-            ImageTool object to be added.
-        show
-            Whether to show the window after adding, by default `True`.
-        activate
-            Whether to focus on the window after adding, by default `False`.
-        watched_var
-            If the tool is created from a watched variable, this should be a tuple of
-            the variable name and its unique ID.
-        source_input_ndim
-            Original dimensionality of the bound source before ImageTool-specific
-            promotion (for example, promoted 1D inputs).
-
-        Returns
-        -------
-        int
-            Index of the added ImageTool window.
-        """
         self._ensure_accepting_windows()
-        if provenance_spec is None and tool.provenance_spec is not None:
-            self._workspace_controller.adopt_external_code(
-                provenance_code_trust_entries(
-                    tool.provenance_spec,
-                    location_prefix="imported-imagetool/provenance",
-                )
+        provenance_spec = source_spec = source_binding = None
+        if isinstance(origin, _ImportedHistory):
+            provenance_spec, source_spec, source_binding = (
+                origin.provenance,
+                origin.source,
+                origin.binding,
             )
-        if provenance_spec is not None:
-            tool.set_provenance_spec(provenance_spec)
+            if provenance_spec is None and tool.provenance_spec is not None:
+                self._workspace_controller.adopt_external_code(
+                    provenance_code_trust_entries(
+                        tool.provenance_spec,
+                        location_prefix="imported-imagetool/provenance",
+                    )
+                )
+            elif provenance_spec is not None:
+                tool.set_provenance_spec(provenance_spec)
+        else:
+            tool.set_provenance_spec(None)
         if index is None or index in self._tool_graph.root_wrappers:
             index = int(self.next_idx)
         else:
             index = int(index)
+        uid = self._next_node_uid(uid)
+        if isinstance(origin, _ImportedHistory):
+            publish = self._data_graph.prepare_imported_workflow(
+                uid,
+                tool.slicer_area._data,
+                provenance_spec,
+                parent_uid=None,
+                imported=True,
+                input_dtype=tool.slicer_area._source_input_dtype,
+            )
+        else:
+            publish = self._data_graph.prepare_window(
+                uid,
+                tool,
+                origin,
+                parent_uid=None,
+                auto=source_auto_update,
+                watched_name=watched_var[0] if watched_var else None,
+            )
         wrapper = _ImageToolWrapper(
             self,
             index,
-            self._next_node_uid(uid),
+            uid,
             tool,
             watched_var=watched_var,
             watched_workspace_link_id=watched_workspace_link_id,
@@ -3375,7 +3504,9 @@ class ImageToolManager(_ImageToolManagerBase):
             watched_connected=watched_connected,
             source_input_ndim=source_input_ndim,
             source_input_dtype=source_input_dtype,
-            provenance_spec=provenance_spec,
+            provenance_spec=(provenance_spec or tool.provenance_spec)
+            if isinstance(origin, _ImportedHistory)
+            else None,
             source_spec=source_spec,
             source_binding=source_binding,
             source_auto_update=source_auto_update,
@@ -3388,7 +3519,17 @@ class ImageToolManager(_ImageToolManagerBase):
         )
         if _on_commit is not None:
             _on_commit()
-        self._register_root_wrapper(wrapper)
+        with self._data_graph.staging_window(uid):
+            try:
+                self._register_root_wrapper(wrapper)
+                if publish is not None:
+                    publish()
+                elif isinstance(origin, _ImportedHistory):
+                    self._data_graph.imported_workflow(uid)
+            except Exception:
+                if self._tool_graph.nodes.get(uid) is wrapper:
+                    self._remove_imagetool(index, update_view=False, preflight=False)
+                raise
         wrapper.update_title()
 
         self._sigReloadLinkers.emit()

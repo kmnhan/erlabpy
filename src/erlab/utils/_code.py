@@ -124,23 +124,22 @@ def format_1d_numeric_array_code(values: npt.ArrayLike) -> str:
     if not np.all(np.isfinite(numeric)):
         return values_code
 
+    # Binary64 cannot represent every integer in this range.
+    if np.any(np.abs(numeric) >= 2**53):
+        return values_code
     if numeric.size == 1:
         value_code = _parse_single_arg(float(numeric[0]))
         return f"np.linspace({value_code}, {value_code}, 1)"
 
-    diffs = np.diff(numeric)
-    step = float(diffs[0])
-    if not np.allclose(diffs, step, rtol=1e-12, atol=1e-12):
+    if np.array_equal(numeric, np.rint(numeric)):
+        start, second = int(numeric[0]), int(numeric[1])
+        step = second - start
+        stop = start + step * numeric.size
+        if step and all(value == start + i * step for i, value in enumerate(numeric)):
+            return f"np.arange({start}, {stop}, {step})"
+
+    if not np.array_equal(numeric, np.linspace(numeric[0], numeric[-1], numeric.size)):
         return values_code
-
-    rounded = np.rint(numeric)
-    if np.allclose(numeric, rounded, rtol=0.0, atol=1e-12):
-        int_step = int(rounded[1] - rounded[0])
-        if int_step != 0:
-            start = int(rounded[0])
-            stop = int(rounded[-1] + int_step)
-            return f"np.arange({start}, {stop}, {int_step})"
-
     start_code = _parse_single_arg(float(numeric[0]))
     stop_code = _parse_single_arg(float(numeric[-1]))
     return f"np.linspace({start_code}, {stop_code}, {numeric.size})"

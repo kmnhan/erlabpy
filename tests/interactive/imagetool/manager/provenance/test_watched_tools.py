@@ -44,6 +44,7 @@ from tests.interactive.imagetool.manager.helpers import (
     select_child_tool,
     select_metadata_rows,
     select_tools,
+    set_transform_launch_mode,
     trigger_menu_action,
 )
 
@@ -134,7 +135,14 @@ def test_manager_data_watched_update_replaces_existing_tool_source_data(
 
         xr.testing.assert_identical(tool.slicer_area.data, updated.rename("data"))
         assert wrapper.provenance_spec is not None
-        assert wrapper.provenance_spec.operations == (RenameOperation(name="data"),)
+        from erlab.interactive.imagetool._provenance._operations._coordinates import (
+            ImageToolInputOperation,
+        )
+
+        assert wrapper.provenance_spec.operations == (
+            RenameOperation(name="data"),
+            ImageToolInputOperation(cast_float64=True).capture_execution_options(),
+        )
         assert wrapper.replay_source_data is None
         xr.testing.assert_identical(
             wrapper.resolved_replay_source_data(), updated.rename("data")
@@ -242,7 +250,13 @@ def test_manager_workspace_roundtrip_preserves_watched_binding(
         assert attrs["manager_node_watched_workspace_link_id"] == workspace_link_id
         assert attrs["manager_node_watched_source_label"] == "notebook-a"
         assert attrs["manager_node_watched_source_uid"] == "kernel-a"
-        assert "manager_node_provenance_spec" not in attrs
+        # The integer input was renamed and converted on arrival. Retain its raw
+        # checkpoint and the two steps when transferring the workspace.
+        saved = manager._tool_graph.root_wrappers[0].provenance_spec
+        assert saved is not None
+        assert json.loads(attrs["manager_node_provenance_spec"]) == saved.model_dump(
+            mode="json"
+        )
         assert "<manager-replay-source-data>" not in tree["0/imagetool"]
 
         manager.remove_all_tools()
@@ -263,9 +277,9 @@ def test_manager_workspace_roundtrip_preserves_watched_binding(
         assert wrapper._watched_source_uid == "kernel-a"
         assert wrapper._watched_connected is False
         assert wrapper.replay_source_data is None
-        xr.testing.assert_identical(
-            wrapper.resolved_replay_source_data(), test_data.rename("data")
-        )
+        assert wrapper.provenance_spec == saved
+        replayed = _exec_generated_code(saved.display_code(), {"data": test_data})
+        xr.testing.assert_identical(replayed["derived"], wrapper.slicer_area.data)
 
         with qtbot.wait_signal(manager._sigReplyData) as blocker:
             manager._send_watch_info()
@@ -482,14 +496,11 @@ def test_manager_non_watched_full_code_prompts_for_source_variable(
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
-        manager._data_ingress.receive_data([test_data], {})
-        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-
-        node = manager._tool_graph.root_wrappers[0]
-        node.set_detached_provenance(
-            full_data(AverageOperation(dims=("alpha",))),
-            replay_source_data=None,
+        tool = itool(test_data.qsel.mean("alpha"), manager=False, execute=False)
+        manager.import_imagetool(
+            tool, provenance_spec=full_data(AverageOperation(dims=("alpha",)))
         )
+        node = manager._node_for_target(0)
 
         copied: list[str] = []
         prompted: list[str] = []
@@ -530,14 +541,11 @@ def test_manager_non_watched_full_code_prompt_cancel_does_not_copy(
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
-        manager._data_ingress.receive_data([test_data], {})
-        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-
-        node = manager._tool_graph.root_wrappers[0]
-        node.set_detached_provenance(
-            full_data(AverageOperation(dims=("alpha",))),
-            replay_source_data=None,
+        tool = itool(test_data.qsel.mean("alpha"), manager=False, execute=False)
+        manager.import_imagetool(
+            tool, provenance_spec=full_data(AverageOperation(dims=("alpha",)))
         )
+        node = manager._node_for_target(0)
 
         copied: list[str] = []
         monkeypatch.setattr(
@@ -558,6 +566,7 @@ def test_manager_non_watched_full_code_prompt_cancel_does_not_copy(
 
 def test_manager_file_backed_full_code_uses_load_code(
     qtbot,
+    accept_dialog,
     monkeypatch,
     tmp_path,
     test_data,
@@ -585,9 +594,14 @@ def test_manager_file_backed_full_code_uses_load_code(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         node = manager._tool_graph.root_wrappers[0]
-        node.set_detached_provenance(
-            full_data(AverageOperation(dims=("alpha",))),
-            replay_source_data=None,
+
+        def replace_with_average(dialog):
+            dialog.dim_checks["alpha"].setChecked(True)
+            set_transform_launch_mode(dialog, "replace")
+
+        accept_dialog(node.imagetool.mnb._average, pre_call=replace_with_average)
+        xr.testing.assert_identical(
+            node.slicer_area._data, test_data.qsel.mean("alpha")
         )
 
         copied: list[str] = []
@@ -597,9 +611,9 @@ def test_manager_file_backed_full_code_uses_load_code(
             lambda text: copied.append(text) or text,
         )
         monkeypatch.setattr(
-            manager,
-            "_prompt_replay_input_name",
-            lambda _node: pytest.fail("file-backed replay should not prompt"),
+            manager._details_panel,
+            "_checkpoint_name",
+            lambda *_args: pytest.fail("The file still matches its recorded data"),
         )
         manager.tree_view.clearSelection()
         select_tools(manager, [0])
@@ -662,17 +676,84 @@ def test_manager_data_ingress_validates_load_selection_metadata(
             )
 
 
-def test_manager_file_backed_full_code_prefers_scan_number_loader(
+@pytest.mark.parametrize(
+    "source", ["automatic-engine", "custom-engine", "callback", "lazy", "changed-file"]
+)
+def test_manager_full_code_uses_checkpoint_for_unverified_file(
+    source, manager_context, test_data, tmp_path, monkeypatch
+):
+    import dask
+    import dask.array as da
+
+    from erlab._provenance import FileLoad
+    from erlab.interactive.imagetool._provenance._model import FileReplayCall
+
+    data = test_data.astype("float64")
+    path = tmp_path / "scan.h5"
+    data.to_netcdf(path, engine="h5netcdf")
+    kwargs = {"engine": "h5netcdf"}
+
+    def user_callback(*_args, **_kwargs):
+        pytest.fail("Copy Full Code executed a recorded callback")
+
+    if source == "automatic-engine":
+        kwargs = {}
+    elif source == "custom-engine":
+        kwargs = {"engine": "local_lab_backend"}
+    elif source == "callback":
+        kwargs["backend_kwargs"] = {"callback": user_callback}
+    recorded = data
+    if source == "lazy":
+        recorded = data.copy(
+            data=da.from_delayed(
+                dask.delayed(user_callback)(), shape=data.shape, dtype=data.dtype
+            )
+        )
+    with manager_context() as manager:
+        manager._data_ingress.receive_data([data], {})
+        node = manager._node_for_target(0)
+        adapter = manager._data_graph
+        graph = adapter.graph
+        load = FileLoad(
+            graph.file_source(str(path)),
+            FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                kwargs=kwargs,
+                selection=FileDataSelection(kind="dataarray"),
+            ),
+        )
+        revision = graph.prepare_import(node.uid, recorded, (load,))()
+        if source == "changed-file":
+            (data + 1).to_netcdf(path, engine="h5netcdf")
+        else:
+            monkeypatch.setattr(adapter, "_read_file", user_callback)
+
+        def name_checkpoint(key, _suggestion, _used_names):
+            assert key == revision
+            return "recorded_scan"
+
+        code = adapter.copy_code(node, name_checkpoint)
+        namespace = _exec_generated_code(code, {"recorded_scan": data})
+        xr.testing.assert_identical(namespace["derived"], data)
+
+
+@pytest.mark.parametrize("eager", [False, True], ids=["lazy", "eager"])
+def test_manager_scan_loader_copies_load_code_and_historical_full_code(
     qtbot,
+    accept_dialog,
     monkeypatch,
+    eager,
     example_loader,
     example_data_dir: pathlib.Path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    file_path = example_data_dir / "data_002.h5"
+    file_path = example_data_dir / "data_006.h5"
     data = erlab.io.loaders["example"].load(file_path)
+    if eager:
+        data.load()
 
     with manager_context() as manager:
         manager.show()
@@ -687,33 +768,60 @@ def test_manager_file_backed_full_code_prefers_scan_number_loader(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         node = manager._tool_graph.root_wrappers[0]
-        node.set_detached_provenance(
-            full_data(AverageOperation(dims=("alpha",))),
-            replay_source_data=None,
-        )
-
         copied: list[str] = []
         monkeypatch.setattr(
             erlab.interactive.utils,
             "copy_to_clipboard",
             lambda text: copied.append(text) or text,
         )
-        monkeypatch.setattr(
-            manager,
-            "_prompt_replay_input_name",
-            lambda _node: pytest.fail("file-backed replay should not prompt"),
+        accept_dialog(
+            lambda: manager._show_load_source_details(node._load_source_details()),
+            pre_call=lambda dialog: dialog.copy_code_button.click(),
+        )
+        load_code = copied.pop()
+        assert f"erlab.io.load(6, data_dir={str(example_data_dir)!r})" in load_code
+        xr.testing.assert_identical(_exec_generated_code(load_code, {})["data"], data)
+        graph = manager._data_graph.graph
+        revision = graph.current_revision(node.uid)
+
+        def average(dialog):
+            dialog.dim_checks["alpha"].setChecked(True)
+            set_transform_launch_mode(dialog, "replace")
+
+        accept_dialog(node.imagetool.mnb._average, pre_call=average)
+        recorded_scan = graph.data(revision)
+        xr.testing.assert_identical(recorded_scan, data)
+        xr.testing.assert_identical(
+            node.slicer_area._data, recorded_scan.qsel.mean("alpha")
+        )
+        # Chunked and unchunked reductions can sum in a different order.
+        xr.testing.assert_allclose(
+            node.slicer_area._data, data.qsel.mean("alpha"), rtol=2e-14, atol=1e-14
         )
         manager.tree_view.clearSelection()
         select_tools(manager, [0])
         manager._update_info(uid=node.uid)
         menu = manager._build_metadata_derivation_menu()
         assert menu is not None
-        trigger_menu_action(menu, manager._metadata_copy_full_action)
 
-        assert copied
-        assert f"erlab.io.load(2, data_dir={str(example_data_dir)!r})" in copied[-1]
-        namespace = _exec_generated_code(copied[-1], {})
-        xr.testing.assert_identical(namespace["derived"], data.qsel.mean("alpha"))
+        def name_checkpoint(dialog):
+            assert str(file_path) in dialog.labelText()
+            assert revision in dialog.labelText()
+            dialog.setTextValue("recorded_scan")
+
+        def unexpected_loader_call(*_args, **_kwargs):
+            pytest.fail("Copy Full Code must not execute the registered loader")
+
+        for method in ("load", "identify", "infer_index", "load_single"):
+            monkeypatch.setattr(example_loader, method, unexpected_loader_call)
+        accept_dialog(
+            lambda: trigger_menu_action(menu, manager._metadata_copy_full_action),
+            pre_call=name_checkpoint,
+        )
+        namespace = _exec_generated_code(copied.pop(), {"recorded_scan": recorded_scan})
+        replayed = namespace["derived"]
+        displayed = node.slicer_area._data
+        xr.testing.assert_identical(replayed, displayed)
 
 
 def test_manager_watched_root_child_tool_copy_code_uses_variable_name(
@@ -1448,11 +1556,6 @@ def test_manager_duplicate_watched_1d_root_preserves_copy_code_cleanup(
             [data], {}, watched_var=("my_1d", "kernel-0")
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-        replay_source = manager._tool_graph.root_wrappers[
-            0
-        ].resolved_replay_source_data()
-        assert replay_source is not None
-
         duplicated = manager.duplicate_imagetool(0)
         assert isinstance(duplicated, int)
         duplicated_wrapper = manager._tool_graph.root_wrappers[duplicated]
@@ -1461,7 +1564,7 @@ def test_manager_duplicate_watched_1d_root_preserves_copy_code_cleanup(
             manager._provenance_revisions.resolve_data(
                 duplicated_wrapper.provenance_spec.replay_inputs[0].revision_id
             ),
-            replay_source,
+            data,
         )
 
         parent_tool = manager.get_imagetool(duplicated)
@@ -1550,6 +1653,7 @@ def test_manager_dependency_summary_coalesces_matching_input_name_and_label() ->
         node_uid="closed-parent",
     )
     manager = types.SimpleNamespace(
+        _data_graph=types.SimpleNamespace(owns_result=lambda _uid: False),
         _tool_graph=types.SimpleNamespace(
             nodes={"derived": types.SimpleNamespace(tool_script_inputs=(source,))}
         ),
@@ -2129,4 +2233,45 @@ def test_manager_dntool_source_refresh_uses_latest_queued_input(
         assert tool._input_state().pending is None
         qtbot.wait_until(
             lambda: not manager._dependency_tracker.has_pending_source_refreshes()
+        )
+
+
+def test_watched_update_keeps_stale_child_code_on_the_recorded_input(
+    qtbot, manager_context, test_data
+):
+    with manager_context() as manager:
+        raw = test_data.astype("int32")
+        manager._data_ingress.receive_data([raw], {}, watched_var=("scan", "kernel"))
+        parent = manager._node_for_target(0)
+        parent.slicer_area.images[0].open_in_new_window()
+        qtbot.wait_until(lambda: len(parent._childtool_indices) == 1)
+        child = manager._child_node(parent._childtool_indices[0])
+        graph = manager._data_graph.graph
+        original = graph.data(graph.current_revision(child.uid))
+
+        def unexpected_prompt(*_args):
+            pytest.fail("The current watched input should use its notebook variable")
+
+        code = manager._data_graph.copy_code(child, unexpected_prompt)
+        xr.testing.assert_identical(
+            _exec_generated_code(code, {"scan": raw})["derived"], original
+        )
+        manager._actions_controller._data_watched_update("scan", "kernel", raw + 50, {})
+        assert graph.is_stale(child.uid)
+        saved = {}
+
+        def checkpoint(key, _suggestion, _used_names):
+            saved["earlier_scan"] = graph.data(key)
+            return "earlier_scan"
+
+        code = manager._data_graph.copy_code(child, checkpoint)
+        assert saved
+        xr.testing.assert_identical(
+            _exec_generated_code(code, saved)["derived"], original
+        )
+        graph.refresh(child.uid)
+        code = manager._data_graph.copy_code(child, unexpected_prompt)
+        xr.testing.assert_identical(
+            _exec_generated_code(code, {"scan": raw + 50})["derived"],
+            child.slicer_area._data,
         )

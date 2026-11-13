@@ -62,9 +62,11 @@ from tests.interactive.imagetool.manager.helpers import (
     metadata_derivation_texts,
     metadata_detail_map,
     select_child_tool,
-    select_metadata_rows,
+    select_metadata_items,
     select_tools,
     set_transform_launch_mode,
+    show_script_result,
+    top_level_operation_items,
     trigger_menu_action,
 )
 
@@ -189,35 +191,36 @@ def test_duplicated_subtree_history_keeps_duplicated_source(
         def window(value):
             return erlab.interactive.imagetool.ImageTool(value, _in_manager=True)
 
-        def plus_one(node):
-            return script(
+        def add_child(parent):
+            from erlab.interactive.imagetool._provenance._program import RecordedProgram
+            from erlab.interactive.imagetool.manager._data_graph import (
+                _OperationRequest,
+            )
+
+            source = manager._data_graph.read_input(parent.uid)
+            program = script(
                 ScriptCodeOperation(label="Add one", code="derived = data + 1"),
                 start_label="Calculation",
                 primary_input="data",
                 active_name="derived",
-                script_inputs=(
-                    manager._lineage_controller._script_input_for_node(
-                        node, name="data"
+                script_inputs=(ScriptInput(name="data"),),
+            )
+            uid = manager.add_imagetool_child(
+                manager._data_graph.evaluate_request(
+                    _OperationRequest(
+                        (RecordedProgram(spec=program),), (source.revision,)
                     ),
                 ),
+                parent.uid,
+                show=False,
             )
+            return manager._node_for_target(uid)
 
         original = manager._node_for_target(
             manager.add_imagetool(window(data), show=False)
         )
-        derived = manager._node_for_target(
-            manager.add_imagetool_child(
-                window(data + 1),
-                original.uid,
-                show=False,
-                provenance_spec=plus_one(original),
-            )
-        )
-        final_spec = plus_one(derived)
-        historical_id = final_spec.script_inputs[0].revision_id
-        manager.add_imagetool_child(
-            window(data + 2), derived.uid, show=False, provenance_spec=final_spec
-        )
+        derived = add_child(original)
+        add_child(derived)
         duplicate = manager._node_for_target(
             manager.duplicate_imagetool(original.index)
         )
@@ -227,11 +230,9 @@ def test_duplicated_subtree_history_keeps_duplicated_source(
         duplicate.slicer_area.replace_source_data(data + 10)
         select_child_tool(manager, target.uid)
         manager._update_info()
-        row = next(
-            row
-            for row in target.derivation_display_rows
-            if row.revision_id == historical_id
-        )
+        row = target.derivation_display_rows[0].children[0]
+        graph = manager._data_graph.graph
+        assert row.revision_id == graph.current_revision(copied_derived.uid)
         editor = manager._provenance_edit_controller
         monkeypatch.setattr(editor, "_confirm_revert", lambda: True)
         monkeypatch.setattr(editor, "_show_unavailable", pytest.fail)
@@ -250,6 +251,37 @@ def test_duplicated_subtree_history_keeps_duplicated_source(
         assert manager.reload_action.isEnabled()
         manager.reload_action.trigger()
         xr.testing.assert_identical(target.current_source_data(), data + 11)
+
+
+def test_duplicate_subtree_with_pending_auto_refresh(qtbot, manager_context):
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    with manager_context() as manager:
+        manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
+        root = manager._node_for_target(0)
+        operation = IselOperation(kwargs={"y": slice(1, None)})
+        selected = operation.apply(data)
+        child = manager.import_imagetool_child(
+            itool(selected, manager=False, execute=False),
+            root.uid,
+            source_spec=full_data(operation),
+            show=False,
+            source_auto_update=True,
+        )
+        root.slicer_area.replace_source_data(data + 10)
+        graph = manager._data_graph.graph
+        assert graph.is_stale(child)
+        index = manager._actions_controller._duplicate_target(0)
+        copied_root = manager._node_for_target(index)
+        copied_child = copied_root._childtool_indices[0]
+        assert graph.follows(copied_child) == {copied_root.uid}
+        qtbot.waitUntil(
+            lambda: not graph.is_stale(child) and not graph.is_stale(copied_child)
+        )
+        for uid in (child, copied_child):
+            assert graph.auto_enabled(uid)
+            xr.testing.assert_identical(
+                manager._child_node(uid).slicer_area._data, selected + 10
+            )
 
 
 def test_input_plan_rejects_missing_captured_input() -> None:
@@ -284,6 +316,9 @@ def test_open_script_input_plan_rejects_invalid_replay() -> None:
         provenance_spec=spec,
     )
     manager = types.SimpleNamespace(
+        _data_graph=types.SimpleNamespace(
+            owns_result=lambda _uid: False, reloads_result=lambda _uid: False
+        ),
         _extensions=types.SimpleNamespace(
             unavailable_reason_for_node=lambda _uid: None
         ),
@@ -719,7 +754,7 @@ def test_manager_filtered_parent_updates_source_bound_child(
 
         child_tool = itool(data.copy(deep=False), manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child_tool,
             0,
             show=False,
@@ -770,7 +805,7 @@ def test_manager_filtered_source_bound_child_refresh_keeps_filter(
 
         child_tool = itool(data.copy(deep=False), manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child_tool,
             0,
             show=False,
@@ -831,7 +866,7 @@ def test_manager_filtered_source_bound_child_failed_refresh_keeps_filter(
 
         child_tool = itool(data.copy(deep=False), manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child_tool,
             0,
             show=False,
@@ -876,7 +911,7 @@ def test_manager_duplicate_filtered_child_records_filter_once(
 
         child_tool = itool(data.copy(deep=False), manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child_tool,
             0,
             show=False,
@@ -923,7 +958,7 @@ def test_manager_workspace_roundtrip_filtered_child_records_filter_once(
 
         child_tool = itool(data.copy(deep=False), manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child_tool,
             0,
             show=False,
@@ -1046,7 +1081,7 @@ def test_manager_operation_filter_preserves_output_binding(
         initial_output = typing.cast("xr.DataArray", child.output_imagetool_data("out"))
         output_tool = itool(initial_output, manager=False, execute=False)
         assert isinstance(output_tool, erlab.interactive.imagetool.ImageTool)
-        output_uid = manager.add_imagetool_child(
+        output_uid = manager.import_imagetool_child(
             output_tool,
             child_uid,
             show=False,
@@ -1833,7 +1868,7 @@ def test_deferred_managed_self_rerun_publication_order(
 
         tree_tool = itool(source.tool_data, manager=False, execute=False)
         assert isinstance(tree_tool, erlab.interactive.imagetool.ImageTool)
-        tree_uid = manager.add_imagetool_child(
+        tree_uid = manager.import_imagetool_child(
             tree_tool,
             source_uid,
             show=False,
@@ -2521,9 +2556,8 @@ def test_script_imagetool_self_cycle_is_not_reported_as_reloadable(
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         tool = itool(data, manager=False, execute=False)
         assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
-        target = manager.add_imagetool(tool, show=False)
-        node = manager._node_for_target(target)
-        node.set_displayed_provenance(
+        uid = "legacy-input"
+        tool.set_provenance_spec(
             script(
                 start_label="Copy input",
                 seed_code="derived = data",
@@ -2531,13 +2565,15 @@ def test_script_imagetool_self_cycle_is_not_reported_as_reloadable(
                 script_inputs=(
                     ScriptInput(
                         name="data",
-                        node_uid=node.uid,
+                        node_uid=uid,
                         provenance_spec=fallback.model_dump(mode="json"),
                     ),
                 ),
             )
         )
 
+        target = manager.import_imagetool(tool, uid=uid, show=False)
+        node = manager._node_for_target(target)
         reason = manager._lineage_controller._node_reload_unavailable_reason(node)
         assert reason is not None
         assert "cycle" in reason.lower()
@@ -2746,7 +2782,7 @@ def test_managed_inputs_refresh_once_after_sibling_outputs_update(
             output_imagetool = itool(output_data, manager=False, execute=False)
             assert isinstance(output_imagetool, erlab.interactive.imagetool.ImageTool)
             output_imagetools.append(output_imagetool)
-            output_uids[output_id] = manager.add_imagetool_child(
+            output_uids[output_id] = manager.import_imagetool_child(
                 output_imagetool,
                 output_tool_uid,
                 show=False,
@@ -2802,7 +2838,7 @@ def test_managed_input_reload_uses_live_data_without_code_authorization(
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(root, show=False, provenance_spec=recorded_spec)
+        manager.import_imagetool(root, show=False, provenance_spec=recorded_spec)
 
         tool = _ManagedUnaryTool(data)
         child_uid = manager.add_childtool(
@@ -2873,7 +2909,7 @@ def test_manager_reload_ignores_unreachable_unsafe_live_input_fallback(
         )
         derived = itool(left + right, manager=False, execute=False)
         assert isinstance(derived, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(
+        manager.import_imagetool(
             derived,
             show=False,
             provenance_spec=derived_spec,
@@ -3130,8 +3166,8 @@ def test_detached_derived_input_ignores_frozen_fallback_dependencies(
         manager.show()
         itool([source, shift], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
-        derived_index = manager._lineage_controller._show_multi_input_script_result(
-            derived,
+        derived_index = show_script_result(
+            manager,
             (0,),
             operation_label="Increment data",
             operation_code="derived = data_0 + 1",
@@ -3250,7 +3286,15 @@ def test_detached_replacement_uses_captured_revision_without_owner_seed(
             data,
         )
         xr.testing.assert_equal(node.current_public_data().rename(None), data + 1)
-        assert node.provenance_spec == spec
+        exported = node.provenance_spec
+        assert exported.operations == spec.operations
+        assert not exported.replay_inputs[0].follow_source
+        xr.testing.assert_equal(
+            manager._provenance_revisions.resolve_data(
+                exported.replay_inputs[0].revision_id
+            ),
+            data,
+        )
         assert manager._lineage_controller._node_can_reload_script_inputs(node)
         assert node.reload_source_data()
         xr.testing.assert_equal(node.current_public_data().rename(None), data + 1)
@@ -3268,8 +3312,8 @@ def test_detached_replacement_rejects_indirect_input_cycle(
         manager.show()
         itool(data, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-        dependent_index = manager._lineage_controller._show_multi_input_script_result(
-            data + 1.0,
+        dependent_index = show_script_result(
+            manager,
             (0,),
             operation_label="Increment data",
             operation_code="derived = data_0 + 1",
@@ -3322,7 +3366,7 @@ def test_failed_detached_replacement_preserves_source_binding(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         child = itool(child_data, manager=False, execute=False)
         assert isinstance(child, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child,
             0,
             show=False,
@@ -3348,12 +3392,12 @@ def test_failed_detached_replacement_preserves_source_binding(
             node.uid
         )
 
-        def fail_replacement(_data: xr.DataArray) -> None:
+        def fail_replacement(_data: xr.DataArray, **_kwargs) -> None:
             raise RuntimeError("replacement failed")
 
         monkeypatch.setattr(
             node.slicer_area,
-            "replace_source_data",
+            "_set_data",
             fail_replacement,
         )
 
@@ -3392,8 +3436,8 @@ def test_managed_input_auto_refresh_uses_fresh_live_script_source(
         itool([data, other], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         assert (
-            manager._lineage_controller._show_multi_input_script_result(
-                data + other,
+            show_script_result(
+                manager,
                 (0, 1),
                 operation_label="Add inputs",
                 operation_code="derived = data_0 + data_1",
@@ -3452,8 +3496,8 @@ def test_managed_input_reload_refreshes_script_source_once(
         manager.show()
         itool([data, other], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
-        source_index = manager._lineage_controller._show_multi_input_script_result(
-            data + other,
+        source_index = show_script_result(
+            manager,
             (0, 1),
             operation_label="Add inputs",
             operation_code="derived = data_0 + data_1",
@@ -3543,7 +3587,7 @@ def test_managed_reload_resumes_after_deferred_script_result_input(
         )
         derived = itool(source.tool_data + 1.0, manager=False, execute=False)
         assert isinstance(derived, erlab.interactive.imagetool.ImageTool)
-        derived_index = manager.add_imagetool(
+        derived_index = manager.import_imagetool(
             derived,
             show=False,
             provenance_spec=derived_spec,
@@ -3745,7 +3789,7 @@ def test_selected_script_results_dedupe_nested_file_reload(
             child_data = source_spec.apply(source)
             child = itool(child_data, manager=False, execute=False)
             assert isinstance(child, erlab.interactive.imagetool.ImageTool)
-            child_uid = manager.add_imagetool_child(
+            child_uid = manager.import_imagetool_child(
                 child,
                 0,
                 show=False,
@@ -3760,7 +3804,7 @@ def test_selected_script_results_dedupe_nested_file_reload(
             derived = itool(child_data, manager=False, execute=False)
             assert isinstance(derived, erlab.interactive.imagetool.ImageTool)
             derived_targets.append(
-                manager.add_imagetool(
+                manager.import_imagetool(
                     derived,
                     show=False,
                     provenance_spec=script(
@@ -3775,16 +3819,15 @@ def test_selected_script_results_dedupe_nested_file_reload(
                 )
             )
 
-        root = manager._tool_graph.root_wrappers[0]
-        reload_source = root.slicer_area._reload
-        reload_calls = 0
+        graph = manager._data_graph.graph
+        read_file = graph._read_file
+        reads = []
 
-        def count_reload() -> bool:
-            nonlocal reload_calls
-            reload_calls += 1
-            return reload_source()
+        def count_read(file, call):
+            reads.append(file.path)
+            return read_file(file, call)
 
-        monkeypatch.setattr(root.slicer_area, "_reload", count_reload)
+        monkeypatch.setattr(graph, "_read_file", count_read)
         updated = source + 100.0
         updated.to_netcdf(source_path, engine="h5netcdf")
         with qtbot.wait_signal(manager._sigDataReplaced):
@@ -3800,7 +3843,7 @@ def test_selected_script_results_dedupe_nested_file_reload(
         select_tools(manager, derived_targets)
         manager.reload_selected()
 
-        assert reload_calls == 1
+        assert reads == [str(source_path)]
         for target, indexer in zip(derived_targets, slices, strict=True):
             xr.testing.assert_identical(fetch(target), updated.isel(x=indexer))
 
@@ -3857,19 +3900,15 @@ def test_selected_managed_tools_dedupe_shared_file_input(
             show=False,
         )
 
-        reload_calls: list[int] = []
-        for root in manager._tool_graph.root_wrappers.values():
-            original_reload = root.slicer_area._reload
+        reads = []
+        graph = manager._data_graph.graph
+        read_file = graph._read_file
 
-            def track_reload(
-                *,
-                index: int = root.index,
-                reload_source: Callable[[], bool] = original_reload,
-            ) -> bool:
-                reload_calls.append(index)
-                return reload_source()
+        def counted_read(source, call):
+            reads.append(pathlib.Path(source.path))
+            return read_file(source, call)
 
-            monkeypatch.setattr(root.slicer_area, "_reload", track_reload)
+        monkeypatch.setattr(graph, "_read_file", counted_read)
 
         updated = tuple(value + 1000.0 for value in inputs)
         for value, path in zip(updated, paths, strict=True):
@@ -3880,9 +3919,7 @@ def test_selected_managed_tools_dedupe_shared_file_input(
         select_child_tool(manager, second_uid)
         manager.reload_selected()
 
-        assert reload_calls.count(0) == 1
-        assert reload_calls.count(1) == 1
-        assert reload_calls.count(2) == 1
+        assert sorted(reads) == sorted(paths)
         xr.testing.assert_equal(first.tool_data, updated[0] + updated[1])
         xr.testing.assert_equal(second.tool_data, updated[0] + updated[2])
         assert first.update_calls == 1
@@ -3949,8 +3986,8 @@ def test_selected_upstream_reload_updates_managed_descendant_once(
         manager.show()
         itool([data, other], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
-        source_index = manager._lineage_controller._show_multi_input_script_result(
-            data + other,
+        source_index = show_script_result(
+            manager,
             (0, 1),
             operation_label="Add inputs",
             operation_code="derived = data_0 + data_1",
@@ -4026,7 +4063,7 @@ def test_managed_input_reload_cancellation_preserves_state(
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(root, show=False, provenance_spec=recorded_spec)
+        manager.import_imagetool(root, show=False, provenance_spec=recorded_spec)
 
         tool = _ManagedUnaryTool(data)
         child_uid = manager.add_childtool(
@@ -4288,10 +4325,7 @@ def test_manager_metadata_uses_streamlined_child_derivation(
             dims=["alpha", "eV"],
             coords={"alpha": np.arange(5), "eV": np.arange(5)},
         )
-        itool(data, manager=True)
-        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-
-        parent_tool = manager.get_imagetool(0)
+        parent_tool = itool(data, manager=False, execute=False)
         parent_tool.set_provenance_spec(
             script(
                 start_label="Start from source data",
@@ -4299,6 +4333,7 @@ def test_manager_metadata_uses_streamlined_child_derivation(
                 active_name="derived",
             )
         )
+        manager.import_imagetool(parent_tool)
         parent_tool.slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
             lambda: len(manager._tool_graph.root_wrappers[0]._childtool_indices) == 1,
@@ -4387,11 +4422,13 @@ def test_manager_nested_imagetool_refresh_updates_descendant_dependency(
         root_data = base.isel(x=slice(0, 2))
         root_tool = itool(root_data, manager=False, execute=False)
         assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(root_tool, show=False, provenance_spec=initial_root_spec)
+        manager.import_imagetool(
+            root_tool, show=False, provenance_spec=initial_root_spec
+        )
 
         child_tool = itool(root_data.copy(deep=False), manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child_tool,
             0,
             show=False,
@@ -4402,7 +4439,7 @@ def test_manager_nested_imagetool_refresh_updates_descendant_dependency(
         grandchild_data = root_data.isel(y=slice(0, 2))
         grandchild_tool = itool(grandchild_data, manager=False, execute=False)
         assert isinstance(grandchild_tool, erlab.interactive.imagetool.ImageTool)
-        grandchild_uid = manager.add_imagetool_child(
+        grandchild_uid = manager.import_imagetool_child(
             grandchild_tool,
             child_uid,
             show=False,
@@ -4465,7 +4502,7 @@ def test_manager_nested_imagetool_auto_update_can_be_disabled_from_auto_badge(
         root_data = base.isel(x=slice(0, 2))
         root_tool = itool(root_data, manager=False, execute=False)
         assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(
+        manager.import_imagetool(
             root_tool,
             show=False,
             provenance_spec=selection(IselOperation(kwargs={"x": slice(0, 2)})),
@@ -4473,7 +4510,7 @@ def test_manager_nested_imagetool_auto_update_can_be_disabled_from_auto_badge(
 
         child_tool = itool(root_data.copy(deep=False), manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child_tool,
             0,
             show=False,
@@ -4584,7 +4621,7 @@ def test_manager_nested_stale_imagetool_marks_grandchildren_stale(
         root_data = base.isel(x=slice(0, 2))
         root_tool = itool(root_data, manager=False, execute=False)
         assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(
+        manager.import_imagetool(
             root_tool,
             show=False,
             provenance_spec=selection(IselOperation(kwargs={"x": slice(0, 2)})),
@@ -4592,7 +4629,7 @@ def test_manager_nested_stale_imagetool_marks_grandchildren_stale(
 
         child_tool = itool(root_data.copy(deep=False), manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child_tool,
             0,
             show=False,
@@ -4604,7 +4641,7 @@ def test_manager_nested_stale_imagetool_marks_grandchildren_stale(
             root_data.isel(y=slice(0, 2)), manager=False, execute=False
         )
         assert isinstance(grandchild_tool, erlab.interactive.imagetool.ImageTool)
-        grandchild_uid = manager.add_imagetool_child(
+        grandchild_uid = manager.import_imagetool_child(
             grandchild_tool,
             child_uid,
             show=False,
@@ -4648,7 +4685,7 @@ def test_manager_manual_nested_refresh_updates_stale_ancestors(
         root_data = base.isel(x=slice(0, 2))
         root_tool = itool(root_data, manager=False, execute=False)
         assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(
+        manager.import_imagetool(
             root_tool,
             show=False,
             provenance_spec=selection(IselOperation(kwargs={"x": slice(0, 2)})),
@@ -4656,7 +4693,7 @@ def test_manager_manual_nested_refresh_updates_stale_ancestors(
 
         child_tool = itool(root_data.copy(deep=False), manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child_tool,
             0,
             show=False,
@@ -4668,7 +4705,7 @@ def test_manager_manual_nested_refresh_updates_stale_ancestors(
             root_data.isel(y=slice(0, 2)), manager=False, execute=False
         )
         assert isinstance(grandchild_tool, erlab.interactive.imagetool.ImageTool)
-        grandchild_uid = manager.add_imagetool_child(
+        grandchild_uid = manager.import_imagetool_child(
             grandchild_tool,
             child_uid,
             show=False,
@@ -4783,7 +4820,7 @@ def test_manager_manual_nested_refresh_resumes_after_deferred_parent(
 
         leaf_tool = itool(root_data.isel(y=slice(0, 2)), manager=False, execute=False)
         assert isinstance(leaf_tool, erlab.interactive.imagetool.ImageTool)
-        leaf_uid = manager.add_imagetool_child(
+        leaf_uid = manager.import_imagetool_child(
             leaf_tool,
             parent_uid,
             show=False,
@@ -4987,7 +5024,7 @@ def test_manager_batch_selection_replace_qsel_remains_editable(
         manager.tree_view.clearSelection()
         select_tools(manager, [0])
         manager._update_info()
-        select_metadata_rows(manager, [1])
+        select_metadata_items(manager, [top_level_operation_items(manager)[0]])
         selected_row = manager._selected_derivation_row()
         assert selected_row is not None
         assert manager._provenance_edit_controller.can_edit_row(selected_row) == (
@@ -5007,7 +5044,7 @@ def test_manager_batch_selection_replace_qsel_remains_editable(
         )
 
         manager._update_info()
-        select_metadata_rows(manager, [2])
+        select_metadata_items(manager, [top_level_operation_items(manager)[1]])
         selected_row = manager._selected_derivation_row()
         assert selected_row is not None
         assert manager._provenance_edit_controller.can_edit_row(selected_row) == (
@@ -5057,10 +5094,7 @@ def test_manager_meshtool_output_child_qsel_copy_code_tracks_selected_output_id(
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
-        itool(test_data, manager=True)
-        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-
-        parent_tool = manager.get_imagetool(0)
+        parent_tool = itool(test_data, manager=False, execute=False)
         parent_tool.set_provenance_spec(
             script(
                 start_label="Start from mesh data",
@@ -5068,6 +5102,7 @@ def test_manager_meshtool_output_child_qsel_copy_code_tracks_selected_output_id(
                 active_name="derived",
             )
         )
+        manager.import_imagetool(parent_tool)
         parent_tool.slicer_area.open_in_meshtool()
         qtbot.wait_until(
             lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
@@ -5101,7 +5136,7 @@ def test_manager_meshtool_output_child_qsel_copy_code_tracks_selected_output_id(
         nested_tool = itool(
             output_data.qsel(alpha=1, alpha_width=1), manager=False, execute=False
         )
-        nested_uid = manager.add_imagetool_child(
+        nested_uid = manager.import_imagetool_child(
             nested_tool,
             output_uid,
             show=False,
@@ -5150,9 +5185,7 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
-        itool(fit_input, manager=True)
-        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-        parent_tool = manager.get_imagetool(0)
+        parent_tool = itool(fit_input, manager=False, execute=False)
         parent_tool.set_provenance_spec(
             script(
                 ScriptCodeOperation(
@@ -5163,6 +5196,7 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
                 active_name="prepared_parent",
             )
         )
+        manager.import_imagetool(parent_tool)
 
         model = erlab.analysis.fit.models.PolynomialModel(degree=1)
         child_uid, child = make_fit2d_child(manager, 0, model)
@@ -5574,7 +5608,7 @@ def test_manager_output_refresh_updates_stale_parent_source(
         initial_output = typing.cast("xr.DataArray", child.output_imagetool_data("out"))
         output_tool = itool(initial_output, manager=False, execute=False)
         assert isinstance(output_tool, erlab.interactive.imagetool.ImageTool)
-        output_uid = manager.add_imagetool_child(
+        output_uid = manager.import_imagetool_child(
             output_tool,
             child_uid,
             show=False,
@@ -6065,14 +6099,12 @@ def test_manager_promote_selected_cancel_keeps_nested_imagetool(
         manager.promote_action.trigger()
 
         assert captured["text"] == "Promote selected ImageTool to a top-level window?"
-        assert "live update linkage" in captured["info"].lower()
-        assert "detached history" in captured["info"].lower()
         assert manager.ntools == 1
         assert parent._childtool_indices == [child_uid]
         assert manager._child_node(child_uid).parent_uid == parent.uid
 
 
-def test_manager_promote_child_imagetool_rehomes_subtree_and_detaches_provenance(
+def test_manager_promote_child_imagetool_preserves_subtree_and_graph_inputs(
     qtbot,
     monkeypatch,
     accept_dialog,
@@ -6179,7 +6211,10 @@ def test_manager_promote_child_imagetool_rehomes_subtree_and_detaches_provenance
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, updated)
 
-        assert promoted.source_state == "fresh"
+        assert promoted.source_state == "stale"
+        assert manager._data_graph.graph.follows(promoted.uid) == {
+            manager._node_for_target(0).uid
+        }
         xr.testing.assert_identical(fetch(child_uid), child_before)
 
 
@@ -6205,7 +6240,7 @@ def test_manager_promote_live_child_retains_replay_source(
 
         child_tool = itool(source_spec.apply(source), manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child_tool,
             parent_index,
             show=False,
@@ -6218,7 +6253,8 @@ def test_manager_promote_live_child_retains_replay_source(
         assert promoted.provenance_spec is not None
         captured = promoted.provenance_spec.replay_inputs[0]
         assert captured.revision_id is not None
-        assert not captured.follow_source
+        assert captured.follow_source
+        assert captured.node_uid == manager._node_for_target(parent_index).uid
         xr.testing.assert_identical(
             manager._provenance_revisions.resolve_data(captured.revision_id),
             expected_source,
@@ -6227,6 +6263,14 @@ def test_manager_promote_live_child_retains_replay_source(
         select_tools(manager, [promoted_index])
         manager._update_info(uid=promoted.uid)
         assert manager._provenance_edit_controller.can_reorder_steps()[0]
+        changed = source + 5
+        parent_tool.slicer_area.replace_source_data(changed)
+        graph = manager._data_graph.graph
+        assert graph.is_stale(promoted.uid)
+        graph.refresh(promoted.uid)
+        xr.testing.assert_identical(
+            promoted.slicer_area._data, source_spec.apply(changed)
+        )
 
 
 def test_manager_replace_current_sets_provenance_on_provenance_free_root(
@@ -6281,8 +6325,8 @@ def test_manager_replace_current_sets_provenance_on_provenance_free_root(
         manager.tree_view.clearSelection()
         select_tools(manager, [0])
         manager._update_info()
-        derivation = metadata_derivation_texts(manager)
-        assert derivation == [
+        assert metadata_derivation_texts(manager, top_level=True) == [
+            "Inputs used",
             "Use data from Saved",
             'Aggregate(dims=("x",), func="mean")',
         ]
@@ -6367,7 +6411,7 @@ def test_manager_replace_transform_on_filtered_source_child_keeps_live_source(
 
         child_tool = itool(data.copy(deep=False), manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child_tool,
             0,
             show=False,
@@ -6461,9 +6505,6 @@ def test_manager_file_backed_replace_current_keeps_file_provenance(
         assert root.provenance_spec is not None
         assert root.provenance_spec.kind == "file"
         assert [op.op for op in root.provenance_spec.operations] == ["qsel_aggregate"]
-        assert [step.input_policy for step in root.provenance_spec.steps] == [
-            "restored"
-        ]
         entries = root.provenance_spec.display_entries()
         assert entries[0].label == "Load data from file 'scan.h5'"
         assert any("Aggregate" in entry.label for entry in entries)
@@ -6471,7 +6512,12 @@ def test_manager_file_backed_replace_current_keeps_file_provenance(
         manager.tree_view.clearSelection()
         select_tools(manager, [0])
         manager._update_info()
-        assert metadata_derivation_texts(manager)[0] == "Load data from file 'scan.h5'"
+        inputs = root.derivation_display_rows[0]
+        assert inputs.is_input_group
+        assert (
+            inputs.children[0].materialized_children()[0].entry.label
+            == "Load data from file 'scan.h5'"
+        )
 
         copied: list[str] = []
         monkeypatch.setattr(

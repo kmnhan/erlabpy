@@ -1248,6 +1248,11 @@ def replace_data(
 ) -> Response:
     """Replace data in existing ImageTool windows.
 
+    .. versionchanged:: 3.30.0
+
+       Managed windows own an isolated snapshot of eager input before this call
+       returns, including when the Manager runs in the same process.
+
     Parameters
     ----------
     index
@@ -1269,6 +1274,14 @@ def replace_data(
     -------
     Response
         Manager response.
+
+    Notes
+    -----
+    Do not modify the input while this call runs. After it returns, a producer can
+    reuse its NumPy buffers. Immutable bytes-backed values can be shared without
+    a values copy. Lazy inputs remain lazy: their tasks and backing resources must
+    produce stable values while the Manager or a derived result retains them.
+    Snapshot reusable acquisition buffers before exposing them through lazy tasks.
     """
     direct_manager = _direct_manager_for_target(target)
     with erlab.interactive.utils.setup_qapp(False):

@@ -229,7 +229,9 @@ def test_manager_denoise_provenance_editor_restores_square_grid_and_checks_dimen
         tool.slicer_area, provenance_edit_mode=True
     )
     dialog.restore_transform_operation(DenoiseOperation(along="beta", resize=16))
-    assert dialog.source_transform_operation().resize == (16, 16)
+    assert dialog.source_transform_operation().resize == 16
+    dialog.angle_spin.setValue(20)
+    assert dialog.source_transform_operation().resize == (16, 20)
     with pytest.raises(ValueError, match=r"Dimension.*alpha.*not available"):
         dialog.restore_transform_operation(DenoiseOperation(along="alpha"))
 
@@ -613,7 +615,7 @@ def test_manager_edit_bound_shift_rebinds_without_script_code(
 
         monkeypatch.setattr(imagetool_dialogs.ShiftDialog, "exec", reject_edit)
         controller._edit_operation_row(source_node, row)
-        assert source_node.provenance_spec is original_spec
+        assert source_node.provenance_spec == original_spec
         xr.testing.assert_identical(fetch(0), original_data)
 
         def accept_second_shift(dialog: imagetool_dialogs.ShiftDialog) -> int:
@@ -681,7 +683,7 @@ def test_manager_edit_bound_shift_rebinds_without_script_code(
         )
         with pytest.raises(ValueError, match="not current"):
             controller._edit_operation_row(source_node, row)
-        assert source_node.provenance_spec is stale_spec
+        assert source_node.provenance_spec == stale_spec
         xr.testing.assert_identical(fetch(0), stale_data)
 
         monkeypatch.setattr(
@@ -2325,36 +2327,31 @@ def test_manager_extension_operation_edit_raises_when_descriptor_is_unavailable(
         )
 
 
-def test_manager_paste_detached_untrusted_script_propagates_cancel() -> None:
-    data = xr.DataArray([1.0], dims=("x",))
+def test_manager_paste_untrusted_script_preserves_displayed_revision(
+    manager_context, monkeypatch
+) -> None:
+    data = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"))
     local = script(
-        ScriptCodeOperation(
-            label="Trusted step",
-            code="derived = globals()['data']",
-        ),
+        ScriptCodeOperation(label="Offset", code="derived = derived + 1"),
         start_label="Run script",
         active_name="derived",
     )
-    node = _fake_edit_node(full_data())
-    node.current_public_data = lambda: data
-    node.resolved_replay_source_data = lambda: data
-    controller = _fake_edit_controller(node)
 
     @contextlib.contextmanager
     def block_local_edit(*_args, **_kwargs):
         yield None
 
-    controller._manager._workspace_controller.local_code_edit = block_local_edit
-    controller._manager._extensions = types.SimpleNamespace(
-        execution=types.SimpleNamespace(
-            capture_replay_sources=lambda: contextlib.nullcontext(object()),
-            run_operation=lambda operation, value: operation.apply(value),
-        ),
-        replay_loader=lambda *_args, **_kwargs: None,
-    )
-
-    with pytest.raises(manager_widgets._TrustedProvenanceReplayCancelled):
-        controller._paste_detached_steps(node, local, where="pasting")
+    with manager_context() as manager:
+        manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
+        node = manager._node_for_target(0)
+        displayed = manager._data_graph.displayed_edit_revision(node)
+        monkeypatch.setattr(
+            manager._workspace_controller, "local_code_edit", block_local_edit
+        )
+        with pytest.raises(manager_widgets._TrustedProvenanceReplayCancelled):
+            manager._provenance_edit_controller._paste_steps_into_node(node, local)
+        assert manager._data_graph.graph.current_revision(node.uid) == displayed
+        xr.testing.assert_identical(node.current_public_data(), data)
 
 
 def test_manager_extension_routine_editor_preserves_identity_and_cancel(
@@ -3309,6 +3306,7 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
         np.arange(6, dtype=float).reshape((2, 3)), dims=("x", "y")
     )
     parent = types.SimpleNamespace(
+        uid="parent",
         displayed_provenance_spec=full_data(),
         current_source_data=lambda: parent_data,
     )

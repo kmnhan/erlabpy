@@ -814,13 +814,13 @@ class _AcquisitionContextController(QtCore.QObject):
         return ContextResolution(tuple(operations), tuple(statuses))
 
     def apply_to_file_data(
-        self, data: xr.DataArray
+        self, data: xr.DataArray, preparation: tuple[ToolProvenanceOperation, ...] = ()
     ) -> tuple[xr.DataArray, tuple[ToolProvenanceOperation, ...], ContextResolution]:
         state = self.state
         if not state.enabled or not state.fields:
-            return data, (), ContextResolution((), ())
+            return data, preparation, ContextResolution((), ())
         resolution = self.resolve(data, state.fields)
         if resolution.errors or not resolution.operations:
-            return data, (), resolution
+            return data, preparation, resolution
         processed = full_data(*resolution.operations).apply(data).rename(data.name)
-        return processed, resolution.operations, resolution
+        return processed, (*preparation, *resolution.operations), resolution

@@ -45,7 +45,7 @@ def test_pending_workspace_imagetool_attrs_optional_metadata(
         data = xr.DataArray(np.arange(9, dtype=float).reshape(3, 3), dims=("x", "y"))
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(
+        manager.import_imagetool(
             root,
             show=False,
             watched_var=("watched_data", "watched-uid"),

@@ -1432,6 +1432,9 @@ def test_manager_source_bound_derivation_rows_are_metadata_only(
         source_display_spec=source_spec,
     )
     child.manager = types.SimpleNamespace(
+        _data_graph=types.SimpleNamespace(
+            manages=lambda _uid: False, owns_result=lambda _uid: False
+        ),
         _parent_node=lambda _node: parent,
         _lineage_controller=types.SimpleNamespace(
             _has_recorded_script_input=lambda _item: False
@@ -1458,6 +1461,9 @@ def test_manager_derivation_cache_key_supports_deep_lineages() -> None:
         return nodes[node.parent_uid]
 
     manager = types.SimpleNamespace(
+        _data_graph=types.SimpleNamespace(
+            manages=lambda _uid: False, owns_result=lambda _uid: False
+        ),
         _parent_node=parent_node,
         _tool_graph=types.SimpleNamespace(structure_generation=0),
     )
@@ -1485,6 +1491,9 @@ def test_manager_derivation_cache_key_rejects_lineage_cycles() -> None:
         return nodes[node.parent_uid]
 
     manager = types.SimpleNamespace(
+        _data_graph=types.SimpleNamespace(
+            manages=lambda _uid: False, owns_result=lambda _uid: False
+        ),
         _parent_node=parent_node,
         _tool_graph=types.SimpleNamespace(structure_generation=0),
     )
@@ -1651,6 +1660,9 @@ def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(
     ensured: list[str] = []
     trusted_flags: list[bool] = []
     manager = types.SimpleNamespace(
+        _data_graph=types.SimpleNamespace(
+            owns_result=lambda _uid: False, reloads_result=lambda _uid: False
+        ),
         _extensions=types.SimpleNamespace(
             unavailable_reason_for_node=lambda _uid: None,
             capability_status=lambda *_args, **_kwargs: None,

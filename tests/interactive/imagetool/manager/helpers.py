@@ -34,6 +34,40 @@ logger = logging.getLogger(__name__)
 CONSOLE_HELPER_OFFSET = 2.5
 
 
+def show_script_result(
+    manager, targets, *, operation_label, operation_code, data_role="displayed"
+):
+    """Install a scripted test result with the specified graph inputs."""
+    from erlab.interactive.imagetool._provenance._model import script
+    from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
+    from erlab.interactive.imagetool._provenance._program import RecordedProgram
+    from erlab.interactive.imagetool.manager._data_graph import _OperationRequest
+
+    inputs = [
+        manager._data_graph.read_input(target, data_role=data_role)
+        for target in targets
+    ]
+    names = [
+        manager._script_input_name_for_node(manager._node_for_target(target))
+        for target in targets
+    ]
+    program = script(
+        ScriptCodeOperation(label=operation_label, code=operation_code),
+        start_label="Run ImageTool manager action",
+        active_name="derived",
+        script_inputs=tuple(ScriptInput(name=name) for name in names),
+    )
+    publication = _OperationRequest(
+        (RecordedProgram(spec=program),),
+        tuple(item.revision for item in inputs),
+        tuple(names),
+        "derived",
+    )
+    return manager._lineage_controller._show_multi_input_result(
+        manager._data_graph.evaluate_request(publication)
+    )
+
+
 def activate_widget_shortcut(widget: QtWidgets.QWidget, sequence: str) -> None:
     for shortcut in widget.findChildren(QtWidgets.QShortcut):
         if shortcut.parent() is not widget:
@@ -376,11 +410,13 @@ def manager_preview_pixmap(manager: ImageToolManager) -> QtGui.QPixmap:
     return manager.preview_widget._pixmapitem.pixmap()
 
 
-def metadata_derivation_texts(manager: ImageToolManager) -> list[str]:
-    return [
-        manager.metadata_derivation_list.conceptual_item(row).text(0)
-        for row in range(manager.metadata_derivation_list.conceptual_count())
-    ]
+def metadata_derivation_texts(
+    manager: ImageToolManager, *, top_level: bool = False
+) -> list[str]:
+    tree = manager.metadata_derivation_list
+    if top_level:
+        return [tree.topLevelItem(i).text(0) for i in range(tree.topLevelItemCount())]
+    return [tree.conceptual_item(i).text(0) for i in range(tree.conceptual_count())]
 
 
 def metadata_detail_map(manager: ImageToolManager) -> dict[str, str]:
@@ -398,6 +434,23 @@ def metadata_detail_labels(manager: ImageToolManager) -> list[str]:
         if isinstance(widget, QtWidgets.QLabel):
             labels.append(widget.text())
     return labels
+
+
+def top_level_operation_items(
+    manager: ImageToolManager,
+) -> list[QtWidgets.QTreeWidgetItem]:
+    from erlab.interactive.imagetool.manager._widgets import (
+        _METADATA_DERIVATION_ROW_ROLE,
+    )
+
+    tree = manager.metadata_derivation_list
+    items = []
+    for index in range(tree.topLevelItemCount()):
+        item = tree.topLevelItem(index)
+        ref = item.data(0, _METADATA_DERIVATION_ROW_ROLE).replay_ref
+        if ref is not None and ref.kind == "operation":
+            items.append(item)
+    return items
 
 
 def select_metadata_rows(

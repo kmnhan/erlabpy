@@ -15,36 +15,37 @@ import pydantic
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab._provenance import Follow
+from erlab._provenance._graph import DisplayedEdit
 from erlab.interactive._figurecomposer._ui._panel_controls import _step_toolbar_button
 from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     _ProvenanceStepRef,
-    compose_full_provenance,
-    full_data,
     iter_operation_refs,
-    require_live_source_spec,
 )
 from erlab.interactive.imagetool._provenance._operations import (
     AssignAttrsOperation,
     AssignScalarCoordOperation,
 )
+from erlab.interactive.imagetool._provenance._program import RecordedProgram
 
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Iterable, Iterator, Mapping, Sequence
 
     import xarray as xr
 
+    from erlab._provenance._records import Application
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
-    from erlab.interactive.imagetool.manager._provenance_edit._controller import (
-        _ValidatedProvenanceEdit,
-    )
     from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
 
 
 MetadataFieldKind = typing.Literal["coordinate", "attribute"]
 MetadataOrigin = typing.Literal["source", "assigned", "missing"]
 MetadataValueType = typing.Literal["String", "Int", "Float", "Bool", "Python literal"]
+_RecordedRef: typing.TypeAlias = tuple[str, int | None]
+_AssignmentRef: typing.TypeAlias = _RecordedRef | _ProvenanceStepRef
+_Ref = typing.TypeVar("_Ref")
 _MISSING = object()
 _UNKNOWN_REFERENCE = object()
 
@@ -192,7 +193,7 @@ class MetadataCell:
     field: MetadataField
     present: bool
     value: typing.Any = None
-    assignment_ref: _ProvenanceStepRef | None = None
+    assignment_ref: _AssignmentRef | None = None
     assignment: ToolProvenanceOperation | None = None
     editable: bool = True
 
@@ -210,18 +211,6 @@ class MetadataCellEdit:
     field: MetadataField
     value: typing.Any = None
     revert: bool = False
-
-
-@dataclasses.dataclass(frozen=True)
-class _MetadataTargetEdit:
-    target: int | str
-    node: _ManagedWindowNode
-    scope: typing.Literal["display", "source"]
-    kind: typing.Literal["none", "direct", "validated"]
-    data: xr.DataArray | None = None
-    spec: ToolProvenanceSpec | None = None
-    replay_source_data: xr.DataArray | None = None
-    validated: _ValidatedProvenanceEdit | None = None
 
 
 def _field_value(data: xr.DataArray, field: MetadataField) -> typing.Any:
@@ -352,9 +341,9 @@ class _MetadataTableModel(QtCore.QAbstractTableModel):
                 else self.metadata_by_target[target]
             )
             matches = self.controller.matching_assignments(
-                self.controller.spec_and_scope(
+                self.controller.assignment_operations(
                     self.controller.manager._node_for_target(target)
-                )[0],
+                ),
                 data,
                 self.fields,
             )
@@ -1853,27 +1842,49 @@ class _MetadataEditorController(QtCore.QObject):
         dialog.exec()
 
     @staticmethod
-    def spec_and_scope(
-        node: _ManagedWindowNode,
-    ) -> tuple[ToolProvenanceSpec | None, typing.Literal["display", "source"]]:
-        source_spec = node.displayed_source_spec
-        if source_spec is not None:
-            return source_spec, "source"
-        return node.displayed_provenance_spec, "display"
+    def _recorded_operations(
+        chain: Sequence[tuple[str, Application]],
+    ) -> Iterator[tuple[_RecordedRef, ToolProvenanceOperation]]:
+        for key, applied in chain:
+            if isinstance(applied.operation, RecordedProgram):
+                for index, step in enumerate(applied.operation.spec.steps):
+                    yield (key, index), step.operation
+            else:
+                yield (key, None), applied.operation
+
+    def assignment_operations(
+        self, node: _ManagedWindowNode
+    ) -> tuple[tuple[_AssignmentRef, ToolProvenanceOperation], ...]:
+        adapter = self.manager._data_graph
+        if adapter.window_staged(node.uid) and node.uid in adapter.graph:
+            # A synchronous slot sees the last published data. The widget can
+            # already contain an uncommitted installation.
+            revision = adapter.graph.followed_revision(Follow(node.uid, source=True))
+            history = adapter.graph.revision(revision).imported_history
+            if history is not None:
+                return tuple(
+                    iter_operation_refs(ToolProvenanceSpec.model_validate_json(history))
+                )
+        elif adapter.owns_result(node.uid):
+            revision = adapter.source_revision(node.uid, displayed=False)
+        else:
+            revision = None
+        if revision is not None:
+            return tuple(self._recorded_operations(adapter.local_operations(revision)))
+        # A deferred workspace row can show its saved metadata before its array
+        # or graph inputs have been materialized.
+        spec = node.displayed_source_spec or node.displayed_provenance_spec
+        return tuple(iter_operation_refs(spec)) if spec is not None else ()
 
     @staticmethod
     def matching_assignments(
-        spec: ToolProvenanceSpec | None,
+        operations: Sequence[tuple[_Ref, ToolProvenanceOperation]],
         data: xr.DataArray,
         fields: Sequence[MetadataField],
-    ) -> dict[MetadataField, tuple[_ProvenanceStepRef, ToolProvenanceOperation]]:
-        if spec is None:
-            return {}
+    ) -> dict[MetadataField, tuple[_Ref, ToolProvenanceOperation]]:
         unmatched = set(fields)
-        matches: dict[
-            MetadataField, tuple[_ProvenanceStepRef, ToolProvenanceOperation]
-        ] = {}
-        for ref, operation in reversed(tuple(iter_operation_refs(spec))):
+        matches: dict[MetadataField, tuple[_Ref, ToolProvenanceOperation]] = {}
+        for ref, operation in reversed(operations):
             for field in tuple(unmatched):
                 operation_value = _operation_value(operation, field)
                 if operation_value is _MISSING:
@@ -1887,46 +1898,36 @@ class _MetadataEditorController(QtCore.QObject):
                 unmatched.remove(field)
         return matches
 
-    @staticmethod
-    def _append_operations(
-        spec: ToolProvenanceSpec | None,
-        operations: Sequence[ToolProvenanceOperation],
-    ) -> ToolProvenanceSpec:
-        appended = full_data(*operations)
-        if spec is None:
-            return appended
-        with contextlib.suppress(TypeError):
-            live_spec = require_live_source_spec(spec)
-            if live_spec is not None:
-                return live_spec.append_replacement_operations(*operations)
-        composed = compose_full_provenance(spec, appended)
-        if composed is None:
-            raise RuntimeError("Could not compose metadata provenance.")
-        return composed
-
     def _plan_target_edit(
         self,
-        target: int | str,
+        node: _ManagedWindowNode,
         edits: Sequence[MetadataCellEdit],
-    ) -> _MetadataTargetEdit:
-        node = self.manager._node_for_target(target)
-        current = node.current_public_data()
-        spec, scope = self.spec_and_scope(node)
+    ) -> DisplayedEdit | None:
+        adapter = self.manager._data_graph
+        displayed = adapter.displayed_edit_revision(node)
+        base = adapter.source_revision(node.uid, displayed=False)
+        origin = adapter.graph.revision(base)
+        if origin.imported_history is not None:
+            saved = ToolProvenanceSpec.model_validate_json(origin.imported_history)
+            if saved.is_live_source and saved.operations and not node.has_replay_source:
+                raise ValueError("The imported metadata history has no recorded input.")
+        chain = adapter.local_operations(base)
+        operations = tuple(self._recorded_operations(chain))
         matches = self.matching_assignments(
-            spec, current, tuple(edit.field for edit in edits)
+            operations, node.current_public_data(), tuple(edit.field for edit in edits)
         )
-        replacements: dict[_ProvenanceStepRef, ToolProvenanceOperation | None] = {}
-        changed_refs: set[_ProvenanceStepRef] = set()
-        patch_operations: list[ToolProvenanceOperation] = []
+        replacements: dict[_RecordedRef, ToolProvenanceOperation | None] = {}
         added_coords: list[ToolProvenanceOperation] = []
         added_attrs: dict[Hashable, typing.Any] = {}
-        removed_assignment = False
 
         for edit in edits:
             match = matches.get(edit.field)
             if edit.revert:
                 if match is None:
-                    continue
+                    raise ValueError(
+                        f"No recorded assignment is available for {edit.field.name!r}. "
+                        "Reopen the metadata editor to see the current assignments."
+                    )
                 ref, original = match
                 replacement = replacements.get(ref, original)
                 if replacement is None:
@@ -1942,12 +1943,9 @@ class _MetadataEditorController(QtCore.QObject):
                 else:
                     replacement = None
                 replacements[ref] = replacement
-                changed_refs.add(ref)
-                removed_assignment = True
                 continue
 
             operation = edit.field.operation(edit.value)
-            operation.apply(current)
             if match is not None:
                 ref, original = match
                 replacement = replacements.get(ref, original)
@@ -1964,145 +1962,71 @@ class _MetadataEditorController(QtCore.QObject):
                         update={"group": replacement.group}
                     )
                 replacements[ref] = replacement
-                changed_refs.add(ref)
-                patch_operations.append(operation)
             elif edit.field.kind == "attribute":
                 added_attrs[edit.field.name] = edit.value
             else:
                 added_coords.append(operation)
 
-        candidate = spec
-        if replacements:
-            if candidate is None:
-                raise RuntimeError("Matching metadata assignments are unavailable.")
-            for ref in sorted(
-                replacements,
-                key=lambda item: typing.cast("int", item.operation_index),
-                reverse=True,
-            ):
-                replacement = replacements[ref]
-                candidate = candidate._replace_operation_ref(
-                    ref, () if replacement is None else (replacement,)
-                )
-
         added_operations = [*added_coords]
         if added_attrs:
             added_operations.append(AssignAttrsOperation(attrs=added_attrs))
-        if added_operations:
-            candidate = self._append_operations(candidate, added_operations)
-
-        if candidate == spec:
-            return _MetadataTargetEdit(target, node, scope, "none")
-        if candidate is None:
-            raise RuntimeError("The edited metadata has no provenance.")
-
-        operation_refs = tuple(iter_operation_refs(spec)) if spec is not None else ()
-        positions = {ref: i for i, (ref, _operation) in enumerate(operation_refs)}
-        terminal_edit = not removed_assignment
-        if changed_refs:
-            first_changed = min(positions[ref] for ref in changed_refs)
-            terminal_edit = terminal_edit and all(
-                isinstance(operation, AssignScalarCoordOperation | AssignAttrsOperation)
-                for _ref, operation in operation_refs[first_changed:]
-            )
-        slicer_area = self.manager.get_imagetool(target).slicer_area
-        terminal_edit = terminal_edit and not slicer_area.has_active_filter
-        replay_source_data = node.resolved_replay_source_data()
-        if candidate.kind in {"full_data", "public_data", "selection"}:
-            if replay_source_data is None and (
-                spec is None or not tuple(iter_operation_refs(spec))
-            ):
-                replay_source_data = current
-            elif replay_source_data is None:
-                terminal_edit = False
-
-        if terminal_edit:
-            processed = full_data(*patch_operations, *added_operations).apply(current)
-            processed = processed.rename(current.name)
-            erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(processed)
-            return _MetadataTargetEdit(
-                target,
-                node,
-                scope,
-                "direct",
-                data=processed,
-                spec=candidate,
-                replay_source_data=replay_source_data,
-            )
-
-        validated = self.manager._provenance_edit_controller._validated_edit(
-            node,
-            scope,
-            candidate,
-            where="validating the edited metadata",
-        )
-        return _MetadataTargetEdit(
-            target, node, scope, "validated", validated=validated
-        )
+        changes: dict[str, ToolProvenanceOperation | None] = {}
+        for key, applied in chain:
+            if isinstance(applied.operation, RecordedProgram):
+                original_program = applied.operation.spec
+                steps = list(original_program.steps)
+                for index in reversed(range(len(steps))):
+                    if (key, index) in replacements:
+                        updated = replacements[key, index]
+                        if updated is None:
+                            del steps[index]
+                        else:
+                            steps[index] = steps[index].model_copy(
+                                update={"operation": updated}
+                            )
+                if tuple(steps) != original_program.steps:
+                    changes[key] = RecordedProgram(
+                        spec=original_program.model_copy(update={"steps": tuple(steps)})
+                    )
+            elif (key, None) in replacements:
+                updated = replacements[key, None]
+                if updated != applied.operation:
+                    changes[key] = updated
+        if not changes and not added_operations:
+            return None
+        return DisplayedEdit(displayed, base, tuple(added_operations), changes)
 
     def apply_edits(
         self,
         edits_by_target: Mapping[int | str, Sequence[MetadataCellEdit]],
     ) -> bool:
-        plans: list[_MetadataTargetEdit] = []
-        for target, edits in edits_by_target.items():
-            try:
-                plans.append(self._plan_target_edit(target, edits))
-            except Exception as exc:
-                erlab.interactive.utils.MessageDialog.critical(
-                    self.manager,
-                    "Metadata Edit Failed",
-                    "The metadata changes could not be applied.",
-                    str(exc),
-                )
-                return False
-
-        data_changed = False
+        plans = {}
         try:
-            for plan in plans:
-                if plan.kind == "direct":
-                    data = typing.cast("xr.DataArray", plan.data)
-                    spec = typing.cast("ToolProvenanceSpec", plan.spec)
-                    if plan.scope == "source":
-                        self.manager._provenance_edit_controller._replace_node_data(
-                            plan.node, plan.scope, data, spec, None
-                        )
-                    else:
-                        plan.node.replace_with_detached_data(
-                            data,
-                            spec,
-                            replay_source_data=plan.replay_source_data,
-                        )
-                    self.manager._update_info(uid=plan.node.uid)
-                    data_changed = True
-                elif plan.kind == "validated":
-                    validated = typing.cast("_ValidatedProvenanceEdit", plan.validated)
-                    self.manager._provenance_edit_controller._apply_validated_edit(
-                        validated
-                    )
-                    data_changed = True
+            for target, edits in edits_by_target.items():
+                node = self.manager._node_for_target(target)
+                if (plan := self._plan_target_edit(node, edits)) is not None:
+                    plans[node.uid] = plan
+            self.manager._data_graph.edit_displayed(plans)
         except Exception as exc:
             erlab.interactive.utils.MessageDialog.critical(
                 self.manager,
                 "Metadata Edit Failed",
-                "An error occurred while applying the metadata changes.",
+                "The metadata changes could not be applied.",
                 str(exc),
             )
             return False
-        if data_changed:
+        if plans:
             self.manager._sigDataReplaced.emit()
         return True
 
-    def _preserved_assignments(
-        self, target: int | str
+    def preserved_assignments(
+        self, node: _ManagedWindowNode, revision: str
     ) -> tuple[ToolProvenanceOperation, ...]:
-        node = self.manager._node_for_target(target)
-        current = node.current_public_data()
-        spec, _scope = self.spec_and_scope(node)
-        if spec is None:
-            return ()
+        graph = self.manager._data_graph
+        staged = graph.window_staged(node.uid)
+        recorded = self.assignment_operations(node)
         fields: list[MetadataField] = []
-        for _ref, operation in iter_operation_refs(spec):
+        for _ref, operation in recorded:
             if isinstance(operation, AssignScalarCoordOperation) and isinstance(
                 operation.coord_name, str
             ):
@@ -2115,18 +2039,27 @@ class _MetadataEditorController(QtCore.QObject):
                         field = MetadataField(kind="attribute", name=name)
                         if field not in fields:
                             fields.append(field)
-        matches = self.matching_assignments(spec, current, fields)
-        by_ref: dict[_ProvenanceStepRef, list[MetadataField]] = {}
+        if not fields:
+            return ()
+        matches = self.matching_assignments(
+            recorded,
+            graph.graph.data(revision) if staged else node.current_public_data(),
+            fields,
+        )
+        by_ref: dict[_AssignmentRef, list[MetadataField]] = {}
         for field, (ref, _operation) in matches.items():
             by_ref.setdefault(ref, []).append(field)
         operations: list[ToolProvenanceOperation] = []
-        for ref, operation in iter_operation_refs(spec):
+        for ref, operation in recorded:
             matched = by_ref.get(ref)
             if not matched:
                 continue
             if isinstance(operation, AssignAttrsOperation):
+                names = {field.name for field in matched}
                 attrs: dict[Hashable, typing.Any] = {
-                    field.name: operation.attrs[field.name] for field in matched
+                    name: value
+                    for name, value in operation.attrs.items()
+                    if name in names
                 }
                 operations.append(
                     AssignAttrsOperation(attrs=attrs, group=operation.group)
@@ -2134,49 +2067,3 @@ class _MetadataEditorController(QtCore.QObject):
             else:
                 operations.append(operation)
         return tuple(operations)
-
-    def prepare_replacement(
-        self,
-        target: int | str,
-        source_data: xr.DataArray,
-        *,
-        source_input_dtype: np.dtype[typing.Any] | str | None = None,
-    ) -> tuple[xr.DataArray, ToolProvenanceSpec | None] | None:
-        operations = self._preserved_assignments(target)
-        if not operations:
-            return None
-        local_spec = full_data(*operations)
-        processed = local_spec.apply(source_data).rename(source_data.name)
-        erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(processed)
-        node = self.manager._node_for_target(target)
-        watched_input = getattr(node, "_watched_input_provenance_spec", None)
-        base_spec = (
-            watched_input(source_input_dtype=source_input_dtype)
-            if callable(watched_input)
-            else None
-        )
-        provenance = (
-            compose_full_provenance(base_spec, local_spec)
-            if base_spec is not None
-            else local_spec
-        )
-        return processed, provenance
-
-    def commit_replacement(
-        self,
-        target: int | str,
-        source_data: xr.DataArray,
-        processed: xr.DataArray,
-        provenance: ToolProvenanceSpec | None,
-    ) -> None:
-        node = self.manager._node_for_target(target)
-        if node.has_source_binding:
-            self.manager.get_imagetool(target).slicer_area.replace_source_data(
-                processed
-            )
-            return
-        node.replace_with_detached_data(
-            processed,
-            provenance,
-            replay_source_data=source_data,
-        )

@@ -19,16 +19,18 @@ from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._model import (
     ScriptInput,
     ToolProvenanceOperation,
-    ToolProvenanceSpec,
+    _calculation_options,
     compose_display_provenance,
-    compose_full_provenance,
 )
 from erlab.interactive.imagetool._provenance._operations import (
     AssignCoord1DOperation,
     AssignScalarCoordOperation,
-    ImageToolSelectionSourceBinding,
 )
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
+from erlab.interactive.imagetool.manager._data_graph import (
+    _ImageToolInput,
+    _ImportedHistory,
+)
 from erlab.interactive.imagetool.manager._dependency import _combine_source_states
 from erlab.interactive.imagetool.manager._dialogs import (
     _BatchOperationDialog,
@@ -48,17 +50,18 @@ from erlab.interactive.imagetool.manager._window_layout import (
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
-    _normalize_dataarray_name,
 )
 
 if typing.TYPE_CHECKING:
     import datetime
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Callable, Iterable, Mapping
 
     import xarray as xr
 
+    from erlab.interactive.imagetool.manager._data_graph import _CalculatedResult
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
+    from erlab.interactive.imagetool.viewer_state import _PreparedInputData
 
 logger = logging.getLogger(__name__)
 
@@ -290,9 +293,7 @@ class _ActionsController:
         msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
         msg_box.setText("Promote selected ImageTool to a top-level window?")
         msg_box.setInformativeText(
-            "This will detach the ImageTool from its parent. Live update linkage and "
-            "automatic updates from the parent will be removed, but existing "
-            "provenance and derivation metadata will be retained as detached history."
+            "Move this ImageTool to the top level of the Manager."
         )
         msg_box.setStandardButtons(
             QtWidgets.QMessageBox.StandardButton.Yes
@@ -315,17 +316,19 @@ class _ActionsController:
             raise RuntimeError(
                 "Could not read this ImageTool's saved data from the workspace file."
             )
-        replay_source_expected = (
-            node.parent_uid is not None
-            and node.source_spec is not None
-            and self._manager._parent_node(node).has_replay_source
-        )
-        replay_source_data = node.resolved_replay_source_data()
-        if replay_source_expected and replay_source_data is None:
-            raise RuntimeError(
-                "Could not read this ImageTool's saved replay source from the "
-                "workspace file."
-            )
+        recorded = self._manager._data_graph.owns_result(uid)
+        replay_source_data = None
+        if not recorded:
+            replay_source_data = node.resolved_replay_source_data()
+            if (
+                node.source_spec is not None
+                and self._manager._parent_node(node).has_replay_source
+                and replay_source_data is None
+            ):
+                raise RuntimeError(
+                    "Could not read this ImageTool's saved replay source from the "
+                    "workspace file."
+                )
 
         row_index = self._manager.tree_view._model._row_index(uid)
         was_expanded = row_index.isValid() and self._manager.tree_view.isExpanded(
@@ -340,8 +343,9 @@ class _ActionsController:
         childtools = dict(node._childtools)
         created_time = node.created_time
         recent_geometry = node._recent_geometry
-        persistence = node.persistence_view()
-        provenance_spec = persistence.provenance_spec
+        provenance_spec = None if recorded else node.persistence_view().provenance_spec
+        if recorded:
+            promoted_window.set_provenance_spec(None)
         snapshot_token = node.snapshot_token
         source_snapshot_token = node.source_snapshot_token
         current_revision_id = node.current_revision_id
@@ -356,7 +360,7 @@ class _ActionsController:
         self._manager._unregister_node(uid, refresh_dependents=False)
 
         with self._manager._workspace_load_context():
-            new_index = self._manager.add_imagetool(
+            new_index = self._manager.import_imagetool(
                 promoted_window,
                 show=False,
                 uid=uid,
@@ -368,6 +372,8 @@ class _ActionsController:
                 note=note,
             )
         wrapper = self._manager._tool_graph.root_wrappers[new_index]
+        if uid in self._manager._data_graph.graph:
+            self._manager._data_graph.graph.promote_entry(uid)
         wrapper._workspace_sources = workspace_sources
         wrapper.restore_current_revision_id(current_revision_id)
         wrapper._recent_geometry = recent_geometry
@@ -716,19 +722,13 @@ class _ActionsController:
         launch_mode: typing.Literal["replace", "detach", "nest"],
     ) -> bool:
         try:
+            settings = _calculation_options()
             targets = self._selected_batch_targets()
-            operations = dialog.source_operations()
-        except Exception as exc:
-            self._show_batch_error("Batch operation could not be started.", error=exc)
-            return False
-        if not operations:
-            self._show_batch_error(
-                "Batch operation could not be started.",
-                error=ValueError("The dialog did not produce an operation."),
-            )
-            return False
-        try:
-            self._validate_batch_operations(dialog, operations)
+            prepare_target = dialog.capture_transform()
+            inputs = {
+                target: self._manager._data_graph.read_input(target)
+                for target in targets
+            }
         except Exception as exc:
             self._show_batch_error("Batch operation could not be started.", error=exc)
             return False
@@ -738,9 +738,18 @@ class _ActionsController:
             try:
                 node = self._manager._node_for_target(target)
                 slicer_area = self._manager.get_imagetool(target).slicer_area
-                source_data = slicer_area.displayed_data
-                input_name = source_data.name
-                source_spec = dialog.source_spec_for_data(source_data)
+                source_data = inputs[target].data
+                source_spec = prepare_target(source_data)
+                if source_spec is None or not source_spec.operations:
+                    self._show_batch_error(
+                        "Batch operation failed before changing data.",
+                        target=target,
+                        error=ValueError(
+                            "The dialog did not record operations for this target."
+                        ),
+                    )
+                    return False
+                source_spec = source_spec.capture_execution_options(settings)
                 self._validate_batch_operations(dialog, source_spec.operations)
                 self._validate_batch_target_operations(
                     dialog,
@@ -748,14 +757,12 @@ class _ActionsController:
                     source_data,
                 )
                 if hasattr(dialog, "preflight_data"):
-                    dialog.preflight_data(source_data)
+                    dialog.preflight_data(source_data, source_spec)
                 preflight_plan.append(
                     (
                         target,
                         node,
                         slicer_area,
-                        input_name,
-                        source_data,
                         source_spec,
                     )
                 )
@@ -772,66 +779,19 @@ class _ActionsController:
             target,
             node,
             slicer_area,
-            input_name,
-            source_data,
             source_spec,
         ) in preflight_plan:
             try:
-                processed = self._manager._apply_provenance(
+                publication = self._manager._data_graph.transform(
+                    inputs[target],
                     source_spec,
-                    source_data,
-                    reason="apply this batch operation",
-                ).rename(input_name)
+                    keep_name=True,
+                    replace_uid=node.uid if launch_mode == "replace" else None,
+                )
                 erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(
-                    processed
+                    publication.data
                 )
-
-                parent_provenance = node.displayed_provenance_spec
-                if parent_provenance is None:
-                    parent_provenance = slicer_area.displayed_provenance_spec()
-                nested_provenance = compose_full_provenance(
-                    parent_provenance,
-                    source_spec,
-                )
-                detached_provenance = dialog._detached_provenance_spec(
-                    parent_provenance,
-                    source_spec,
-                )
-
-                replace_kind = ""
-                replace_provenance = None
-                replay_source_data = node.resolved_replay_source_data()
-                if launch_mode == "replace":
-                    displayed_source = node.displayed_source_spec
-                    if displayed_source is not None:
-                        replace_kind = "source"
-                        replace_provenance = dialog._compose_transform_provenance(
-                            displayed_source,
-                            source_spec,
-                        )
-                    elif node.displayed_provenance_spec is not None:
-                        replace_kind = "detached"
-                        replace_provenance = dialog._compose_transform_provenance(
-                            node.displayed_provenance_spec,
-                            source_spec,
-                        )
-                    else:
-                        replace_kind = "detached"
-                        replace_provenance = detached_provenance
-                plan.append(
-                    (
-                        target,
-                        node,
-                        slicer_area,
-                        processed,
-                        source_spec,
-                        nested_provenance,
-                        detached_provenance,
-                        replace_kind,
-                        replace_provenance,
-                        replay_source_data,
-                    )
-                )
+                plan.append((target, node, slicer_area, publication))
             except Exception as exc:
                 self._show_batch_error(
                     "Batch operation failed before changing data.",
@@ -841,62 +801,31 @@ class _ActionsController:
                 return False
 
         try:
-            for (
-                target,
-                node,
-                slicer_area,
-                processed,
-                source_spec,
-                nested_provenance,
-                detached_provenance,
-                replace_kind,
-                replace_provenance,
-                replay_source_data,
-            ) in plan:
+            # Calculating a later target can update an earlier one through a Qt
+            # signal. Check every input before committing the first result.
+            for item in inputs.values():
+                item.require_current()
+            for target, node, slicer_area, publication in plan:
+                inputs[target].require_current()
                 if launch_mode == "replace":
-                    node.revision_id_for_role("source")
-                    if replace_provenance is not None:
-                        if replace_kind == "source":
-                            node.set_source_binding(
-                                replace_provenance,
-                                auto_update=node.source_auto_update,
-                                state=node.source_state,
-                            )
-                        else:
-                            node.set_detached_provenance(
-                                replace_provenance,
-                                replay_source_data=replay_source_data,
-                            )
-                    slicer_area.replace_source_data(processed, emit_edited=True)
-                    node.revision_id_for_role("source")
+                    node.publish_replacement(publication, edit="edited")
                     continue
 
-                itool_kw = dialog._itool_kwargs(processed, slicer_area)
-                tool = typing.cast(
-                    "ImageTool | None",
-                    erlab.interactive.itool(manager=False, **itool_kw),
-                )
-                if tool is None:
-                    self._show_batch_error(
-                        "An error occurred while applying batch data.",
-                        error=RuntimeError("Could not create the ImageTool window."),
-                    )
-                    return False
-
+                options = dialog._display_options(slicer_area)
+                checks = (inputs[target].require_current,)
                 if launch_mode == "nest":
-                    tool.set_provenance_spec(nested_provenance)
                     self._manager.add_imagetool_child(
-                        tool,
+                        publication,
                         target,
-                        source_spec=source_spec,
+                        _display_options=options,
+                        _input_checks=checks,
                     )
                 else:
-                    tool.set_provenance_spec(detached_provenance)
                     self._manager.add_imagetool(
-                        tool,
+                        publication,
                         activate=True,
-                        provenance_spec=detached_provenance,
-                        replay_source_data=replay_source_data,
+                        _display_options=options,
+                        _input_checks=checks,
                     )
             if launch_mode == "replace":
                 self._manager._sigDataReplaced.emit()
@@ -910,23 +839,30 @@ class _ActionsController:
 
     def apply_batch_filter_dialog(self, dialog: typing.Any) -> bool:
         try:
+            settings = _calculation_options()
             targets = self._selected_batch_targets()
             operation = dialog.filter_operation()
             if operation is not None:
+                operation = operation.capture_execution_options(settings).model_copy(
+                    deep=True
+                )
                 self._validate_batch_operations(dialog, (operation,))
         except Exception as exc:
             self._show_batch_error("Batch filter could not be started.", error=exc)
             return False
 
+        plan = []
         for target in targets:
             try:
-                slicer_area = self._manager.get_imagetool(target).slicer_area
-                if operation is not None:
-                    slicer_area._filter_operation_result_for_data(
-                        slicer_area._data,
-                        operation,
-                        tuple(slicer_area.data.dims),
-                    )
+                node = self._manager._node_for_target(target)
+                area = self._manager.get_imagetool(target).slicer_area
+                check, install = self._manager._data_graph.prepare_filter(
+                    node,
+                    operation,
+                    update=True,
+                    emit_edited=operation is not None or area.has_active_filter,
+                )
+                plan.append((area, check, install))
             except Exception as exc:
                 self._show_batch_error(
                     "Batch filter failed before changing data.",
@@ -936,27 +872,10 @@ class _ActionsController:
                 return False
 
         try:
-            for target in targets:
-                slicer_area = self._manager.get_imagetool(target).slicer_area
-                emit_edited = (
-                    operation is not None
-                    or slicer_area._accepted_filter_provenance_operation is not None
-                    or slicer_area._applied_func is not None
-                    or slicer_area.has_active_filter
-                )
-
-                def _apply_filter(
-                    *,
-                    area: ImageSlicerArea = slicer_area,
-                    op: ToolProvenanceOperation | None = operation,
-                    edited: bool = emit_edited,
-                ) -> None:
-                    area.apply_filter_operation(op, emit_edited=edited)
-
-                slicer_area.record_history_mutation(
-                    None,
-                    _apply_filter,
-                )
+            for _, check, _ in plan:
+                check()
+            for area, _, install in plan:
+                area.record_history_mutation(None, install)
         except Exception as exc:
             self._show_batch_error(
                 "An error occurred while applying batch filter.",
@@ -1023,6 +942,7 @@ class _ActionsController:
                         target,
                         uid_map=uid_map,
                     )
+                    self._manager._data_graph.duplicate_results(uid_map)
                     self._manager._lineage_controller._rebase_node_dependency_refs(
                         uid_map.values(),
                         uid_map,
@@ -1050,45 +970,49 @@ class _ActionsController:
         new_target: int | str | None = None
         try:
             if node.is_imagetool:
-                persistence = node.persistence_view()
                 duplicated_window = self._manager.get_imagetool(target).duplicate(
                     _in_manager=True
                 )
-                if isinstance(node, _ImageToolWrapper):
-                    new_target = self._manager.add_imagetool(
-                        duplicated_window,
-                        show=False,
-                        source_input_ndim=node.source_input_ndim,
-                        provenance_spec=node.provenance_spec,
+                options: dict[str, typing.Any] = {
+                    "show": False,
+                    "snapshot_token": node.snapshot_token,
+                    "source_snapshot_token": node.source_snapshot_token,
+                    "note": node.note,
+                }
+                if self._manager._data_graph.owns_result(node.uid):
+                    # The whole subtree's graph bindings are copied after every
+                    # destination UID is known. The new windows only supply state.
+                    duplicated_window.set_provenance_spec(None)
+                else:
+                    persistence = node.persistence_view()
+                    options.update(
+                        provenance_spec=node.provenance_spec
+                        if isinstance(node, _ImageToolWrapper)
+                        else persistence.provenance_spec,
                         source_spec=persistence.source_spec,
                         source_binding=persistence.source_binding,
                         source_auto_update=persistence.source_auto_update,
                         source_state=persistence.source_state,
-                        replay_source_data=node.resolved_replay_source_data(),
-                        snapshot_token=node.snapshot_token,
-                        source_snapshot_token=node.source_snapshot_token,
-                        note=node.note,
+                        replay_source_data=node.resolved_replay_source_data()
+                        if isinstance(node, _ImageToolWrapper)
+                        else persistence.replay_source_data,
+                    )
+                    if not isinstance(node, _ImageToolWrapper):
+                        options["output_id"] = persistence.output_id
+                if isinstance(node, _ImageToolWrapper):
+                    new_target = self._manager.import_imagetool(
+                        duplicated_window,
+                        source_input_ndim=node.source_input_ndim,
+                        **options,
                     )
                 else:
                     parent_target = (
                         parent_override
                         if parent_override is not None
-                        else (self._manager._parent_node(node).uid)
+                        else self._manager._parent_node(node).uid
                     )
-                    new_target = self._manager.add_imagetool_child(
-                        duplicated_window,
-                        parent_target,
-                        show=False,
-                        provenance_spec=persistence.provenance_spec,
-                        source_spec=persistence.source_spec,
-                        source_binding=persistence.source_binding,
-                        source_auto_update=persistence.source_auto_update,
-                        source_state=persistence.source_state,
-                        output_id=persistence.output_id,
-                        replay_source_data=persistence.replay_source_data,
-                        snapshot_token=node.snapshot_token,
-                        source_snapshot_token=node.source_snapshot_token,
-                        note=node.note,
+                    new_target = self._manager.import_imagetool_child(
+                        duplicated_window, parent_target, **options
                     )
             else:
                 tool = self._manager.get_childtool(node.uid)
@@ -1307,47 +1231,44 @@ class _ActionsController:
             return
 
         plans: list[
-            tuple[
-                bool,
-                int | str,
-                xr.DataArray,
-                tuple[xr.DataArray, ToolProvenanceSpec | None] | None,
-            ]
+            tuple[int | str, _PreparedInputData, Callable[[], None] | None]
         ] = []
         planned_next_idx = self._manager.next_idx
         for prepared, idx in zip(prepared_data, indices, strict=True):
-            darr = prepared.data
             if isinstance(idx, int) and idx < 0:
                 # Negative index counts from the end
                 idx = sorted(self._manager._tool_graph.root_wrappers.keys())[idx]
             add_new = isinstance(idx, int) and idx == planned_next_idx
             if add_new:
-                erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(darr)
-                plans.append((True, idx, darr, None))
+                erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(
+                    prepared.data
+                )
+                plans.append((idx, prepared, None))
                 planned_next_idx += 1
                 continue
-            replacement = self._manager._metadata_editor.prepare_replacement(
-                idx, darr, source_input_dtype=prepared.source_dtype
-            )
-            if replacement is None:
-                erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(darr)
-            plans.append((False, idx, darr, replacement))
+            node = self._manager._node_for_target(idx)
+            replacement = node.prepare_raw_replacement(prepared, preflight=True)
+            plans.append((node.uid, prepared, replacement))
 
         data_changed = False
-        for add_new, idx, darr, replacement in plans:
-            if add_new:
+        updated: set[int | str] = set()
+        for idx, prepared, replacement in plans:
+            if replacement is None:
                 # If not yet created, add new tool.
                 if idx != self._manager.next_idx:
                     break
-                if self._manager._data_ingress.receive_data([darr], {}) != [True]:
+                if self._manager._data_ingress.receive_data([prepared.data], {}) != [
+                    True
+                ]:
                     break
-            elif replacement is None:
-                self._manager.get_imagetool(idx).slicer_area.replace_source_data(darr)
             else:
-                processed, provenance = replacement
-                self._manager._metadata_editor.commit_replacement(
-                    idx, darr, processed, provenance
-                )
+                if idx in updated:
+                    # The previous write to this target has a new revision.
+                    replacement = self._manager._node_for_target(
+                        idx
+                    ).prepare_raw_replacement(prepared)
+                replacement()
+                updated.add(idx)
             data_changed = True
         if data_changed:
             self._manager._sigDataReplaced.emit()
@@ -1430,7 +1351,7 @@ class _ActionsController:
         else:
             # Update data in the existing tool
             wrapper = self._manager._tool_graph.root_wrappers[idx]
-            current_name = wrapper.name
+            self._manager._data_graph.retire_watched_input(wrapper)
             wrapper.set_watched_binding(
                 varname,
                 uid,
@@ -1473,18 +1394,11 @@ class _ActionsController:
             if prepared_data is None:  # pragma: no cover - no dialog is shown here
                 return
             prepared = prepared_data[0]
-            replacement_name = _normalize_dataarray_name(current_name)
-            replacement_data = prepared.data.rename(replacement_name)
             try:
-                replacement = self._manager._metadata_editor.prepare_replacement(
-                    idx,
-                    replacement_data,
-                    source_input_dtype=prepared.source_dtype,
-                )
+                wrapper.prepare_raw_replacement(prepared, watched=True)()
             except Exception as exc:
                 logger.exception(
-                    "Could not preserve metadata assignments on watched variable "
-                    "update",
+                    "Could not install watched variable update",
                     extra={"suppress_ui_alert": True},
                 )
                 erlab.interactive.utils.MessageDialog.critical(
@@ -1494,23 +1408,6 @@ class _ActionsController:
                     str(exc),
                 )
                 return
-            wrapper.set_source_input_ndim(prepared.source_ndim)
-            wrapper.set_source_input_dtype(prepared.source_dtype)
-            if replacement is None:
-                # A notebook-side update replaces the watched variable itself, so
-                # prior ImageTool operations no longer describe the displayed array.
-                wrapper.replace_with_detached_data(
-                    replacement_data,
-                    None,
-                    replay_source_data=None,
-                )
-            else:
-                # Rebuild provenance from the updated watched source and only the
-                # metadata assignments that still apply to it.
-                processed, provenance = replacement
-                self._manager._metadata_editor.commit_replacement(
-                    idx, replacement_data, processed, provenance
-                )
 
     def _data_unwatch(self, uid: str) -> None:
         idx = self._manager._find_watched_idx(uid)
@@ -1534,7 +1431,11 @@ class _ActionsController:
         if index is None:
             return None
         with contextlib.suppress(KeyError):
-            return self._manager.get_imagetool(index).slicer_area.displayed_data
+            node = self._manager._node_for_target(index)
+            self._manager._data_graph.require_published(node.uid)
+            return self._manager.get_imagetool(index).slicer_area.displayed_data.copy(
+                deep=True
+            )
         return None
 
     def _send_imagetool_data(self, index_or_uid: int | str) -> None:
@@ -1854,13 +1755,11 @@ class _ActionsController:
         self,
         tool: ImageTool,
         parent: int | str,
+        origin: _ImageToolInput | _CalculatedResult | _ImportedHistory,
         *,
         show: bool = True,
         activate: bool = False,
         uid: str | None = None,
-        provenance_spec: ToolProvenanceSpec | None = None,
-        source_spec: ToolProvenanceSpec | None = None,
-        source_binding: ImageToolSelectionSourceBinding | None = None,
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         output_id: str | None = None,
@@ -1870,8 +1769,18 @@ class _ActionsController:
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> str:
+        provenance_spec = source_spec = source_binding = None
+        if isinstance(origin, _ImportedHistory):
+            provenance_spec, source_spec, source_binding = (
+                origin.provenance,
+                origin.source,
+                origin.binding,
+            )
+        else:
+            tool.set_provenance_spec(None)
         imported = (
-            provenance_spec is None
+            isinstance(origin, _ImportedHistory)
+            and provenance_spec is None
             and source_spec is None
             and source_binding is None
             and output_id is None
@@ -1895,7 +1804,41 @@ class _ActionsController:
                 source_binding = None
             elif source_spec is not None:
                 source_binding = None
-            if provenance_spec is None and source_spec is not None:
+            uid = self._manager._next_node_uid(uid)
+            publish = None
+            if not isinstance(origin, _ImportedHistory):
+                publish = self._manager._data_graph.prepare_window(
+                    uid,
+                    tool,
+                    origin,
+                    parent_uid=parent_node.uid,
+                    auto=source_auto_update,
+                )
+            elif (
+                source_spec is not None
+                and output_id is None
+                and source_state == "fresh"
+            ):
+                publish = self._manager._data_graph.prepare_imported_transform(
+                    uid,
+                    parent_node,
+                    source_spec,
+                    tool.slicer_area._data,
+                    parent_uid=parent_node.uid,
+                    auto=source_auto_update,
+                    input_dtype=tool.slicer_area._source_input_dtype,
+                )
+            elif output_id is None and source_state == "fresh":
+                publish = self._manager._data_graph.prepare_imported_workflow(
+                    uid,
+                    tool.slicer_area._data,
+                    provenance_spec,
+                    parent_uid=parent_node.uid,
+                    imported=True,
+                    auto=source_auto_update,
+                    input_dtype=tool.slicer_area._source_input_dtype,
+                )
+            if publish is None and provenance_spec is None and source_spec is not None:
                 provenance_spec = compose_display_provenance(
                     parent_node.displayed_provenance_spec,
                     source_spec,
@@ -1905,11 +1848,13 @@ class _ActionsController:
                 tool.set_provenance_spec(provenance_spec)
             node = _ManagedWindowNode(
                 self._manager,
-                self._manager._next_node_uid(uid),
+                uid,
                 parent_node.uid,
                 tool,
-                provenance_spec=provenance_spec,
-                source_spec=source_spec,
+                provenance_spec=(provenance_spec or tool.provenance_spec)
+                if isinstance(origin, _ImportedHistory)
+                else None,
+                source_spec=source_spec if publish is None else None,
                 source_binding=source_binding,
                 source_auto_update=source_auto_update,
                 source_state=source_state,
@@ -1920,7 +1865,19 @@ class _ActionsController:
                 created_time=created_time,
                 note=note,
             )
-            self._manager._register_child_node(node)
+            with self._manager._data_graph.staging_window(uid):
+                try:
+                    self._manager._register_child_node(node)
+                    if publish is not None:
+                        publish()
+                    elif isinstance(origin, _ImportedHistory):
+                        self._manager._data_graph.imported_workflow(uid)
+                except Exception:
+                    if self._manager._tool_graph.nodes.get(uid) is node:
+                        self._manager._remove_uid_target(
+                            node.uid, update_view=False, preflight=False
+                        )
+                    raise
             if output_id is not None and parent_node.tool_window is not None:
                 parent_node.tool_window._register_output_imagetool_target(
                     output_id, node.uid

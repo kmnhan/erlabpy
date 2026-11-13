@@ -111,7 +111,7 @@ def _add_file_replay_tool(
 ) -> erlab.interactive.imagetool.ImageTool:
     tool = itool(data, manager=False, execute=False)
     assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
-    manager.add_imagetool(tool, show=False, provenance_spec=spec)
+    manager.import_imagetool(tool, show=False, provenance_spec=spec)
     return tool
 
 
@@ -298,6 +298,12 @@ def _fake_edit_controller(
         _metadata_node_uid=metadata_uid,
         _provenance_revisions=revisions,
         _tool_graph=types.SimpleNamespace(nodes=graph_nodes),
+        _data_graph=types.SimpleNamespace(
+            owns_result=lambda _uid: False,
+            manages=lambda _uid: False,
+            prepare_imported_transform=lambda *_args, **_kwargs: None,
+            prepare_imported_workflow=lambda *_args, **_kwargs: None,
+        ),
         _selected_imagetool_targets=lambda: selected_targets,
         _node_for_target=lambda target: graph_nodes[target],
         _parent_node=_parent_node,

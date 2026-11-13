@@ -150,6 +150,7 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
             self.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
         self.data = data
         self._result_data: xr.DataArray | None = None
+        self.accepted_operations: tuple[ToolProvenanceOperation, ...] = ()
 
         layout = QtWidgets.QVBoxLayout(self)
 
@@ -258,8 +259,10 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
         operations.extend(aggregate_operations)
         return operations
 
-    def process_data(self, data: xr.DataArray) -> xr.DataArray:
-        for operation in self.source_operations():
+    def process_data(
+        self, data: xr.DataArray, operations: tuple[ToolProvenanceOperation, ...]
+    ) -> xr.DataArray:
+        for operation in operations:
             data = operation.apply(data)
         return data
 
@@ -347,7 +350,8 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
             return
 
         try:
-            selected = self.process_data(self.data)
+            operations = tuple(self.source_operations())
+            selected = self.process_data(self.data, operations)
         except Exception as exc:
             self._result_data = None
             self.preview_label.setText(f"Invalid reduction: {exc}")
@@ -367,4 +371,5 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
                 "Choose reductions that leave data with 2 to 4 dimensions.",
             )
             return
+        self.accepted_operations = operations
         super().accept()

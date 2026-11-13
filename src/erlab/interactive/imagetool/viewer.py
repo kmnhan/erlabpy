@@ -26,6 +26,11 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab._provenance._records import (
+    guard_lazy_data,
+    lazy_input_problem,
+    own_eager_data,
+)
 from erlab.extensions._api import _registered_script_capability_status
 from erlab.interactive import _shortcut_sequences
 from erlab.interactive._options.runtime import (
@@ -79,16 +84,21 @@ if typing.TYPE_CHECKING:
 
     from erlab.extensions._api import _CapabilityStatus
     from erlab.interactive._options.schema import AppOptions
+    from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
     from erlab.interactive.imagetool.plot_items import (
         ItoolGraphicsLayoutWidget,
         ItoolImageItem,
         ItoolPlotItem,
     )
+    from erlab.interactive.imagetool.slicer import ArraySlicerState
 else:
     import lazy_loader as _lazy
 
     qtawesome = _lazy.load("qtawesome")
 
+from erlab.interactive.imagetool._provenance._operations._coordinates import (
+    ImageToolInputOperation,
+)
 from erlab.interactive.imagetool.viewer_linking import (
     LinkSyncResult,
     SlicerLinkProxy,
@@ -102,7 +112,9 @@ from erlab.interactive.imagetool.viewer_state import (
     ImageSlicerState,
     PlotItemState,
     _prepare_input_data,
+    _PreparedInputData,
     _processed_ndim,
+    restore_source_order,
 )
 
 logger = logging.getLogger(__name__)
@@ -133,6 +145,15 @@ def _repeatable_xarray_resource_closer(
             break
         closer = owner_closer
     return closer if callable(closer) else None
+
+
+def _should_auto_compute(data: xr.DataArray) -> bool:
+    """Apply the size threshold to the floating point values ImageTool displays."""
+    itemsize = data.dtype.itemsize if data.dtype in (np.float32, np.float64) else 8
+    return data.chunks is not None and (
+        data.size * itemsize * 1e-6
+        < erlab.interactive.options.model.io.dask.compute_threshold
+    )
 
 
 class ImageSlicerArea(QtWidgets.QWidget):
@@ -335,6 +356,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._update_delayed: bool = _in_manager  #: Internal flag for delayed updates
         self._defer_dask_point_value_readout: bool = False
         self._workspace_dask_refresh_scheduled = False
+        self._last_readable_slicer_state: ArraySlicerState | None = None
         self._workspace_pending_dask_refresh: (
             tuple[int | tuple[int, ...], tuple[int, ...] | None] | None
         ) = None
@@ -412,9 +434,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
         # after initialization is complete
         self._write_history = False
 
+        outer_layout = QtWidgets.QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        self._source_unavailable_message = QtWidgets.QLabel(self)
+        self._source_unavailable_message.setObjectName("imagetool_source_unavailable")
+        self._source_unavailable_message.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self._source_unavailable_message.setWordWrap(True)
+        self._source_unavailable_message.hide()
+        outer_layout.addWidget(self._source_unavailable_message)
         layout = QtWidgets.QHBoxLayout()
-        self.setLayout(layout)
-
+        outer_layout.addLayout(layout)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
@@ -485,6 +514,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._data: xr.DataArray
         self._array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer
 
+        data = restore_source_order(data, state)
         self.set_data(
             data,
             rad2deg=rad2deg,
@@ -1336,7 +1366,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def persistence_data_and_state(self) -> tuple[xr.DataArray, ImageSlicerState]:
         """Return public source data in the saved slicer layout and its state."""
         source = self._data_aligned_to_dims(self._data, tuple(self.data.dims))
-        return self._restore_public_source_layout(source), self.state
+        state = self.state
+        public = self._restore_public_source_layout(source)
+        if public.dims != self._data.dims:
+            state["source_dims"] = self._data.dims
+        return public, state
 
     def displayed_live_source_spec(
         self,
@@ -1429,11 +1463,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 "Operations that can execute stored Python cannot be used as display "
                 "filters"
             )
-        return self._normalize_filter_result_for_source_dims(
-            data,
-            operation.apply(data),
-            dims,
-        )
+        with xr.set_options(**operation.execution_options):
+            return self._normalize_filter_result_for_source_dims(
+                data, operation.apply(data), dims
+            )
 
     def _replacement_display_dims(self, data: xr.DataArray) -> tuple[Hashable, ...]:
         validated = erlab.interactive.imagetool.slicer.ArraySlicer.validate_array(
@@ -1463,7 +1496,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         operation: ToolProvenanceOperation,
     ) -> Callable[[xr.DataArray], xr.DataArray]:
         def _apply_filter(darr: xr.DataArray) -> xr.DataArray:
-            return operation.apply(darr)
+            with xr.set_options(**operation.execution_options):
+                return operation.apply(darr)
 
         return _apply_filter
 
@@ -1522,6 +1556,73 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.refresh_all(only_plots=True)
             self.lock_levels(self.levels_locked)
 
+    def _own_managed_source(self) -> None:
+        """Detach a newly managed window from its producer's mutable buffers."""
+        self._data = (
+            own_eager_data(self._data)
+            if self._data.variable._in_memory
+            else self._data.copy(deep=True)
+        )
+        self._data_shares_external_values = True  # Detach shared values on edit.
+        if self._obj_shares_data_values:
+            self._restore_obj_from_source(update=False)
+        elif self.array_slicer._obj.variable._in_memory:
+            owned = self.array_slicer._obj.copy(deep=True)
+            self._replace_data_values(self.array_slicer._obj, owned.data)
+            self.array_slicer.clear_val_cache()
+
+    def _guard_lazy_data(self, guards) -> None:
+        """Keep a published window subject to its recorded file versions."""
+        self._data = guard_lazy_data(self._data, guards)
+        obj = self.array_slicer._obj
+        protected = guard_lazy_data(obj, guards)
+        if protected is not obj:
+            self.array_slicer._obj = protected
+            self.array_slicer.clear_cache()
+            self.array_slicer._refresh_array_layout_cache()
+        if self._accepted_filter_data is not None:
+            self._accepted_filter_data = guard_lazy_data(
+                self._accepted_filter_data, guards
+            )
+        self._last_readable_slicer_state = self.array_slicer.state
+
+    def _set_source_unavailable(self, reason: str | None) -> None:
+        message = self._source_unavailable_message
+        if reason is None:
+            message.hide()
+            self._splitters[0].setEnabled(True)
+            return
+        if message.isHidden():
+            reload_issue = self._reload_unavailable_reason()
+            if reload_issue is None:
+                text = f"{reason} Use File → Reload Data to read the current file."
+            elif reload_issue.startswith(reason):
+                text = reload_issue
+            else:
+                text = f"{reason} {reload_issue}"
+            message.setText(text)
+            message.show()
+        self._splitters[0].setEnabled(False)
+        state = self._last_readable_slicer_state
+        if (
+            state is not None
+            and state["dims"] == self.data.dims
+            and len(state["indices"]) == self.n_cursors
+        ):
+            for cursor in range(self.n_cursors):
+                self.array_slicer.set_indices(
+                    cursor, state["indices"][cursor], update=False
+                )
+                self.array_slicer.set_values(
+                    cursor, state["values"][cursor], update=False
+                )
+                self.array_slicer.set_bins(cursor, state["bins"][cursor], update=False)
+
+    def _check_source_available(self) -> bool:
+        reason = lazy_input_problem(self.data)
+        self._set_source_unavailable(reason)
+        return reason is None
+
     def _set_source_item(self, key, value, *, emit_signals: bool = True) -> None:
         """Safely update a subset of the public source array in place."""
         need_restore = (
@@ -1554,6 +1655,45 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 self.sigSourceDataChanged.emit()
                 self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
                 self.sigDataEdited.emit()
+
+    def _install_edited_values(self, data: xr.DataArray) -> None:
+        """Install a prepared item edit without resetting the slicer's navigation."""
+        self._data = data.transpose(*self._data.dims).copy(deep=False)
+        self._data_shares_external_values = False
+        self._restore_obj_from_source()
+        self.sigSourceDataChanged.emit()
+        self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
+        self.sigDataEdited.emit()
+
+    def _capture_history_for_rollback(self) -> Callable[[], None]:
+        """Capture navigation history before a provisional replacement."""
+        previous = self._prev_states.copy()
+        following = self._next_states.copy()
+        pending = self._pending_history_entry
+        committed = self._pending_history_committed
+        if pending is not None:
+            # Finalizing a group replaces fields of the same entry in the undo stack.
+            saved = copy.copy(pending)
+            if committed:
+                previous[previous.index(pending)] = saved
+            pending = saved
+        grouped = self._history_group_active
+        timer = self._history_group_timer
+        timeout = timer.interval() if timer.isActive() else None
+
+        def restore() -> None:
+            self._prev_states = previous
+            self._next_states = following
+            self._pending_history_entry = pending
+            self._pending_history_committed = committed
+            self._history_group_active = grouped
+            if timeout is None:
+                timer.stop()
+            else:
+                timer.start(timeout)
+            self.sigHistoryChanged.emit()
+
+        return restore
 
     @property
     def undoable(self) -> bool:
@@ -1744,6 +1884,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         *,
         keep_pending: bool = False,
     ) -> typing.Any:
+        if self._write_history and not self._check_source_available():
+            return LinkSyncResult(sync=False)
         recording = self._write_history
         self.begin_history_entry(transaction_id)
         try:
@@ -2242,6 +2384,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
     ) -> None:
         cursor_color_params = self.array_slicer._cursor_color_params
         if cursor_color_params is not None:
+            if not self._check_source_available():
+                return
             coord_dims, coord_name, cmap, reverse, vmin, vmax = cursor_color_params
             if isinstance(cursor, int):
                 cursor = (cursor,)
@@ -2312,6 +2456,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if self._state_refresh_deferred():
             # The delayed initial update will compute all plots from the final state.
             return
+        if not self._check_source_available():
+            return
         if _workspace_write_in_progress(self._data):
             self._workspace_pending_dask_refresh = (cursor, axes)
             if not self._workspace_dask_refresh_scheduled:
@@ -2348,7 +2494,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
             )
 
         if arrays_list_flat:
-            arrays_list_flat = dask.compute(*arrays_list_flat)
+            try:
+                arrays_list_flat = dask.compute(*arrays_list_flat)
+            except OSError:
+                # A file can change after the preflight check but before a
+                # chunk read. Only consume errors explained by a recorded guard.
+                if self._check_source_available():
+                    raise
+                return
 
         arrays_it = iter(arrays_list_flat)
 
@@ -2370,6 +2523,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.sigPointValueChanged.emit(
                 self.array_slicer.display_safe_float(next(arrays_it))
             )
+        self._last_readable_slicer_state = self.array_slicer.state
 
     @QtCore.Slot()
     def _retry_workspace_dask_refresh(self) -> None:
@@ -2506,29 +2660,119 @@ class ImageSlicerArea(QtWidgets.QWidget):
             If `True` and the data is dask-backed, automatically compute the data if its
             size is below the threshold defined in options.
 
+        .. versionchanged:: 3.30.0
+           In a managed ImageTool, setting data publishes a new revision. Supplying a
+           file path and loader sets the source for Reload Data. A plain data update
+           keeps the existing update recipe and reapplies recorded metadata assignments.
+
         """
-        input_resource_closer = (
-            _repeatable_xarray_resource_closer(data)
-            if isinstance(data, xr.DataArray)
-            else None
-        )
-        prepared_data = _prepare_input_data(data, self)
-        if prepared_data is None:
+        node = self._managed_node()
+        if node is not None and file_path is None:
+            node.prepare_raw_replacement(
+                self._prepare_single_input(data),
+                rad2deg=rad2deg,
+                load_func=load_func,
+                preparation_operations=preparation_operations,
+                auto_compute=auto_compute,
+            )()
+            return
+        with (
+            node.publishing_replacement("file")
+            if node is not None
+            else contextlib.nullcontext()
+        ):
+            self._set_data(
+                data,
+                rad2deg,
+                file_path,
+                load_func,
+                preparation_operations,
+                auto_compute,
+                source_replaced=source_replaced or node is not None,
+            )
+
+    def _prepare_single_input(
+        self, data: xr.DataArray | npt.NDArray
+    ) -> _PreparedInputData:
+        prepared = _prepare_input_data(data, self)
+        if prepared is None:
             raise ValueError("Opening high-dimensional data was canceled.")
-        darr_list = [prepared.data for prepared in prepared_data]
-        if len(darr_list) > 1:
+        if len(prepared) != 1:
             raise ValueError(
                 "This object cannot be opened in a single window. "
                 "Use the manager instead."
             )
-        if not preparation_operations:
-            preparation_operations = prepared_data[0].operations
-        data_resource_closer = (
-            _repeatable_xarray_resource_closer(darr_list[0]) or input_resource_closer
+        item = prepared[0]
+        if (
+            isinstance(data, xr.DataArray)
+            and item.data is not data
+            and item.data._close is None
+        ):
+            item.data.set_close(_repeatable_xarray_resource_closer(data))
+        return item
+
+    @staticmethod
+    def _input_conversion(
+        data: xr.DataArray, rad2deg: bool | Iterable[str]
+    ) -> ImageToolInputOperation | None:
+        dims: tuple[str, ...] = ()
+        if rad2deg:
+            dims = (
+                tuple(rad2deg)
+                if not isinstance(rad2deg, (bool, np.bool_))
+                else tuple(
+                    d
+                    for d in ("phi", "theta", "beta", "alpha", "chi", "xi")
+                    if d in data.dims
+                )
+            )
+        cast = data.dtype not in (np.float32, np.float64)
+        return (
+            ImageToolInputOperation(cast_float64=cast, degree_coords=dims)
+            if cast or dims
+            else None
         )
 
-        self._file_path = pathlib.Path(file_path) if file_path is not None else None
+    def _set_data(
+        self,
+        data: xr.DataArray | npt.NDArray,
+        rad2deg: bool | Iterable[str] = False,
+        file_path: str | os.PathLike | None = None,
+        load_func: _LoadFunc | None = None,
+        preparation_operations: collections.abc.Sequence[ToolProvenanceOperation] = (),
+        auto_compute: bool = True,
+        *,
+        source_replaced: bool = False,
+    ) -> None:
+        """Install data in the widget, including changes to backing storage."""
+        prepared = self._prepare_single_input(data)
+        conversion = self._input_conversion(prepared.data, rad2deg)
+        source = conversion.apply(prepared.data) if conversion else prepared.data
+        self._install_input(
+            prepared,
+            source,
+            conversion,
+            file_path,
+            load_func,
+            preparation_operations,
+            auto_compute,
+            source_replaced=source_replaced,
+        )
 
+    def _install_input(
+        self,
+        prepared: _PreparedInputData,
+        source: xr.DataArray,
+        conversion: ImageToolInputOperation | None,
+        file_path: str | os.PathLike | None,
+        load_func: _LoadFunc | None,
+        preparation_operations: collections.abc.Sequence[ToolProvenanceOperation],
+        auto_compute: bool,
+        *,
+        source_replaced: bool,
+    ) -> None:
+        data_resource_closer = _repeatable_xarray_resource_closer(prepared.data)
+        path = pathlib.Path(file_path) if file_path is not None else None
         if load_func is not None:
             func: Callable | str = load_func[0]
             selection = load_func[2]
@@ -2542,57 +2786,45 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 func = func_instance.name
             elif callable(func):
                 _register_local_callable_loader(func)
-            self._load_func = (func, load_func[1], selection)
-        else:
-            self._load_func = None
-        self._load_preparation_operations = tuple(preparation_operations)
+            load_func = (func, load_func[1], selection)
 
-        if hasattr(self, "_array_slicer") and hasattr(self, "_data"):
-            n_cursors_old = self.n_cursors
-            self._close_data_resource_cache()
-            self._data_resource_closer = None
-            del self._data
-            self.disconnect_axes_signals()
-        else:
-            n_cursors_old = 1
-
-        data = darr_list[0]
-        self._source_input_dtype = prepared_data[0].source_dtype
-        shares_external_values = True
-        if hasattr(self, "_data") and data is self._data:
-            shares_external_values = False
-        data = data.copy(deep=False)
-
-        if data.dtype not in (np.float32, np.float64):
-            data = data.astype(np.float64)
-            shares_external_values = False
-
-        if not rad2deg:
-            source = data
-        else:
-            if np.iterable(rad2deg):
-                conv_dims = rad2deg
-            else:
-                conv_dims = [
-                    d
-                    for d in ("phi", "theta", "beta", "alpha", "chi", "xi")
-                    if d in data.dims
-                ]
-            source = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
-
-        if (
-            auto_compute
-            and source.chunks is not None
-            and (source.nbytes * 1e-6)
-            < erlab.interactive.options.model.io.dask.compute_threshold
-        ):
+        shares_external_values = conversion is None or not conversion.cast_float64
+        if auto_compute and _should_auto_compute(source):
             source = source.compute()
             shares_external_values = False
             if data_resource_closer is not None:
                 data_resource_closer()
                 data_resource_closer = None
 
+        if self._in_manager:
+            from erlab.interactive.imagetool.manager._workspace._arrays import (
+                lease_workspace_input,
+            )
+
+            source = lease_workspace_input(source)
+            source = (
+                own_eager_data(source)
+                if source.variable._in_memory
+                else source.copy(deep=True)
+            )
+            shares_external_values = True  # Item edits must detach immutable values.
+        if hasattr(self, "_array_slicer") and hasattr(self, "_data"):
+            n_cursors_old = self.n_cursors
+            self._close_data_resource_cache()
+            self.disconnect_axes_signals()
+        else:
+            n_cursors_old = 1
+
+        self._file_path = path
+        self._load_func = load_func
+        self._load_preparation_operations = tuple(
+            preparation_operations or prepared.operations
+        )
+        self._source_input_dtype = prepared.source_dtype
+        self._degree_coords = conversion.degree_coords if conversion else ()
         self._data = source.copy(deep=False)
+        self._last_readable_slicer_state = None
+        self._set_source_unavailable(None)
         self._data_resource_closer = data_resource_closer
         self._data_shares_external_values = shares_external_values
         self._obj_shares_data_values = True
@@ -2748,6 +2980,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         bool
             `True` if the data can be reloaded, `False` otherwise.
         """
+        if graph_target := self._managed_graph_target():
+            manager, uid = graph_target
+            return manager._data_graph.command_issue(uid, "reload") is None
         provenance_spec = self.provenance_spec
         stored_code_without_host = (
             provenance_spec is not None
@@ -2776,6 +3011,20 @@ class ImageSlicerArea(QtWidgets.QWidget):
         ):
             return None
         return manager
+
+    def _managed_node(self) -> _ManagedWindowNode | None:
+        manager = self._manager_instance if self._in_manager else None
+        return manager.node_from_slicer_area(self) if manager is not None else None
+
+    def _managed_graph_target(
+        self,
+    ) -> tuple[erlab.interactive.imagetool.manager.ImageToolManager, str] | None:
+        node = self._managed_node()
+        if node is not None:
+            graph = node.manager._data_graph
+            if graph.reloads_result(node.uid):
+                return node.manager, node.uid
+        return None
 
     def _managed_source_chain_reload_target(
         self,
@@ -3036,6 +3285,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def _reload_unavailable_reason(self) -> str | None:
         """Return why Reload Data cannot run, or `None` when reload is available."""
+        if graph_target := self._managed_graph_target():
+            manager, uid = graph_target
+            return manager._data_graph.command_issue(uid, "reload")
         if self._managed_source_chain_reload_target() is not None:
             return None
         manager = self._manager_instance if self._in_manager else None
@@ -3178,6 +3430,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def _reload(self) -> bool:
         """Reload the displayed data and return whether the reload succeeded."""
+        if graph_target := self._managed_graph_target():
+            manager, uid = graph_target
+            return manager._data_graph.run(uid, "reload")
         managed_reload = self._managed_source_chain_reload_target()
         if managed_reload is not None:
             manager, target = managed_reload
@@ -3259,14 +3514,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """Replace source data during reload and reapply the accepted filter."""
         accepted_filter_operation = self._accepted_filter_provenance_operation
         if accepted_filter_operation is None:
-            self.replace_source_data(data, **kwargs)
+            self._set_data(data, source_replaced=True, **kwargs)
             return
 
         filtered = self._filter_operation_result_for_replacement(
             data,
             accepted_filter_operation,
         )
-        self.set_data(data, **kwargs)
+        self._set_data(data, **kwargs)
         self.sigSourceDataChanged.emit()
         self._apply_filter_result(
             filtered,
@@ -3363,6 +3618,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
     ) -> ToolProvenanceSpec | None:
         """Return provenance for the currently displayed data values."""
         if base_spec is None:
+            node = self._managed_node()
+            if node is not None and node.manager._data_graph.owns_result(node.uid):
+                return node.manager._data_graph.result_spec(node.uid, displayed=True)
             base_spec = self.provenance_spec
         operation = self._accepted_filter_provenance_operation
         if operation is None:
@@ -3498,27 +3756,51 @@ class ImageSlicerArea(QtWidgets.QWidget):
         preview: bool = False,
     ) -> None:
         """Apply an operation-backed reversible display filter."""
+        if not preview and (node := self._managed_node()) is not None:
+            adapter = node.manager._data_graph
+            if adapter.handles_filter(node):
+                _, install = adapter.prepare_filter(
+                    node, operation, update=update, emit_edited=emit_edited
+                )
+                install()
+                return
+        filtered = (
+            None
+            if operation is None
+            else self._filter_operation_result_for_data(
+                self._data,
+                operation,
+                tuple(self.data.dims),
+            )
+        )
+        self._install_filter(
+            operation, filtered, update=update, preview=preview, emit_edited=emit_edited
+        )
+
+    def _install_filter(
+        self,
+        operation: ToolProvenanceOperation | None,
+        filtered: xr.DataArray | None,
+        *,
+        update: bool,
+        preview: bool,
+        emit_edited: bool,
+    ) -> None:
         if operation is None:
             self._apply_filter_func(
-                None,
+                None, update=update, accept=not preview, emit_edited=emit_edited
+            )
+        else:
+            if filtered is None:
+                raise ValueError("Missing calculated filter result")
+            self._apply_filter_result(
+                filtered,
+                self._filter_func_from_operation(operation),
                 update=update,
+                operation=operation,
                 accept=not preview,
                 emit_edited=emit_edited,
             )
-            return
-        filtered = self._filter_operation_result_for_data(
-            self._data,
-            operation,
-            tuple(self.data.dims),
-        )
-        self._apply_filter_result(
-            filtered,
-            self._filter_func_from_operation(operation),
-            update=update,
-            operation=operation,
-            accept=not preview,
-            emit_edited=emit_edited,
-        )
 
     def set_manual_limits(self, manual_limits: dict[str, list[float]]) -> None:
         """Set manual limits for the axes.
@@ -3674,7 +3956,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             try:
                 state = copy.deepcopy(self.state)
                 with erlab.interactive.utils.wait_dialog(self, "Computing…"):
-                    self.set_data(self._data.load())
+                    self._set_data(self._data.load())
                     self.state = state
                 self.sigDataBackingChanged.emit()
             except Exception:
@@ -3704,7 +3986,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """
         state = copy.deepcopy(self.state)
         with erlab.interactive.utils.wait_dialog(self, "Setting Chunks…"):
-            self.set_data(self._data.chunk(chunks), auto_compute=False)
+            self._set_data(self._data.chunk(chunks), auto_compute=False)
             self.state = state
         self.sigDataBackingChanged.emit()
 

@@ -18,6 +18,7 @@ from pyqtgraph.GraphicsScene import mouseEvents
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab._provenance._graph import _SupersededEvaluation
 from erlab.interactive.imagetool._provenance._model import (
     ScriptInput,
     ToolProvenanceOperation,
@@ -50,7 +51,6 @@ if typing.TYPE_CHECKING:
     import dask.array
     import qtawesome
 
-    from erlab.interactive.imagetool import ImageTool
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
 else:
     import lazy_loader as _lazy
@@ -1042,6 +1042,8 @@ class ItoolPlotItem(pg.PlotItem):
     def update_twin_plots(self, *_args) -> None:
         if not self.isVisible():
             return
+        if not self.slicer_area._check_source_available():
+            return
         if self.vb1 is None:
             # Never initialized
             if self.array_slicer.twin_coord_names:
@@ -1540,12 +1542,29 @@ class ItoolPlotItem(pg.PlotItem):
 
     def _open_data_in_new_window(
         self,
-        data: xr.DataArray,
         source_spec: ToolProvenanceSpec,
         *,
         use_parent_colormap: bool,
     ) -> None:
-        itool_kw: dict[str, typing.Any] = {"data": data, "execute": False}
+        manager = (
+            self.slicer_area._manager_instance if self.slicer_area._in_manager else None
+        )
+        target = (
+            manager.target_from_slicer_area(self.slicer_area)
+            if manager is not None
+            else None
+        )
+        captured = (
+            manager._data_graph.read_input(target)
+            if manager is not None and target is not None
+            else None
+        )
+        result = (
+            manager._data_graph.transform(captured, source_spec)
+            if manager is not None and captured is not None
+            else None
+        )
+        itool_kw: dict[str, typing.Any] = {}
 
         if use_parent_colormap:
             color_props = self.slicer_area.colormap_properties
@@ -1563,27 +1582,30 @@ class ItoolPlotItem(pg.PlotItem):
             if color_props["reverse"] and isinstance(itool_kw["cmap"], str):
                 itool_kw["cmap"] = f"{itool_kw['cmap']}_r"
 
-        if self.slicer_area._in_manager:
-            manager = self.slicer_area._manager_instance
-            target = (
-                None
-                if manager is None
-                else manager.target_from_slicer_area(self.slicer_area)
-            )
-            if manager is not None and target is not None:
-                tool = typing.cast(
-                    "ImageTool | None",
-                    erlab.interactive.itool(manager=False, **itool_kw),
+        if (
+            manager is not None
+            and target is not None
+            and captured is not None
+            and result is not None
+        ):
+            try:
+                manager.add_imagetool_child(
+                    result,
+                    target,
+                    _display_options=itool_kw,
+                    _input_checks=(captured.require_current,),
                 )
-                if tool is not None:  # pragma: no branch
-                    manager.add_imagetool_child(
-                        tool,
-                        target,
-                        source_spec=source_spec,
-                    )
-                return
+            except _SupersededEvaluation as exc:
+                erlab.interactive.utils.MessageDialog.critical(
+                    self.slicer_area, "Source Changed", str(exc)
+                )
+            return
 
-        tool_window = erlab.interactive.itool(**itool_kw)
+        tool_window = erlab.interactive.itool(
+            source_spec.apply(self.slicer_area.displayed_data),
+            execute=False,
+            **itool_kw,
+        )
         if isinstance(tool_window, erlab.interactive.imagetool.ImageTool):
             tool_window.set_provenance_spec(
                 compose_display_provenance(
@@ -1601,9 +1623,7 @@ class ItoolPlotItem(pg.PlotItem):
     @QtCore.Slot()
     def open_in_new_window(self) -> None:
         """Open the current data in a new window."""
-        data = self.current_data
         self._open_data_in_new_window(
-            data,
             self.make_tool_source_spec(),
             use_parent_colormap=True,
         )
@@ -1618,9 +1638,7 @@ class ItoolPlotItem(pg.PlotItem):
             if displayed_profile
             else public_data(operation)
         )
-        data = source_spec.apply(self.slicer_area._tool_source_parent_data())
         self._open_data_in_new_window(
-            data,
             source_spec,
             use_parent_colormap=False,
         )

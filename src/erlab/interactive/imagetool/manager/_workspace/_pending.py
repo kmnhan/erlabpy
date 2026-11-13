@@ -40,6 +40,7 @@ from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
 )
+from erlab.interactive.imagetool.viewer_state import restore_source_order
 
 if typing.TYPE_CHECKING:
     import os
@@ -320,9 +321,11 @@ class _PendingWorkspacePayloads:
                     )
                 else:
                     if isinstance(state, collections.abc.Mapping):
+                        layout = data.dims
+                        data = restore_source_order(data, state)
                         data = cls._apply_pending_workspace_filter(
                             data, state.get("filter_operation")
-                        )
+                        ).transpose(*layout)
         if source_input_ndim == 1:
             data = mark_promoted_1d_source(data)
         return data.copy(deep=False)
@@ -997,7 +1000,7 @@ class _PendingWorkspacePayloads:
                     else:
                         state = copy.deepcopy(node.slicer_area.state)
                         data = ds[_persistence_constants.ITOOL_DATA_NAME].rename(name)
-                        node.slicer_area.set_data(data, auto_compute=False)
+                        node.slicer_area._set_data(data, auto_compute=False)
                         node.slicer_area.state = state
                     node.clear_pending_workspace_payload()
                     node.update_title()

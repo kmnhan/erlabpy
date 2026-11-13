@@ -281,6 +281,28 @@ def test_kspace_conversion_dialog_jacobian_seed_restore_and_batch(qtbot, anglema
     assert not dialog.jacobian_check.isChecked()
 
 
+def test_kspace_dialog_retains_explicit_grid_and_estimates_its_size(qtbot, anglemap):
+    data = anglemap.isel(eV=0).copy(deep=True)
+    win = _add_hidden_tool(qtbot, erlab.interactive.itool(data, execute=False))
+    dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
+    operations = dialog.source_operations()
+    grid = KspaceConvertOperation.model_validate(
+        {
+            "coords": {"kx": np.linspace(-0.03, 0.03, 9, dtype=np.float32)},
+            "method": "nearest",
+            "group": operations[-1].group,
+        }
+    )
+    dialog.restore_transform_operations([*operations[:-1], grid])
+    recorded = dialog.source_operations()[-1]
+    assert recorded.coords == grid.coords
+    assert recorded.method == "nearest"
+    assert not dialog._resolution_spins["kx"].isEnabled()
+    estimate = dialog.conversion_estimate_for_data(data)
+    assert estimate.output_sizes["kx"] == 9
+    assert estimate.output_sizes == dict(dialog.process_data(data).sizes)
+
+
 def _set_input_coordinates(dialog, values: dict[str, float]) -> None:
     prefix = dialog.objectName().removesuffix("Dialog")
     for name, value in values.items():
@@ -704,12 +726,13 @@ def test_kspace_conversion_dialog_assigns_missing_scalar_angle_coordinates(
     assert not dialog._input_coordinates_widget.missing_names
 
     source_hv = float(data.hv)
+    edited_hv = float(np.nextafter(source_hv, np.inf))
     dialog.focus_operation_group_control("input_coordinates")
 
     def _edit_coordinates(coordinate_dialog) -> None:
         _set_input_coordinates(
             coordinate_dialog,
-            {"beta": -2.0, "xi": 5.0, "hv": source_hv + 2.0},
+            {"beta": -2.0, "xi": 5.0, "hv": edited_hv},
         )
 
     accept_dialog(
@@ -726,7 +749,7 @@ def test_kspace_conversion_dialog_assigns_missing_scalar_angle_coordinates(
     assert {
         str(operation.coord_name): float(operation.decoded_value)
         for operation in coordinate_operations
-    } == pytest.approx({"hv": source_hv + 2.0, "beta": -2.0, "xi": 5.0})
+    } == {"hv": edited_hv, "beta": -2.0, "xi": 5.0}
     for index in range(len(operations)):
         assert KspaceConversionDialog.operation_group_for_edit(
             operations,
@@ -742,9 +765,12 @@ def test_kspace_conversion_dialog_assigns_missing_scalar_angle_coordinates(
     )
     restored = restored_holder["dialog"]
     restored.restore_transform_operations(operations)
-    assert restored._input_coordinates_widget.values == pytest.approx(
-        {"hv": source_hv + 2.0, "beta": -2.0, "xi": 5.0}
-    )
+    assert restored._input_coordinates_widget.values == {
+        "hv": edited_hv,
+        "beta": -2.0,
+        "xi": 5.0,
+    }
+    assert restored.provenance_edit_operations() == operations
 
     expected = dialog.process_data(data.copy(deep=True))
     code = dialog.make_code()
@@ -762,7 +788,7 @@ def test_kspace_conversion_dialog_assigns_missing_scalar_angle_coordinates(
     )
     dialog._set_configuration_combo(int(other_configuration))
     assert dialog._input_coordinates_for_data(data) == pytest.approx(
-        {"hv": source_hv + 2.0, "beta": -2.0, "xi": 5.0}
+        {"hv": edited_hv, "beta": -2.0, "xi": 5.0}
     )
 
 
@@ -2691,6 +2717,50 @@ def test_kspace_conversion_dialog_seeds_hv_inner_potential_from_ktool(
         dialog.restore_transform_operation(operations[0])
 
 
+def test_kspace_conversion_dialog_preserves_recorded_precision(qtbot):
+    data = generate_hvdep_cuts((8, 10, 7), hvrange=(20.0, 30.0), noise=False)
+    win = erlab.interactive.itool(data, execute=False)
+    _add_hidden_tool(qtbot, win)
+    dialog = KspaceConversionDialog(win.slicer_area, provenance_edit_mode=True)
+    qtbot.addWidget(dialog)
+    first, second = data.kspace.momentum_axes
+    work_function = 4.234567890123456
+    inner_potential = 12.345678901234567
+    angles = (1.1234567890123457, -2.0123456789012345)
+    bounds = {first: (-0.01234567890123456, 0.043210987654321)}
+    resolution = {second: 0.02345678901234567}
+    operations = stamp_operation_group(
+        (
+            KspaceWorkFunctionOperation(work_function=work_function),
+            KspaceInnerPotentialOperation(inner_potential=inner_potential),
+            KspaceSetNormalOperation(alpha=angles[0], beta=angles[1], alpha_scale=1.0),
+            KspaceConvertOperation(bounds=bounds, resolution=resolution),
+        ),
+        kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+    )
+    dialog.restore_transform_operations(operations)
+    assert dialog._work_function == work_function
+    assert dialog._inner_potential == inner_potential
+    assert dialog.normal_emission == angles
+    assert dialog.bounds == bounds
+    assert dialog.resolution == resolution
+    dialog.accept()
+    assert dialog.result() == imagetool_dialogs.QtWidgets.QDialog.DialogCode.Accepted
+    assert dialog.provenance_edit_operations() == list(operations)
+    new_wf = 4.345678901234567
+    dialog._offset_spins["wf"].lineEdit().setText(str(new_wf))
+    updated = dialog.provenance_edit_operations()
+    assert updated == [
+        operations[0].model_copy(update={"work_function": new_wf}),
+        *operations[1:],
+    ]
+    new_res = 0.03456789012345678
+    dialog._resolution_spins[first].setValue(new_res)
+    assert dialog.provenance_edit_operations()[-1] == operations[-1].model_copy(
+        update={"resolution": {first: new_res, **resolution}}
+    )
+
+
 def test_kspace_conversion_dialog_restore_scales_recalculates_auto_bounds(
     qtbot, anglemap
 ) -> None:
@@ -2714,6 +2784,22 @@ def test_kspace_conversion_dialog_restore_scales_recalculates_auto_bounds(
     )
 
     dialog.restore_transform_operations(operations)
+
+    assert dialog.provenance_edit_operations() == list(operations)
+    dialog.jacobian_check.setChecked(True)
+    assert dialog.provenance_edit_operations() == [
+        operations[0],
+        operations[1].model_copy(update={"jacobian": True}),
+    ]
+    wf = dialog._work_function + 1e-10
+    dialog._offset_spins["wf"].setValue(wf)
+    edited = dialog.provenance_edit_operations()
+    assert strip_operation_groups(edited) == (
+        KspaceWorkFunctionOperation(work_function=wf),
+        *strip_operation_groups(
+            (operations[0], operations[1].model_copy(update={"jacobian": True}))
+        ),
+    )
 
     expected_data = dialog._parameterized_data(dialog._control_data.copy(deep=False))
     expected_bounds = expected_data.kspace.estimate_bounds()

@@ -84,6 +84,7 @@ def test_workspace_dependency_rebase_updates_tool_data_references() -> None:
     }
 
     class _PendingNode:
+        uid = "pending"
         tool_window = None
         pending_workspace_payload_kind = "tool"
         provenance_spec = None
@@ -131,6 +132,7 @@ def test_workspace_dependency_rebase_updates_tool_data_references() -> None:
             return
 
     class _LiveNode:
+        uid = "live"
         pending_workspace_payload_kind = None
         provenance_spec = None
 
@@ -144,7 +146,10 @@ def test_workspace_dependency_rebase_updates_tool_data_references() -> None:
     pending_node = _PendingNode()
     live_node = _LiveNode()
     nodes = {"pending": pending_node, "live": live_node}
-    manager = types.SimpleNamespace(_node_for_target=nodes.__getitem__)
+    manager = types.SimpleNamespace(
+        _node_for_target=nodes.__getitem__,
+        _data_graph=types.SimpleNamespace(owns_result=lambda _uid: False),
+    )
     controller = manager_lineage._LineageController(typing.cast("typing.Any", manager))
 
     controller._rebase_node_dependency_refs(nodes, {saved_uid: actual_uid})
@@ -893,7 +898,7 @@ def test_manager_pending_memory_child_routes_reload_to_file_source_parent(
         child_data = test_data.qsel.mean("alpha")
         child = itool(child_data, manager=False, execute=False)
         assert isinstance(child, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child,
             0,
             show=False,
@@ -977,7 +982,7 @@ def test_manager_pending_memory_child_source_change_marks_stale_not_unavailable(
         child_data = test_data.qsel.mean("alpha")
         child = itool(child_data, manager=False, execute=False)
         assert isinstance(child, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child,
             0,
             show=False,
@@ -1034,7 +1039,7 @@ def test_manager_pending_memory_output_child_source_change_marks_stale(
         assert output_data is not None
         output_tool = itool(output_data, manager=False, execute=False)
         assert isinstance(output_tool, erlab.interactive.imagetool.ImageTool)
-        output_uid = manager.add_imagetool_child(
+        output_uid = manager.import_imagetool_child(
             output_tool,
             child_tool_uid,
             show=False,
@@ -2329,7 +2334,7 @@ def test_pending_workspace_1d_roles_match_materialized_provenance_input(
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         tool = itool(data, manager=False, execute=False)
         assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(
+        manager.import_imagetool(
             tool,
             show=False,
             source_input_ndim=1,

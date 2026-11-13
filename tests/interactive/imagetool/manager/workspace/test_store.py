@@ -9,6 +9,7 @@ import shutil
 import threading
 import typing
 import uuid
+import weakref
 from types import SimpleNamespace
 
 import dask
@@ -759,6 +760,21 @@ def test_revision_capture_validates_before_reading_and_keeps_failures_atomic() -
             },
             "Supply revision data or a checkpoint source",
         ),
+        (
+            {"data": xr.DataArray([1]), "data_reader": lambda: xr.DataArray([2])},
+            "Supply revision data or a checkpoint source",
+        ),
+        (
+            {
+                "data_reader": lambda: xr.DataArray([1]),
+                "source": _RevisionCheckpointSource(
+                    "source.itws",
+                    "/checkpoint",
+                    lambda _file, _group: xr.DataArray([2]),
+                ),
+            },
+            "Supply revision data or a checkpoint source",
+        ),
     ],
 )
 def test_revision_registration_rejects_ambiguous_checkpoints_and_inputs(
@@ -903,6 +919,59 @@ def test_revision_lazy_checkpoint_cache_and_source_binding_are_isolated() -> Non
     assert calls == ["original", "replacement"]
     checkpoint = registry.get(revision_id).checkpoint
     assert checkpoint.source is saved_source
+
+
+def test_revision_data_reader_defers_reads_and_releases_owned_checkpoints() -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0], dims="x", attrs={"nested": {"value": 1}})
+    calls = []
+
+    class Reader:
+        def __call__(self):
+            calls.append(True)
+            return data
+
+    first_reader = Reader()
+    first_ref = weakref.ref(first_reader)
+    first = registry.add(data_reader=first_reader)
+    del first_reader
+    second_reader = Reader()
+    second_ref = weakref.ref(second_reader)
+    second = registry.add(data_reader=second_reader)
+    del second_reader
+    assert registry.has_data(first)
+    assert first_ref() is not None
+    assert not calls
+    resolved = registry.resolve_data(first)
+    resolved.values[:] = -1
+    resolved.attrs["nested"]["value"] = 2
+    xr.testing.assert_identical(registry.resolve_data(first), data)
+    assert calls == [True]
+    writes = workspace_revisions.revision_object_writes(
+        registry, registry.reachable((second,))
+    )
+    assert calls == [True, True]
+    np.testing.assert_array_equal(
+        writes[0].dataset[_persistence_constants.ITOOL_DATA_NAME], data
+    )
+
+    replacement = data + 10
+    registry.bind_checkpoint_source(
+        first,
+        _RevisionCheckpointSource(
+            "saved.itws", "/checkpoint", lambda *_args: replacement
+        ),
+    )
+    gc.collect()
+    assert first_ref() is None
+    xr.testing.assert_identical(registry.resolve_data(first), replacement)
+    with registry.retain((second,)):
+        registry.discard_unreachable(())
+        assert second_ref() is not None
+    registry.discard_unreachable(())
+    gc.collect()
+    assert second_ref() is None
+    assert not registry.revision_ids
 
 
 def test_immutable_checkpoint_provider_keeps_array_reads_lazy() -> None:

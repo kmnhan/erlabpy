@@ -415,15 +415,27 @@ def test_metadata_mismatch_is_cached_and_later_matching_source_is_repaired(
     assert repair_counts["compare"] > first["compare"]
 
 
+@pytest.fixture
+def mutable_repair_sources(figure_repair_case, monkeypatch):
+    # A repair can receive writable source arrays from a provider. Give it
+    # independent buffers so these tests never mutate an immutable graph revision.
+    arrays = []
+    for source in figure_repair_case.sources:
+        data = source.data_for_role("displayed").copy(deep=True)
+        arrays.append(data)
+        monkeypatch.setattr(source, "data_for_role", lambda _role, array=data: array)
+    return arrays
+
+
 def test_in_place_values_invalidate_mismatch_witness_without_token_change(
-    figure_repair_case, repair_counts
+    figure_repair_case, mutable_repair_sources, repair_counts
 ):
     case = figure_repair_case
     assert case.probe() is None
     first = repair_counts.copy()
     tokens = tuple(source.snapshot_token for source in case.sources)
-    for source in case.sources:
-        source.slicer_area._data.values[0, 0] = case.captured.values[0, 0]
+    for data in mutable_repair_sources:
+        data.values[0, 0] = case.captured.values[0, 0]
     assert tuple(source.snapshot_token for source in case.sources) == tokens
     repaired = case.probe()
     assert repaired is not None
@@ -436,22 +448,22 @@ def test_in_place_values_invalidate_mismatch_witness_without_token_change(
 
 @pytest.mark.parametrize("difference", ["attrs_order", "signed_zero"])
 def test_equivalent_metadata_digest_difference_is_not_a_mismatch_proof(
-    figure_repair_case, repair_counts, monkeypatch, difference
+    figure_repair_case, mutable_repair_sources, repair_counts, monkeypatch, difference
 ):
     case = figure_repair_case
     tokens = tuple(source.snapshot_token for source in case.sources)
-    for source in case.sources:
-        attrs = source.slicer_area._data.attrs
+    for data in mutable_repair_sources:
+        attrs = data.attrs
         if difference == "attrs_order":
-            source.slicer_area._data.attrs = dict(reversed(tuple(attrs.items())))
+            data.attrs = dict(reversed(tuple(attrs.items())))
         else:
             attrs["zero"] = -0.0
         assert xr.Dataset(attrs=case.captured.attrs).identical(
-            xr.Dataset(attrs=source.slicer_area._data.attrs)
+            xr.Dataset(attrs=data.attrs)
         )
         assert figure_repair.metadata_fingerprint(
             case.captured
-        ) != figure_repair.metadata_fingerprint(source.slicer_area._data)
+        ) != figure_repair.metadata_fingerprint(data)
     original = workspace_storage._workspace_dataset_values_equal
 
     def compare_without_scalar_witness(left, right, **kwargs):
@@ -467,8 +479,8 @@ def test_equivalent_metadata_digest_difference_is_not_a_mismatch_proof(
     first = repair_counts.copy()
     assert case.probe() is None
     assert repair_counts["decode"] > first["decode"]
-    for source in case.sources:
-        source.slicer_area._data.values[0, 0] = case.captured.values[0, 0]
+    for data in mutable_repair_sources:
+        data.values[0, 0] = case.captured.values[0, 0]
     assert tuple(source.snapshot_token for source in case.sources) == tokens
     repaired = case.probe()
     assert repaired is not None
@@ -540,7 +552,7 @@ def test_unsupported_metadata_is_compared_again_instead_of_dropped_from_key(
 
 
 def test_source_change_during_comparison_cannot_publish_stale_negative_cache(
-    figure_repair_case, repair_counts, monkeypatch
+    figure_repair_case, mutable_repair_sources, repair_counts, monkeypatch
 ):
     case = figure_repair_case
     original = case.saver._workspace_figure_arrays_identical

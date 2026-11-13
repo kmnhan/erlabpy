@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import functools
 import hashlib
 import json
@@ -20,6 +21,7 @@ from xarray.backends.common import ArrayWriter
 from xarray.core import indexing
 
 import erlab
+from erlab._provenance._records import WorkspaceSourcePath
 from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool.manager._workspace import _store as workspace_store
@@ -206,7 +208,7 @@ def retarget_workspace_xarray_sources(
         return
     for variable in _workspace_xarray_variables(value):
         if _normalized_file_path(variable.encoding.get("source")) == old_path:
-            variable.encoding["source"] = new_path
+            variable.encoding["source"] = WorkspaceSourcePath(new_path)
 
 
 def set_workspace_xarray_sources(
@@ -218,7 +220,7 @@ def set_workspace_xarray_sources(
     if target is None:
         return
     for variable in _workspace_xarray_variables(value):
-        variable.encoding["source"] = target
+        variable.encoding["source"] = WorkspaceSourcePath(target)
 
 
 def dataarray_is_numpy_backed(data_array: xr.DataArray) -> bool:
@@ -860,8 +862,105 @@ def _open_workspace_dataset_from_manager(
     finally:
         file_manager.close()
     for variable in ds.variables.values():
-        variable.encoding["source"] = file_manager.workspace_path
+        variable.encoding["source"] = WorkspaceSourcePath(file_manager.workspace_path)
     return ds
+
+
+def _workspace_object_id(group: str) -> str | None:
+    prefix, _, rest = group.strip("/").partition("/")
+    if prefix == _persistence_constants.WORKSPACE_OBJECTS_GROUP and rest:
+        return rest.split("/", 1)[0]
+    return None
+
+
+def _lease_external_workspace_reader(reader, path: str):
+    """Keep xarray's indexing and decoding around a leased immutable payload."""
+    from xarray.backends.h5netcdf_ import H5NetCDFArrayWrapper
+
+    wrappers = []
+    source = reader
+    while isinstance(
+        source, (indexing.ImplicitToExplicitIndexingAdapter, indexing.ExplicitlyIndexed)
+    ) and hasattr(source, "array"):
+        wrappers.append(source)
+        source = source.array
+    if not isinstance(source, H5NetCDFArrayWrapper):
+        return None
+    store = source.datastore
+    if _normalized_file_path(store._filename) != path:
+        return None
+    group = (store._group or "").strip("/")
+    object_id = _workspace_object_id(group)
+    if object_id is None:
+        return None
+    manager = WorkspaceFileManager(path, object_id=object_id, group_path=group)
+    backend = _WorkspaceH5NetCDFStore(manager, group=group, mode="r")
+    result = _WorkspaceBackendArray(
+        source.variable_name, backend, shape=source.shape, dtype=source.dtype
+    )
+    for wrapper in reversed(wrappers):
+        parent = copy.copy(wrapper)
+        parent.array = result
+        result = parent
+    return result
+
+
+def lease_workspace_input(data: xr.DataArray) -> xr.DataArray:
+    """Use object leases for external xarray reads from an open workspace."""
+    result = data
+    for name, variable in [
+        (None, data.variable),
+        *((key, coord.variable) for key, coord in data.coords.items()),
+    ]:
+        source = variable.encoding.get("source")
+        if (
+            source is None
+            or isinstance(source, WorkspaceSourcePath)
+            or variable._in_memory
+        ):
+            continue
+        path = _normalized_file_path(source)
+        if path is None or workspace_store.WorkspaceStore.active(path) is None:
+            continue
+        import dask.array as da
+        from dask.highlevelgraph import HighLevelGraph, MaterializedLayer
+
+        array = (
+            variable.chunk("auto").data if variable.chunks is None else variable.data
+        )
+        graph = array.__dask_graph__()
+        if not isinstance(graph, HighLevelGraph):
+            continue
+        layers = dict(graph.layers)
+        leased = False
+        for key, layer in graph.layers.items():
+            if (
+                not str(key).startswith("original-")
+                or not isinstance(layer, MaterializedLayer)
+                or key not in layer
+            ):
+                continue
+            reader = _lease_external_workspace_reader(layer[key], path)
+            if reader is None:
+                # Retain the file guard when the computation has another source.
+                leased = False
+                break
+            layers[key] = MaterializedLayer(
+                {**layer.mapping, key: reader}, annotations=layer.annotations
+            )
+            leased = True
+        if leased:
+            if result is data:
+                result = data.copy(deep=False)
+            target = result.variable if name is None else result.coords[name].variable
+            target.data = da.Array(
+                HighLevelGraph(layers, graph.dependencies),
+                array.name,
+                array.chunks,
+                meta=array._meta,
+            )
+            target.encoding["source"] = WorkspaceSourcePath(path)
+    return result
 
 
 def open_workspace_dataset(
@@ -875,15 +974,10 @@ def open_workspace_dataset(
     target = _normalized_file_path(path)
     if target is None:
         target = os.fsdecode(path)
-    group_parts = group.strip("/").split("/")
-    object_id = (
-        group_parts[1]
-        if len(group_parts) >= 2
-        and group_parts[0] == _persistence_constants.WORKSPACE_OBJECTS_GROUP
-        else None
-    )
     return _open_workspace_dataset_from_manager(
-        WorkspaceFileManager(target, object_id=object_id, group_path=group),
+        WorkspaceFileManager(
+            target, object_id=_workspace_object_id(group), group_path=group
+        ),
         group,
         chunks=chunks,
         cache=cache,

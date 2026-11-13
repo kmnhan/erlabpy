@@ -20,10 +20,13 @@ from qtpy import QtCore, QtWidgets
 import erlab
 from erlab.interactive.imagetool._load_source import _extension_loader_identity
 from erlab.interactive.imagetool._mainwindow import ImageTool
+from erlab.interactive.imagetool._provenance._execution import _select_replay_input
 from erlab.interactive.imagetool._provenance._model import FileDataSelection
+from erlab.interactive.imagetool._provenance._operations import RenameOperation
 from erlab.interactive.imagetool.manager._acquisition_context import (
     ContextIngressSummary,
 )
+from erlab.interactive.imagetool.manager._data_graph import _ImageToolInput
 from erlab.interactive.imagetool.manager._dialogs import _is_loader_func
 
 logger = logging.getLogger(__name__)
@@ -41,8 +44,9 @@ if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
-    from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
+    from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
+    from erlab.interactive.imagetool.viewer_state import _PreparedInputData
 
 
 def _is_extension_loader_func(func: object) -> bool:
@@ -68,11 +72,20 @@ class _DataIngressController:
     def __init__(self, manager: ImageToolManager) -> None:
         self._manager = manager
 
-    def open(self, *, native: bool = True) -> None:
+    def open(
+        self, *, native: bool = True, target: _ManagedWindowNode | None = None
+    ) -> None:
         """Prompt for one or more data files and queue them for loading."""
-        dialog = QtWidgets.QFileDialog(self._manager)
+        parent = (
+            self._manager if target is None else self._manager.get_imagetool(target.uid)
+        )
+        dialog = QtWidgets.QFileDialog(parent)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
-        dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFiles)
+        dialog.setFileMode(
+            QtWidgets.QFileDialog.FileMode.ExistingFiles
+            if target is None
+            else QtWidgets.QFileDialog.FileMode.ExistingFile
+        )
         valid_loaders: dict[str, tuple[Callable, dict[str, typing.Any]]] = (
             self._manager._available_file_loaders()
         )
@@ -102,6 +115,30 @@ class _DataIngressController:
             if selected is None:
                 return
             self._manager._recent_name_filter, func, kwargs = selected
+        if target is not None:
+            path = pathlib.Path(file_names[0])
+            try:
+                with erlab.interactive.utils.wait_dialog(parent, "Loading..."):
+                    loaded = func(path, **kwargs)
+                prepared = (
+                    erlab.interactive.imagetool.viewer_state._select_input_dataarrays(
+                        loaded, parent
+                    )
+                )
+                if prepared is not None:
+                    self.receive_file(
+                        path, func, kwargs, prepared, loaded, target=target
+                    )
+                    target.slicer_area.view_all()
+            except Exception:
+                erlab.interactive.utils.MessageDialog.critical(
+                    parent,
+                    "Error",
+                    "An error occurred while loading the file.",
+                    "Try again with a different loader.",
+                )
+                self.open(native=native, target=target)
+            return
         self.add_from_multiple_files(
             loaded=[],
             queued=[pathlib.Path(path) for path in file_names],
@@ -109,6 +146,32 @@ class _DataIngressController:
             func=func,
             kwargs=kwargs,
             retry_callback=lambda _: self.open(native=native),
+        )
+
+    def receive_file(
+        self,
+        path: pathlib.Path,
+        func: Callable,
+        kwargs: dict[str, typing.Any],
+        selected: tuple[_PreparedInputData, ...],
+        loaded: object,
+        *,
+        target: _ManagedWindowNode | None = None,
+        show: bool = True,
+        summary: ContextIngressSummary | None = None,
+    ) -> list[bool]:
+        """Install the selections made from one loader result."""
+        return self._receive_inputs(
+            selected,
+            {
+                "file_path": path,
+                "load_func": (func, kwargs),
+                "load_selections": tuple(item.selection for item in selected),
+            },
+            loaded=loaded,
+            show=show,
+            context_summary=summary,
+            target=target,
         )
 
     def receive_data(
@@ -119,22 +182,11 @@ class _DataIngressController:
         watched_var: tuple[str, str] | None = None,
         watched_metadata: Mapping[str, typing.Any] | None = None,
         show: bool | None = None,
-        _context_summary: ContextIngressSummary | None = None,
-        _extension_publication: _ExtensionLoaderPublication | None = None,
     ) -> list[bool]:
-        """Construct manager-owned ImageTools from received arrays or datasets.
-
-        An extension loader supplies its pinned publication permit through the
-        private ``_extension_publication`` argument. Loader results are selected into
-        data arrays before this call. The permit is checked directly before each
-        data-array manager mutation. Exact script bytes are retained only after the
-        corresponding ImageTool is inserted.
-        """
+        """Construct managed ImageTools from received arrays or saved windows."""
         if self._manager._workspace_state.closing_document:
             return [False] * len(data)
         flags: list[bool] = []
-        report_context_status = _context_summary is None
-        context_summary = _context_summary or ContextIngressSummary()
         if erlab.utils.misc.is_sequence_of(data, xr.Dataset):
             for ds in data:
                 dataset_tool: ImageTool | None = None
@@ -144,7 +196,7 @@ class _DataIngressController:
                         _in_manager=True,
                         options_model=self._manager.effective_interactive_options,
                     )
-                    self._manager.add_imagetool(
+                    self._manager.import_imagetool(
                         dataset_tool,
                         activate=True,
                     )
@@ -182,6 +234,31 @@ class _DataIngressController:
         if prepared_data is None:
             return [False for _item in data]
 
+        return self._receive_inputs(
+            prepared_data,
+            kwargs,
+            show=show,
+            watched_var=watched_var,
+            watched_metadata=watched_metadata,
+        )
+
+    def _receive_inputs(
+        self,
+        prepared_data: tuple[_PreparedInputData, ...],
+        kwargs: dict[str, typing.Any],
+        *,
+        loaded: object | None = None,
+        show: bool | None,
+        context_summary: ContextIngressSummary | None = None,
+        watched_var: tuple[str, str] | None = None,
+        watched_metadata: Mapping[str, typing.Any] | None = None,
+        target: _ManagedWindowNode | None = None,
+    ) -> list[bool]:
+        if self._manager._workspace_state.closing_document:
+            return [False] * len(prepared_data)
+        flags = []
+        report_context_status = context_summary is None
+        context_summary = context_summary or ContextIngressSummary()
         link = kwargs.pop("link", False)
         link_colors = kwargs.pop("link_colors", True)
         indices: list[int] = []
@@ -240,6 +317,7 @@ class _DataIngressController:
                     "load_selections must contain FileDataSelection instances"
                 )
 
+        extension = _extension_loader_owner(load_func[0]) if load_func else None
         for i, prepared in enumerate(prepared_data):
             load_selection = (
                 normalized_load_selections[i]
@@ -251,16 +329,15 @@ class _DataIngressController:
                 )
             )
             this_load_func = (*load_func[:2], load_selection) if load_func else None
-            preparation_operations = (
-                tuple(
-                    typing.cast(
-                        "Sequence[ToolProvenanceOperation]",
-                        load_preparation_operations,
-                    )[i]
-                )
-                if load_preparation_operations is not None
-                else prepared.operations
+            # A file loader can repeat preparation done by the sender. For a
+            # notebook transfer the first available revision is the received array.
+            sender_operations = (
+                tuple(load_preparation_operations[i])
+                if this_load_func is not None
+                and load_preparation_operations is not None
+                else ()
             )
+            preparation_operations = (*sender_operations, *prepared.operations)
             source_input_ndim = (
                 typing.cast("Sequence[int]", source_input_ndims)[i]
                 if source_input_ndims is not None
@@ -272,65 +349,104 @@ class _DataIngressController:
                 else prepared.source_dtype
             )
             source_data = prepared.data
-            if watched_var is not None:
-                source_data = source_data.rename(watched_var[0])
+            if watched_var is not None and source_data.name != watched_var[0]:
+                rename = RenameOperation(name=watched_var[0])
+                source_data = rename.apply(source_data)
+                preparation_operations = (*preparation_operations, rename)
             context_data = source_data
-            context_operations: tuple[ToolProvenanceOperation, ...] = ()
             context_resolution = None
             if this_load_func is not None:
-                context_data, context_operations, context_resolution = (
-                    self._manager._acquisition_context.apply_to_file_data(source_data)
+                context_data, preparation_operations, context_resolution = (
+                    self._manager._acquisition_context.apply_to_file_data(
+                        source_data, preparation_operations
+                    )
                 )
-            preparation_operations = (
-                *preparation_operations,
-                *context_operations,
-            )
             image_tool: ImageTool | None = None
+            new_index: int | None = None
             try:
-                image_tool = ImageTool(
-                    context_data,
-                    **kwargs,
-                    load_func=this_load_func,
-                    preparation_operations=preparation_operations,
+                # A client that prepared the data before sending it may have
+                # supplied only the result of its selection.
+                if loaded is not None and preparation_operations:
+                    raw = _select_replay_input(loaded, load_selection)
+                elif sender_operations:
+                    raw = None
+                else:
+                    raw = prepared.raw if prepared.raw is not None else prepared.data
+                origin = _ImageToolInput(
+                    pathlib.Path(kwargs["file_path"])
+                    if kwargs.get("file_path") is not None
+                    else None,
+                    this_load_func,
+                    preparation_operations,
+                    raw,
                 )
-                if _extension_publication is not None:
-                    _extension_publication.require_current_for_publication()
-                new_index = self._manager.add_imagetool(
-                    image_tool,
-                    show=show,
-                    activate=show,
-                    watched_var=watched_var,
-                    watched_workspace_link_id=typing.cast(
-                        "str | None",
-                        watched_metadata.get("workspace_link_id"),
-                    ),
-                    watched_source_label=typing.cast(
-                        "str | None", watched_metadata.get("source_label")
-                    ),
-                    watched_source_uid=typing.cast(
-                        "str | None", watched_metadata.get("source_uid")
-                    ),
-                    watched_connected=bool(
-                        watched_metadata.get("connected", watched_var is not None)
-                    ),
-                    source_input_ndim=source_input_ndim,
-                    source_input_dtype=source_input_dtype,
-                )
-                if _extension_publication is not None:
-                    _extension_publication.record_publication()
-                indices.append(new_index)
+                if target is not None and i == 0:
+                    target.publish_replacement(
+                        context_data,
+                        origin,
+                        require_current=extension.require_current_for_publication
+                        if extension
+                        else None,
+                    )
+                else:
+                    # Extra selections from an in-window Open are standalone windows.
+                    image_tool = ImageTool(
+                        context_data,
+                        **(kwargs if target is None else {"file_path": origin.path}),
+                        load_func=origin.loader,
+                        preparation_operations=preparation_operations,
+                    )
+                    if extension is not None:
+                        extension.require_current_for_publication()
+                    if target is not None:
+                        target.slicer_area.add_tool_window(
+                            image_tool, update_title=False, transfer_to_manager=False
+                        )
+                    else:
+                        new_index = self._manager._register_imagetool(
+                            image_tool,
+                            origin,
+                            show=show,
+                            activate=show,
+                            watched_var=watched_var,
+                            watched_workspace_link_id=typing.cast(
+                                "str | None",
+                                watched_metadata.get("workspace_link_id"),
+                            ),
+                            watched_source_label=typing.cast(
+                                "str | None", watched_metadata.get("source_label")
+                            ),
+                            watched_source_uid=typing.cast(
+                                "str | None", watched_metadata.get("source_uid")
+                            ),
+                            watched_connected=bool(
+                                watched_metadata.get(
+                                    "connected", watched_var is not None
+                                )
+                            ),
+                            source_input_ndim=source_input_ndim,
+                            source_input_dtype=source_input_dtype,
+                        )
                 if context_resolution is not None:
                     context_summary.add_resolution(context_resolution)
-                if watched_var is not None:
-                    node = self._manager._node_for_target(indices[-1])
-                    if node.imagetool is not None:
-                        node.imagetool._update_title()
+                if watched_var is not None and image_tool is not None:
+                    image_tool._update_title()
+                if extension is not None:
+                    if target is None:
+                        extension.require_current_for_publication()
+                    extension.record_publication()
+                if new_index is not None:
+                    indices.append(new_index)
             except Exception:
-                if image_tool is not None and erlab.interactive.utils.qt_is_valid(
+                if new_index is not None:
+                    self._manager._remove_imagetool(new_index, preflight=False)
+                elif image_tool is not None and erlab.interactive.utils.qt_is_valid(
                     image_tool
                 ):
                     image_tool.close()
                     image_tool.deleteLater()
+                if target is not None:
+                    raise
                 flags.append(False)
                 logger.exception(
                     "Error creating ImageTool window",
@@ -344,13 +460,13 @@ class _DataIngressController:
             self._manager.link_imagetools(*indices, link_colors=link_colors)
 
         if report_context_status:
-            context_status = self._context_status(context_summary)
-            if context_status:
-                self._manager._status_bar.showMessage(
-                    f"Loaded data · {context_status}", 5000
-                )
+            self._show_context_status(context_summary)
 
         return flags
+
+    def _show_context_status(self, summary: ContextIngressSummary) -> None:
+        if status := self._context_status(summary):
+            self._manager._status_bar.showMessage(f"Loaded data · {status}", 5000)
 
     @staticmethod
     def _context_status(summary: ContextIngressSummary) -> str:
@@ -699,44 +815,24 @@ class _MultiFileHandler(QtCore.QObject):
             return
 
         erlab.interactive.utils.single_shot(
-            self, 0, lambda: self._deliver_and_queue(file_path, selected_data)
+            self, 0, lambda: self._deliver_and_queue(file_path, selected_data, data)
         )
 
     def _deliver_and_queue(
         self,
         file_path: pathlib.Path,
         selected_data: tuple[typing.Any, ...],
+        loaded: object | None = None,
     ) -> None:
-        func: Callable | str = self._func
-        func_instance = getattr(func, "__self__", None)
-        if isinstance(
-            func_instance, erlab.io.dataloader.LoaderBase
-        ) and not _is_extension_loader_func(func):
-            func = func_instance.name
-
-        extension_owner = _extension_loader_owner(self._func)
         try:
-            inserted = self.manager._data_ingress.receive_data(
-                [prepared.data for prepared in selected_data],
-                kwargs={
-                    "file_path": file_path,
-                    "load_func": (func, self._kwargs.copy()),
-                    "load_selections": tuple(
-                        prepared.selection for prepared in selected_data
-                    ),
-                    "preparation_operations": tuple(
-                        prepared.operations for prepared in selected_data
-                    ),
-                    "source_input_ndims": tuple(
-                        prepared.source_ndim for prepared in selected_data
-                    ),
-                    "source_input_dtypes": tuple(
-                        prepared.source_dtype for prepared in selected_data
-                    ),
-                },
+            inserted = self.manager._data_ingress.receive_file(
+                file_path,
+                self._func,
+                self._kwargs.copy(),
+                selected_data,
+                loaded,
                 show=(self.n_total == 1),
-                _context_summary=self.context_summary,
-                _extension_publication=extension_owner,
+                summary=self.context_summary,
             )
         except Exception:
             self._on_failed(file_path, traceback.format_exc())

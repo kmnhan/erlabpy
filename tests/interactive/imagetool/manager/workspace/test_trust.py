@@ -73,10 +73,9 @@ from erlab.interactive.imagetool.manager._workspace._trust import (
 )
 from erlab.interactive.utils import ToolWindow
 from tests.interactive.imagetool.manager.helpers import (
-    click_tree_view_pos,
-    dependency_status_badge,
     make_fit2d_child,
     select_tools,
+    show_script_result,
 )
 from tests.interactive.imagetool.manager.provenance._common import (
     _manager_replay_file_spec,
@@ -702,7 +701,7 @@ def _save_released_fit_provenance_workspace(manager_context, workspace, saved_ki
 
     operation, released_blob, data, expected = _released_fit_provenance_data(saved_kind)
     with manager_context() as manager:
-        manager.add_imagetool(
+        manager.import_imagetool(
             ImageTool(expected, _in_manager=True),
             provenance_spec=full_data(operation),
             replay_source_data=data,
@@ -979,7 +978,7 @@ def test_untrusted_checkpoint_revert_releases_old_workspace_after_save_as(
             node, name="data", data_role="source", detached_input_uid=node.uid
         )
         original_revision_id = captured.revision_id
-        external_index = manager.add_imagetool(
+        external_index = manager.import_imagetool(
             ImageTool(data + 1, _in_manager=True),
             provenance_spec=script(
                 ScriptCodeOperation(label="Offset", code="derived = data + 1"),
@@ -1271,7 +1270,7 @@ def test_provenance_normalization_rolls_back_all_owners_and_revisions(
     with manager_context() as manager:
         nodes = []
         for index in range(2):
-            manager.add_imagetool(
+            manager.import_imagetool(
                 ImageTool(expected, _in_manager=True),
                 provenance_spec=provenance,
                 replay_source_data=data,
@@ -2597,6 +2596,52 @@ def test_manager_provenance_apply_authorizes_model_fit_expression_before_executi
     assert executions == [None]
 
 
+def test_graph_refresh_authorizes_saved_fit_expression_before_execution(
+    manager_context, monkeypatch
+):
+    data = xr.DataArray(np.arange(8.0).reshape(4, 2), dims=("x", "y"))
+    executions = []
+
+    def fit(_self, source, *, authorization=None):
+        assert authorization is not None
+        executions.append(source)
+        return source + 1
+
+    monkeypatch.setattr(ModelFitOperation, "apply", fit)
+    with manager_context() as manager:
+        manager.add_imagetool(ImageTool(data), show=False)
+        parent = manager._node_for_target(0)
+        tool = ImageTool(data + 1)
+        uid = manager.import_imagetool_child(
+            tool, parent.uid, source_spec=_model_fit_source_spec(), show=False
+        )
+        graph = manager._data_graph.graph
+        assert graph.follows(uid) == {parent.uid}
+        parent.slicer_area.replace_source_data(data + 2)
+        before = graph.current_revision(uid)
+        manager._workspace_state.code_trust = untrusted_document_trust()
+        with pytest.raises(_TrustedProvenanceReplayCancelled):
+            graph.refresh(uid)
+        assert executions == []
+        assert graph.current_revision(uid) == before
+        manager._workspace_state.code_trust = new_document_trust()
+        graph.refresh(uid)
+        xr.testing.assert_identical(executions[0], data + 2)
+        xr.testing.assert_identical(tool.slicer_area._data, data + 3)
+        before = graph.current_revision(uid)
+        parent.slicer_area.replace_source_data(data + 4)
+
+        def revoke(_value):
+            tool.slicer_area.sigSourceDataReplaced.disconnect(revoke)
+            manager._workspace_state.code_trust = untrusted_document_trust()
+
+        tool.slicer_area.sigSourceDataReplaced.connect(revoke)
+        with pytest.raises(_TrustedProvenanceReplayCancelled):
+            graph.refresh(uid)
+        assert graph.current_revision(uid) == before
+        xr.testing.assert_identical(tool.slicer_area._data, data + 3)
+
+
 def test_provenance_manifest_ignores_safe_pipeline_and_review_state() -> None:
     def manifest(
         *,
@@ -2884,7 +2929,7 @@ def test_unsigned_structured_concat_preserves_input_code_trust(
     with manager_context() as manager:
         for offset in (0, 1):
             value = (data + offset).assign_coords(beta=offset)
-            manager.add_imagetool(
+            manager.import_imagetool(
                 ImageTool(value, _in_manager=True),
                 provenance_spec=(
                     full_data(ScriptCodeOperation(label="Offset", code=source_code))
@@ -2981,8 +3026,8 @@ def test_saved_legacy_concat_becomes_structured_without_code_approval(
             + ", ".join(f"{key}={value!r}" for key, value in kwargs.items())
             + ")"
         )
-        target = manager._lineage_controller._show_multi_input_script_result(
-            xr.concat([first, second], **kwargs),
+        target = show_script_result(
+            manager,
             (0, 1),
             operation_label="Concatenate selected ImageTools",
             operation_code=code,
@@ -3065,7 +3110,7 @@ def test_saved_concat_keeps_trust_after_owned_change(
     workspace = tmp_path / "concat.itws"
     with manager_context() as manager:
         for offset in (0, 1):
-            manager.add_imagetool(
+            manager.import_imagetool(
                 ImageTool(
                     (data + offset).assign_coords(beta=offset, gamma=offset),
                     _in_manager=True,
@@ -3099,7 +3144,7 @@ def test_saved_concat_keeps_trust_after_owned_change(
         expected = parent.current_source_data()
         if capture.startswith("typed-child"):
             expected = expected.isel(x=slice(0, 2))
-            target = manager.add_imagetool_child(
+            target = manager.import_imagetool_child(
                 ImageTool(expected, _in_manager=True),
                 2,
                 source_spec=selection(IselOperation(kwargs={"x": slice(0, 2)})),
@@ -3199,7 +3244,7 @@ def test_saved_concat_keeps_trust_after_owned_change(
 
 
 @pytest.mark.parametrize("nested", [False, True])
-def test_saved_missing_concat_reload_keeps_trust(
+def test_saved_concat_reloads_closed_input_checkpoints_with_original_trust(
     qtbot, accept_dialog, tmp_path, manager_context, nested
 ) -> None:
     data = xr.DataArray(
@@ -3213,7 +3258,7 @@ def test_saved_missing_concat_reload_keeps_trust(
     with manager_context() as manager:
         for path, value in zip(paths, inputs, strict=True):
             value.to_netcdf(path, engine="h5netcdf")
-            manager.add_imagetool(
+            manager.import_imagetool(
                 ImageTool(value, _in_manager=True),
                 provenance_spec=_manager_replay_file_spec(path),
                 show=False,
@@ -3240,7 +3285,7 @@ def test_saved_missing_concat_reload_keeps_trust(
 
     for path, value in zip(paths, inputs, strict=True):
         (value + 10).to_netcdf(path, engine="h5netcdf", mode="w")
-    expected = xr.concat([value + 10 for value in inputs], dim="beta")
+    expected = xr.concat(inputs, dim="beta")
     if nested:
         expected = expected + 1
     with manager_context() as manager:
@@ -3250,15 +3295,14 @@ def test_saved_missing_concat_reload_keeps_trust(
         )
         node = manager._node_for_target(target)
         manager.get_imagetool(target)
-        qtbot.wait_until(
-            lambda: manager.dependency_status_for_uid(node.uid) == "missing"
+        assert node.provenance_spec.replay_inputs
+        assert all(
+            not item.follow_source for item in node.provenance_spec.replay_inputs
         )
         assert manager.code_trust_banner.isHidden()
-        manager.show()
-        badge_rect, _index = dependency_status_badge(manager, target)
-        accept_dialog(
-            lambda: click_tree_view_pos(manager.tree_view, badge_rect.center())
-        )
+        before = node.snapshot_token
+        assert node.reload_source_data()
+        assert node.snapshot_token != before
         assert document_trust_is_trusted(manager._workspace_state.code_trust)
         assert manager.code_trust_banner.isHidden()
         xr.testing.assert_identical(node.current_source_data(), expected)
@@ -3287,7 +3331,7 @@ def test_owned_capture_keeps_partial_approval_at_its_source(
     spec = full_data(ScriptCodeOperation(label="Offset", code="derived = derived + 1"))
     with manager_context() as manager:
         for _ in range(2):
-            manager.add_imagetool(
+            manager.import_imagetool(
                 ImageTool(data + 1, _in_manager=True),
                 provenance_spec=spec,
                 replay_source_data=data,
@@ -3315,7 +3359,7 @@ def test_owned_capture_keeps_partial_approval_at_its_source(
                 tools = ToolsNamespace(manager)
                 tools.itool(tools[source])
             elif copy_kind == "child":
-                target = manager.add_imagetool_child(
+                target = manager.import_imagetool_child(
                     ImageTool((data + 1).isel(x=slice(0, 2)), _in_manager=True),
                     source,
                     source_spec=selection(IselOperation(kwargs={"x": slice(0, 2)})),
@@ -3326,7 +3370,7 @@ def test_owned_capture_keeps_partial_approval_at_its_source(
                 imported.set_provenance_spec(
                     manager._node_for_target(source).provenance_spec
                 )
-                target = manager.add_imagetool_child(imported, source, show=False)
+                target = manager.import_imagetool_child(imported, source, show=False)
             node = manager._node_for_target(target)
             revision_id = node.revision_id_for_role("source")
             record = manager._provenance_revisions.get(revision_id)
@@ -3373,7 +3417,7 @@ def test_signed_tool_input_refresh_publishes_trust_when_applied(
 
     data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
     with manager_context() as manager:
-        source = manager.add_imagetool(
+        source = manager.import_imagetool(
             ImageTool(data + 1, _in_manager=True),
             provenance_spec=full_data(
                 ScriptCodeOperation(label="Offset", code="derived = derived + 1")
@@ -3437,7 +3481,7 @@ def test_owned_capture_does_not_commit_failed_code_edit(
     spec = full_data(ScriptCodeOperation(label="Offset", code="derived = derived + 1"))
     workspace = tmp_path / "capture.itws"
     with manager_context() as manager:
-        target = manager.add_imagetool(
+        target = manager.import_imagetool(
             ImageTool(data + 1, _in_manager=True),
             provenance_spec=spec,
             replay_source_data=data,
@@ -3558,7 +3602,7 @@ def test_signed_workspace_runs_locally_edited_provenance_without_review(
     qtbot.addWidget(tool)
 
     with manager_context() as manager:
-        manager.add_imagetool(
+        manager.import_imagetool(
             tool,
             show=False,
             provenance_spec=original,
@@ -3606,13 +3650,13 @@ def test_local_provenance_edit_does_not_authorize_equal_code_at_another_node(
     qtbot.addWidget(second)
 
     with manager_context() as manager:
-        manager.add_imagetool(
+        manager.import_imagetool(
             first,
             show=False,
             provenance_spec=shared,
             replay_source_data=source,
         )
-        manager.add_imagetool(
+        manager.import_imagetool(
             second,
             show=False,
             provenance_spec=different,
@@ -3683,7 +3727,7 @@ def test_checkpoint_revert_retains_partial_approval_at_its_owner(
     with manager_context() as manager:
 
         def add(value, spec=None):
-            index = manager.add_imagetool(
+            index = manager.import_imagetool(
                 ImageTool(value, _in_manager=True),
                 provenance_spec=spec,
                 show=False,
@@ -3822,7 +3866,7 @@ def test_mixed_checkpoint_revert_preserves_code_ownership(
     with manager_context() as manager:
 
         def add(value, spec=None):
-            index = manager.add_imagetool(
+            index = manager.import_imagetool(
                 ImageTool(value, _in_manager=True),
                 provenance_spec=spec,
                 show=False,
@@ -3971,14 +4015,14 @@ def test_local_source_provenance_edit_owns_source_and_display_locations(
         qtbot.addWidget(tool)
 
     with manager_context() as manager:
-        manager.add_imagetool(
+        manager.import_imagetool(
             external,
             show=False,
             provenance_spec=shared,
             replay_source_data=source,
         )
         manager.add_imagetool(parent, show=False)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child,
             1,
             show=False,
@@ -4145,7 +4189,7 @@ def test_workspace_host_merges_added_imagetool_trust(qtbot, manager_context) -> 
 
     assert restored.slicer_area._load_func is None
     with manager_context() as manager:
-        manager.add_imagetool(restored, show=False)
+        manager.import_imagetool(restored, show=False)
 
         assert document_trust_is_trusted(manager._workspace_state.code_trust)
         assert restored.slicer_area._load_func is None
@@ -4166,12 +4210,12 @@ def test_workspace_host_imports_standalone_executable_provenance_as_external(
 
     with manager_context() as manager:
         if attachment == "root":
-            target = manager.add_imagetool(restored, show=False)
+            target = manager.import_imagetool(restored, show=False)
         else:
             parent = ImageTool(xr.DataArray(np.arange(3.0), dims="x"))
             qtbot.addWidget(parent)
             manager.add_imagetool(parent, show=False)
-            target = manager.add_imagetool_child(restored, 0, show=False)
+            target = manager.import_imagetool_child(restored, 0, show=False)
 
         assert not document_trust_is_trusted(manager._workspace_state.code_trust)
         assert restored.provenance_spec == provenance
@@ -4194,7 +4238,7 @@ def test_current_workspace_manifest_includes_imagetool_live_source_code(
 
     with manager_context() as manager:
         manager.add_imagetool(root, show=False)
-        manager.add_imagetool_child(
+        manager.import_imagetool_child(
             child,
             0,
             show=False,

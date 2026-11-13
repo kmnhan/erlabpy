@@ -199,7 +199,7 @@ def test_manager_copy_selected_scopes_preserves_notebook_namespace(
         ),
     )
     with manager_context() as manager:
-        index = manager.add_imagetool(
+        index = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
             show=False,
             provenance_spec=spec,
@@ -373,9 +373,11 @@ def test_manager_provenance_file_load_edit_accept_and_cancel(
         )
 
 
+@pytest.mark.parametrize("recorded", [False, True], ids=["imported", "recorded"])
 def test_manager_provenance_file_load_batch_edit_updates_matching_peer(
     qtbot,
     accept_dialog,
+    recorded,
     tmp_path: pathlib.Path,
     test_data,
     manager_context: Callable[
@@ -408,17 +410,33 @@ def test_manager_provenance_file_load_batch_edit_updates_matching_peer(
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
-        first_tool = _add_file_replay_tool(
-            manager,
-            old_a,
-            _manager_replay_file_spec(paths["old_a"]),
-        )
-        second_tool = _add_file_replay_tool(
-            manager,
-            old_b,
-            _manager_replay_file_spec(paths["old_b"]),
-        )
+        if recorded:
+            for data, path in ((old_a, paths["old_a"]), (old_b, paths["old_b"])):
+                itool(
+                    data,
+                    manager=True,
+                    file_path=path,
+                    load_func=(
+                        xr.load_dataarray,
+                        {"engine": "h5netcdf"},
+                        FileDataSelection(kind="dataarray"),
+                    ),
+                )
+        else:
+            _add_file_replay_tool(
+                manager, old_a, _manager_replay_file_spec(paths["old_a"])
+            )
+            _add_file_replay_tool(
+                manager, old_b, _manager_replay_file_spec(paths["old_b"])
+            )
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        first_tool, second_tool = (manager.get_imagetool(index) for index in (0, 1))
+        if recorded:
+            assert all(
+                manager._data_graph.owns_result(manager._node_for_target(index).uid)
+                for index in (0, 1)
+            )
 
         select_tools(manager, [0])
         manager._update_info()
@@ -592,7 +610,7 @@ def test_manager_provenance_rows_dim_when_not_activatable(
 
         tool = itool(script_data.qsel.mean("x"), manager=False, execute=False)
         assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(tool, show=False, provenance_spec=script_spec)
+        manager.import_imagetool(tool, show=False, provenance_spec=script_spec)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         manager.tree_view.clearSelection()
         select_tools(manager, [1])
@@ -712,7 +730,7 @@ def test_manager_provenance_row_activation_ignores_noneditable_row(
 
         tool = itool(data.qsel.mean("x"), manager=False, execute=False)
         assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(tool, show=False, provenance_spec=spec)
+        manager.import_imagetool(tool, show=False, provenance_spec=spec)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         select_tools(manager, [0])
         manager._update_info()
@@ -1283,7 +1301,7 @@ def test_manager_multi_selection_edits_active_filters(
         for tool in tools:
             xr.testing.assert_identical(tool.slicer_area._data, data)
             assert tool.slicer_area._accepted_filter_provenance_operation == (
-                NormalizeOperation(dims=("eV",), mode="min")
+                NormalizeOperation(dims=("eV",), mode="min").capture_execution_options()
             )
 
 
@@ -1320,7 +1338,7 @@ def test_manager_multi_selection_disables_inherited_parent_rows(
                 execute=False,
             ),
         )
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child_tool,
             0,
             show=False,
@@ -1351,22 +1369,10 @@ def test_manager_multi_selection_disables_inherited_parent_rows(
                 for _uid, target_row in targets
             )
         ]
-        assert inherited_items, [
-            item.data(0, manager_widgets._METADATA_DERIVATION_TARGET_ROWS_ROLE)
-            for item in projection_items
-        ]
-        inherited_item = inherited_items[0]
-        select_metadata_items(manager, [inherited_item])
-        target_rows = manager._selected_derivation_target_rows()
-        editable, _reason = manager._provenance_edit_controller.can_edit_rows(
-            target_rows
-        )
-        assert not editable
-        menu = manager._build_metadata_derivation_menu()
-        assert menu is not None
-        assert not manager._metadata_edit_step_action.isEnabled()
-        assert not manager._metadata_revert_step_action.isEnabled()
-        assert not manager._metadata_delete_step_action.isEnabled()
+        # The parent operation appears under the child's recorded inputs.
+        # It is not a shared authored step of the two selected rows.
+        assert not inherited_items
+        assert not manager._selected_derivation_target_rows()
         assert any(item.isDisabled() for item in projection_items)
 
 
@@ -1428,6 +1434,7 @@ def test_manager_multi_provenance_expansion_keeps_deferred_nodes_passive(
     tree = manager_widgets._MetadataDerivationListWidget()
     qtbot.addWidget(tree)
     manager = types.SimpleNamespace(
+        _data_graph=types.SimpleNamespace(owns_result=lambda _uid: False),
         metadata_derivation_list=tree,
         _tool_graph=types.SimpleNamespace(nodes=nodes),
         _provenance_edit_controller=edit_controller,
@@ -1519,7 +1526,7 @@ def test_manager_provenance_paste_filter_respects_focus_guards(
     with manager_context() as manager:
         tool = itool(data, manager=False, execute=False)
         assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(tool, show=False, provenance_spec=full_data())
+        manager.import_imagetool(tool, show=False, provenance_spec=full_data())
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         assert manager._provenance_paste_filter is not None
         paste_event = QtGui.QKeyEvent(
@@ -1699,7 +1706,7 @@ def test_manager_provenance_reorder_requires_available_replay(
             "erlab.interactive.imagetool.ImageTool",
             itool(data, manager=False, execute=False),
         )
-        manager.add_imagetool(tool, show=False, provenance_spec=opaque_script)
+        manager.import_imagetool(tool, show=False, provenance_spec=opaque_script)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         root = manager._tool_graph.root_wrappers[0]
         select_tools(manager, [0])
@@ -1747,7 +1754,7 @@ def test_history_actions_use_captured_inputs_after_source_changes(
     source_file = tmp_path / "source.h5"
     data.to_netcdf(source_file, engine="h5netcdf")
     with manager_context() as manager:
-        source_index = manager.add_imagetool(
+        source_index = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
             provenance_spec=_manager_replay_file_spec(source_file),
             show=False,
@@ -1764,7 +1771,7 @@ def test_history_actions_use_captured_inputs_after_source_changes(
             primary_input="data",
             script_inputs=(binding,),
         )
-        target = manager.add_imagetool(
+        target = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(
                 data.assign_attrs(order="second"), _in_manager=True
             ),
@@ -1840,7 +1847,7 @@ def test_history_replay_plan_resolves_nested_captured_inputs(
     source_file = tmp_path / "source.h5"
     data.to_netcdf(source_file, engine="h5netcdf")
     with manager_context() as manager:
-        source_index = manager.add_imagetool(
+        source_index = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
             provenance_spec=_manager_replay_file_spec(source_file),
             show=False,
@@ -1864,7 +1871,7 @@ def test_history_replay_plan_resolves_nested_captured_inputs(
             primary_input="data",
             script_inputs=(outer,),
         )
-        target = manager.add_imagetool(
+        target = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
             provenance_spec=spec,
             show=False,
@@ -1901,6 +1908,7 @@ def test_manager_provenance_reorder_controller_tracks_dependencies_and_targets(
             return f"token-{role}"
 
     manager = types.SimpleNamespace(
+        _data_graph=types.SimpleNamespace(owns_result=lambda _uid: False),
         _tool_graph=types.SimpleNamespace(nodes={"available": _Dependency()}),
         _workspace_controller=types.SimpleNamespace(
             issue_code_execution_capability=lambda entries, **_kwargs: (
@@ -2005,6 +2013,7 @@ def test_manager_provenance_reorder_controller_tracks_dependencies_and_targets(
     assert len(unavailable) == 1
 
     no_spec_node = types.SimpleNamespace(
+        uid="no-spec",
         is_imagetool=True,
         imagetool=None,
         pending_workspace_memory_payload=object(),
@@ -2118,7 +2127,7 @@ def test_manager_detached_watched_provenance_reorder_uses_retained_source(
             "erlab.interactive.imagetool.ImageTool",
             itool(displayed, manager=False, execute=False),
         )
-        manager.add_imagetool(
+        manager.import_imagetool(
             tool,
             show=False,
             provenance_spec=spec,
@@ -2962,7 +2971,7 @@ def test_manager_provenance_unresolved_script_prefix_blocks_structured_edit(
 
         tool = itool(data.qsel.mean("x"), manager=False, execute=False)
         assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(tool, show=False, provenance_spec=spec)
+        manager.import_imagetool(tool, show=False, provenance_spec=spec)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         select_tools(manager, [0])
@@ -3023,7 +3032,7 @@ def test_manager_provenance_script_structured_row_can_revert(
 
         tool = itool(initial, manager=False, execute=False)
         assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(tool, show=False, provenance_spec=spec)
+        manager.import_imagetool(tool, show=False, provenance_spec=spec)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         root = manager._tool_graph.root_wrappers[0]
@@ -3178,7 +3187,7 @@ def test_manager_provenance_script_derived_structured_step_is_editable(
             "erlab.interactive.imagetool.ImageTool",
             itool(derived_data, manager=False, execute=False),
         )
-        manager.add_imagetool(derived_tool, show=False, provenance_spec=spec)
+        manager.import_imagetool(derived_tool, show=False, provenance_spec=spec)
         derived_node = manager._tool_graph.root_wrappers[1]
 
         select_tools(manager, [1])
@@ -3281,7 +3290,7 @@ def test_manager_provenance_active_filter_edit_accept_and_cancel(
         accept_dialog(manager._edit_selected_derivation_step, pre_call=_edit_filter)
 
         assert tool.slicer_area._accepted_filter_provenance_operation == (
-            NormalizeOperation(dims=("y",), mode="min")
+            NormalizeOperation(dims=("y",), mode="min").capture_execution_options()
         )
         xr.testing.assert_identical(tool.slicer_area._data, before_source)
 

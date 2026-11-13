@@ -1,11 +1,11 @@
-"""Serialized in-process execution for ImageTool Manager extensions."""
+"""Serialized execution for ImageTool Manager extensions."""
 
 from __future__ import annotations
 
 import collections.abc
 import contextlib
-import copy
 import dataclasses
+import functools
 import hashlib
 import logging
 import os
@@ -19,11 +19,12 @@ import typing
 import uuid
 from collections import deque
 
-import numpy as np
 import xarray as xr
 from qtpy import QtCore
 
 import erlab
+from erlab._provenance import Follow, Recipe
+from erlab._provenance._graph import WorkerCalculation, _SupersededEvaluation
 from erlab.extensions import (
     ExtensionExecutionError,
     LoadedScript,
@@ -36,11 +37,8 @@ from erlab.extensions._api import (
     _load_script_bytes,
 )
 from erlab.extensions._models import _require_finite_parameter_values, _script_name_key
-from erlab.interactive.imagetool._mainwindow import ImageTool
-from erlab.interactive.imagetool._provenance._model import (
-    compose_display_provenance,
-    full_data,
-)
+from erlab.extensions._routine import _ExtensionSourceLoadFailure, run_routine
+from erlab.interactive.imagetool._provenance._model import _calculation_options
 from erlab.interactive.imagetool._provenance._operations import (
     ExtensionRoutineOperation,
 )
@@ -61,6 +59,7 @@ from erlab.io.dataloader import LoaderBase
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping
+    from concurrent.futures import Executor
 
     from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
     from erlab.interactive.imagetool.manager._extensions._catalog import (
@@ -132,10 +131,6 @@ def _extension_error(error: BaseException, action: str) -> Exception:
     )
 
 
-class _ExtensionSourceLoadFailure(ExtensionExecutionError):
-    """Identify a failure that occurred before extension function invocation."""
-
-
 @dataclasses.dataclass(frozen=True)
 class _ExecutionCapability:
     """One authoritative execution admission snapshot."""
@@ -197,11 +192,11 @@ class _ExtensionRoutineJob:
 
     job_id: str
     snapshot: _PinnedScript
-    routine: RoutineDescriptor
-    parameters: dict[str, typing.Any]
+    operation: ExtensionRoutineOperation
     input_uid: str
     input_snapshot: str
     input_data: xr.DataArray
+    calculation: WorkerCalculation | None = None
 
     @property
     def script_name(self) -> str:
@@ -636,103 +631,6 @@ class _ExtensionWorkerSignals(QtCore.QObject):
     finished = QtCore.Signal(object)
 
 
-def _copied_xindexes(data: xr.DataArray) -> dict[typing.Hashable, xr.Index]:
-    """Copy each unique xarray index without splitting shared index groups."""
-    copies: dict[int, xr.Index] = {}
-    indexes: dict[typing.Hashable, xr.Index] = {}
-    for name, index in data.xindexes.items():
-        index_key = id(index)
-        copied = copies.get(index_key)
-        if copied is None:
-            copied = index.copy(deep=True)
-            copies[index_key] = copied
-        indexes[name] = copied
-    return indexes
-
-
-def _readonly_array(data: xr.DataArray) -> xr.DataArray:
-    """Return an isolated xarray wrapper backed by read-only NumPy views."""
-    values = data.data
-    if isinstance(values, np.ndarray):
-        values = values.view()
-        values.flags.writeable = False
-    coordinates: dict[typing.Hashable, xr.Variable] = {}
-    for name, coordinate in data.coords.items():
-        coordinate_data = coordinate.data
-        if isinstance(coordinate_data, np.ndarray):
-            coordinate_data = coordinate_data.view()
-            coordinate_data.flags.writeable = False
-        coordinates[name] = xr.Variable(
-            coordinate.dims,
-            coordinate_data,
-            attrs=copy.deepcopy(coordinate.attrs),
-            encoding=copy.deepcopy(coordinate.encoding),
-        )
-    result = xr.DataArray(
-        xr.Variable(
-            data.dims,
-            values,
-            attrs=copy.deepcopy(data.attrs),
-        ),
-        coords=xr.Coordinates(coordinates, indexes=_copied_xindexes(data)),
-        name=data.name,
-    )
-    result.encoding = copy.deepcopy(data.encoding)
-    for coordinate in result.coords.values():
-        if isinstance(coordinate.data, np.ndarray):
-            coordinate.data.flags.writeable = False
-    return result
-
-
-def _detached_routine_output(
-    output: xr.DataArray, input_data: xr.DataArray
-) -> xr.DataArray:
-    """Detach result buffers that are read-only or still alias the routine input."""
-    input_buffers = tuple(
-        value
-        for value in (
-            input_data.data,
-            *(coordinate.data for coordinate in input_data.coords.values()),
-        )
-        if isinstance(value, np.ndarray)
-    )
-
-    def detached(values: typing.Any) -> tuple[typing.Any, bool]:
-        if not isinstance(values, np.ndarray):
-            return values, False
-        if values.flags.writeable and not any(
-            np.may_share_memory(values, source) for source in input_buffers
-        ):
-            return values, False
-        return values.copy(), True
-
-    values, data_changed = detached(output.data)
-    coordinates: dict[typing.Hashable, xr.Variable] = {}
-    coordinates_changed = False
-    for name, coordinate in output.coords.items():
-        coordinate_values, changed = detached(coordinate.data)
-        coordinates_changed |= changed
-        coordinates[name] = xr.Variable(
-            coordinate.dims,
-            coordinate_values,
-            attrs=dict(coordinate.attrs),
-            encoding=dict(coordinate.encoding),
-        )
-    if not data_changed and not coordinates_changed:
-        return output
-    result = xr.DataArray(
-        xr.Variable(
-            output.dims,
-            values,
-            attrs=dict(output.attrs),
-        ),
-        coords=xr.Coordinates(coordinates, indexes=_copied_xindexes(output)),
-        name=output.name,
-    )
-    result.encoding = dict(output.encoding)
-    return result
-
-
 def _require_loader_entry(
     call: _ExtensionLoaderCall,
     entry: tuple[LoaderDescriptor, Callable[..., typing.Any]] | None,
@@ -784,25 +682,6 @@ def _xarray_log_fields(
                 }
             )
     return fields
-
-
-def _require_routine(
-    loaded: erlab.extensions.LoadedScript, routine_id: str
-) -> tuple[RoutineDescriptor, Callable[..., typing.Any]]:
-    entry = loaded.erlab.routines.get(routine_id)
-    if entry is None:
-        raise ExtensionExecutionError(
-            f"Routine {routine_id!r} is missing from the registered source"
-        )
-    return entry
-
-
-def _require_dataarray(value: typing.Any) -> xr.DataArray:
-    if not isinstance(value, xr.DataArray):
-        raise ExtensionExecutionError(
-            f"Routine returned {type(value).__name__}; expected DataArray"
-        )
-    return value
 
 
 def _reject_builtin_loader_filter_conflicts(
@@ -880,7 +759,9 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
         *,
         manager_session_id: str,
         catalog_store: _ExtensionCatalogStore,
-        script_modules: dict[tuple[str, str, str], LoadedScript],
+        execute: Callable[
+            [_PinnedScript, ToolProvenanceOperation, xr.DataArray], xr.DataArray
+        ],
         source_is_healthy: Callable[[str, str], bool],
     ) -> None:
         super().__init__()
@@ -890,7 +771,7 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
         self.job = job
         self.manager_session_id = manager_session_id
         self.catalog_store = catalog_store
-        self.script_modules = script_modules
+        self.execute = execute
         self.source_is_healthy = source_is_healthy
         self.signals = _ExtensionWorkerSignals()
         self.result: _ExtensionRoutineResult | None = None
@@ -927,9 +808,9 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
             "catalog_generation": self.job.snapshot.catalog_generation,
             "extension_script_name": self.job.script_name,
             "extension_source_hash": self.job.source_hash,
-            "capability_id": self.job.routine.id,
+            "capability_id": self.job.operation.routine_id,
             "extension_source": str(self.job.snapshot.registered_path),
-            "parameters": self.job.parameters,
+            "parameters": self.job.operation.parameters,
             "input_uid": self.job.input_uid,
             "input_snapshot": self.job.input_snapshot,
             "input": _xarray_log_fields(self.job.input_data),
@@ -940,7 +821,7 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
                 self.job.script_name,
                 self.job.source_hash,
                 "routine",
-                self.job.routine.id,
+                self.job.operation.routine_id,
                 source_is_healthy=self.source_is_healthy,
             )
             if resolution.status != "ready":
@@ -956,35 +837,16 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
             self._started.set()
             self.signals.started.emit()
             logger.info("Importing extension source", extra=fields)
-            module_name = _manager_module_name(
-                self.manager_session_id,
-                self.job.script_name,
-                self.job.source_hash,
-                self.job.snapshot.registered_path,
-            )
-            try:
-                loaded = _cached_script(
-                    self.script_modules,
-                    snapshot=self.job.snapshot,
-                    module_name=module_name,
+            if self.job.calculation is None:
+                output = self.execute(
+                    self.job.snapshot, self.job.operation, self.job.input_data
                 )
-                entry = _require_routine(loaded, self.job.routine.id)
-            except BaseException as error:
-                source_failure = True
-                raise _ExtensionSourceLoadFailure(
-                    f"Extension routine {self.job.routine.id!r} could not be imported"
-                ) from error
-            parameters = _coerce_call_parameters(entry[1], self.job.parameters)
-            logger.info("Invoking extension routine", extra=fields)
-            result = _require_dataarray(
-                entry[1](_readonly_array(self.job.input_data), **parameters)
-            )
-            result = _detached_routine_output(result, self.job.input_data)
-            erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(result)
-            output = result
+            else:
+                output = self.job.calculation.run()
             status = "success"
-            fields["output"] = _xarray_log_fields(result)
-        except BaseException:
+            fields["output"] = _xarray_log_fields(output)
+        except BaseException as error:
+            source_failure = isinstance(error, _ExtensionSourceLoadFailure)
             traceback_text = traceback.format_exc()
             logger.exception(
                 "Extension routine failed",
@@ -1045,6 +907,7 @@ class _ExtensionExecutionController(QtCore.QObject):
         self._pool.setStackSize(erlab.interactive.utils._python_thread_stack_size())
         self._pool.setMaxThreadCount(1)
         self._script_modules: dict[tuple[str, str, str], LoadedScript] = {}
+        self._routine_process: Executor | None = None
         self._pending: deque[_ExtensionRoutineJob] = deque()
         self._active: tuple[_ExtensionRoutineJob, _ExtensionRoutineWorker] | None = None
         self._replay_source_captures: list[_ReplaySourceCapture] = []
@@ -1469,13 +1332,13 @@ class _ExtensionExecutionController(QtCore.QObject):
         if not self._accepting:
             raise RuntimeError("Extension execution is shutting down")
         node = self._manager._node_for_target(target)
-        data = node.data_for_role("displayed")
+        self._manager._data_graph.require_published(node.uid)
         job = self._routine_job(
             script_name=script_name,
             source_hash=source_hash,
             routine_id=routine_id,
             parameters=parameters,
-            input_data=data,
+            input_data=None,
             input_uid=node.uid,
             input_snapshot=node.snapshot_token,
         )
@@ -1510,6 +1373,7 @@ class _ExtensionExecutionController(QtCore.QObject):
             input_uid="provenance-replay",
             input_snapshot="pinned-source",
         )
+        job = dataclasses.replace(job, operation=operation.capture_execution_options())
         worker = self._routine_worker(job)
         self._pool.start(worker)
         worker.done.wait()
@@ -1527,10 +1391,63 @@ class _ExtensionExecutionController(QtCore.QObject):
             job.script_name,
             job.source_hash,
             "routine",
-            job.routine.id,
+            job.operation.routine_id,
         )
-        self.stage_replay_source(job.snapshot, "routine", job.routine.id)
+        self.stage_replay_source(job.snapshot, "routine", job.operation.routine_id)
         return result.output
+
+    def _execute_routine(
+        self,
+        snapshot: _PinnedScript,
+        operation: ToolProvenanceOperation,
+        data: xr.DataArray,
+    ) -> xr.DataArray:
+        """Execute pinned source and xarray options outside the GUI interpreter."""
+        if not isinstance(operation, ExtensionRoutineOperation):
+            raise TypeError("Expected an extension routine")
+        if (
+            operation.source_hash != snapshot.record.source_hash
+            or operation.script_name != snapshot.record.script_name
+        ):
+            raise ExtensionExecutionError("Routine does not match the captured script")
+        # The serialized extension queue is the only caller. Start the child on
+        # the first routine and keep its script cache for this Manager's lifetime.
+        from joblib.externals.loky import BrokenProcessPool, ProcessPoolExecutor
+
+        if self._routine_process is None:
+            if getattr(sys, "frozen", False):
+                # The packaged entry point calls multiprocessing.freeze_support().
+                # Use its spawn protocol instead of invoking Python with -m loky.
+                import multiprocessing
+
+                context = multiprocessing.get_context("spawn")
+            else:
+                context = None
+            self._routine_process = ProcessPoolExecutor(max_workers=1, context=context)
+        module_name = _manager_module_name(
+            self._manager_session_id,
+            operation.script_name,
+            operation.source_hash,
+            snapshot.registered_path,
+        )
+        try:
+            result = self._routine_process.submit(
+                run_routine,
+                snapshot.source_bytes,
+                snapshot.registered_path,
+                module_name,
+                operation.source_hash,
+                operation.routine_id,
+                operation.parameters,
+                operation.execution_options,
+                data,
+            ).result()
+        except BrokenProcessPool:
+            self._routine_process.shutdown()
+            self._routine_process = None
+            raise
+        erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(result)
+        return result
 
     def _routine_job(
         self,
@@ -1539,11 +1456,12 @@ class _ExtensionExecutionController(QtCore.QObject):
         source_hash: str,
         routine_id: str,
         parameters: Mapping[str, typing.Any],
-        input_data: xr.DataArray,
+        input_data: xr.DataArray | None,
         input_uid: str,
         input_snapshot: str,
     ) -> _ExtensionRoutineJob:
         """Pin catalog state and input identity before queue admission."""
+        settings = _calculation_options(replay=False)
         _require_finite_parameter_values(parameters)
         if self._catalog.load_error is not None:
             raise ExtensionExecutionError("The extension catalog is unavailable")
@@ -1561,14 +1479,39 @@ class _ExtensionExecutionController(QtCore.QObject):
                 f"The extension is not enabled or available: {resolution.status}"
             )
         routine = typing.cast("RoutineDescriptor", resolution.descriptor)
+        operation = ExtensionRoutineOperation(
+            script_name=resolution.snapshot.record.script_name,
+            source_hash=source_hash,
+            routine_id=routine.id,
+            routine_name=routine.name,
+            parameters=dict(parameters),
+        )
+        calculation = None
+        if input_data is None:
+            operation = operation.model_copy(update={"execution_options": settings})
+            adapter = self._manager._data_graph
+            node = self._manager._node_for_target(input_uid)
+            if (
+                not node.materialize_pending_workspace_payload()
+                or not adapter._ensure_source(node)
+            ):
+                raise ExtensionExecutionError("The routine input is unavailable")
+            calculation = adapter.graph.capture_worker(
+                self._manager._next_node_uid(),
+                Recipe(
+                    operation, (("data", Follow(input_uid)),), source_kind="full_data"
+                ),
+                functools.partial(self._execute_routine, resolution.snapshot),
+            )
+            input_data = calculation.data
         return _ExtensionRoutineJob(
             job_id=uuid.uuid4().hex,
             snapshot=resolution.snapshot,
-            routine=routine,
-            parameters=dict(parameters),
+            operation=operation,
             input_uid=input_uid,
             input_snapshot=input_snapshot,
             input_data=input_data,
+            calculation=calculation,
         )
 
     @QtCore.Slot(str)
@@ -1592,7 +1535,7 @@ class _ExtensionExecutionController(QtCore.QObject):
             job,
             manager_session_id=self._manager_session_id,
             catalog_store=self._catalog.store,
-            script_modules=self._script_modules,
+            execute=self._execute_routine,
             source_is_healthy=self._source_is_healthy,
         )
 
@@ -1624,7 +1567,7 @@ class _ExtensionExecutionController(QtCore.QObject):
                 erlab.interactive.utils.MessageDialog.critical(
                     self._manager,
                     "Extension Error",
-                    f"{result.job.routine.name} could not complete.",
+                    f"{result.job.operation.routine_name} could not complete.",
                     detailed_text=result.traceback_text,
                 )
             elif result.output is not None:
@@ -1667,7 +1610,7 @@ class _ExtensionExecutionController(QtCore.QObject):
                     "manager_session_id": self._manager_session_id,
                     "extension_script_name": result.job.script_name,
                     "extension_source_hash": result.job.source_hash,
-                    "capability_id": result.job.routine.id,
+                    "capability_id": result.job.operation.routine_id,
                     "input_uid": result.job.input_uid,
                     "input_snapshot": result.job.input_snapshot,
                     "extension_status": final_status,
@@ -1676,66 +1619,52 @@ class _ExtensionExecutionController(QtCore.QObject):
             return
         if node is None:  # pragma: no cover - narrowed by input_is_current above.
             return
-        operation = ExtensionRoutineOperation(
-            script_name=result.job.script_name,
-            source_hash=result.job.source_hash,
-            routine_id=result.job.routine.id,
-            routine_name=result.job.routine.name,
-            parameters=result.job.parameters,
-        )
-        provenance = compose_display_provenance(
-            node.displayed_provenance_spec,
-            full_data(operation),
-            parent_data=result.job.input_data,
-        )
-        tool = ImageTool(
-            result.output,
-            options_model=self._manager.effective_interactive_options,
-        )
-        node = self._manager._tool_graph.nodes.get(result.job.input_uid)
-        try:
+        job = result.job
+
+        def require_current():
             self._require_current_capability(
-                result.job.script_name,
-                result.job.source_hash,
-                "routine",
-                result.job.routine.id,
+                job.script_name, job.source_hash, "routine", job.operation.routine_id
             )
-        except ExtensionExecutionError as error:
-            publication_error = str(error)
-        else:
-            publication_error = None
-        input_is_current = (
-            node is not None and node.snapshot_token == result.job.input_snapshot
-        )
-        manager_closing = self._manager._workspace_state.closing_document
-        if publication_error is not None or manager_closing or not input_is_current:
-            tool.close()
-            tool.deleteLater()
-            if publication_error is not None:
-                final_status = publication_error
-            elif manager_closing:
-                final_status = "manager-closing-before-insert"
-            else:
-                final_status = "stale-input-before-insert"
+            if self._manager._workspace_state.closing_document:
+                raise ExtensionExecutionError("manager-closing-before-insert")
+            source = self._manager._tool_graph.nodes.get(job.input_uid)
+            if source is None or source.snapshot_token != job.input_snapshot:
+                raise ExtensionExecutionError("stale-input-before-insert")
+
+        if job.calculation is None:
+            raise ExtensionExecutionError("Missing completed routine calculation")
+        index = None
+        try:
+            require_current()
+            publication = self._manager._data_graph.accept_worker_result(
+                job.calculation
+            )
+            index = self._manager.add_imagetool(
+                publication,
+                activate=True,
+                _on_commit=require_current,
+                _display_options={
+                    "options_model": self._manager.effective_interactive_options
+                },
+            )
+            # Registration signals can invalidate a capability or its input.
+            require_current()
+        except (ExtensionExecutionError, _SupersededEvaluation) as error:
+            if index is not None:
+                self._manager._remove_imagetool(index, preflight=False)
             logger.info(
                 "Discarding stale extension result",
                 extra={
                     "manager_session_id": self._manager_session_id,
-                    "extension_script_name": result.job.script_name,
-                    "extension_source_hash": result.job.source_hash,
-                    "capability_id": result.job.routine.id,
-                    "input_uid": result.job.input_uid,
-                    "input_snapshot": result.job.input_snapshot,
-                    "extension_status": final_status,
+                    "extension_script_name": job.script_name,
+                    "extension_source_hash": job.source_hash,
+                    "capability_id": job.operation.routine_id,
+                    "input_uid": job.input_uid,
+                    "input_snapshot": job.input_snapshot,
+                    "extension_status": str(error),
                 },
             )
             return
-        self._manager.add_imagetool(
-            tool,
-            activate=True,
-            provenance_spec=provenance,
-            replay_source_data=result.job.input_data,
-        )
         self._manager._workspace_state.extension_scripts.remember_verified_source(
             result.job.script_name,
             result.job.source_hash,
@@ -1767,6 +1696,9 @@ class _ExtensionExecutionController(QtCore.QObject):
                 self._active = None
         with self._blocking_tasks_lock:
             self._blocking_tasks.clear()
+        if self._routine_process is not None:
+            self._routine_process.shutdown()
+            self._routine_process = None
         self._script_modules.clear()
         _remove_manager_modules(self._manager_session_id)
         self._shutdown_complete = True

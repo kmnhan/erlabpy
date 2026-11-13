@@ -2731,7 +2731,9 @@ def test_replay_graph_operation_code_error_edges() -> None:
 
 
 def test_replay_graph_operation_code_uses_parameterized_names() -> None:
-    class Operation:
+    from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
+
+    class Operation(ToolProvenanceOperation):
         def replay_code(
             self,
             input_name: str,
@@ -6179,7 +6181,8 @@ def test_replay_graph_emits_correct_with_edge_operation_code(
     data.to_netcdf(path)
     edge_fit = xr.Dataset({"center": ("x", [0.0, 1.0])})
 
-    def correct_with_edge(data_arg, edge_fit_arg, *, shift_coords=True):
+    def correct_with_edge(data_arg, edge_fit_arg, *, along="alpha", shift_coords=True):
+        assert along == "alpha"
         xr.testing.assert_identical(edge_fit_arg, edge_fit)
         return data_arg.assign_attrs(shift_coords=shift_coords)
 

@@ -840,6 +840,8 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         *,
         right_edge: int | None = None,
     ) -> tuple[QtCore.QRect | None, str | None, QtGui.QColor | None]:
+        if self.manager._data_graph.manages(node.uid):
+            return self._compute_child_status_info(option, node, right_edge=right_edge)
         match self.manager.dependency_status_for_uid(node.uid):
             case "changed":
                 text = "Changed"
@@ -976,6 +978,12 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                     tooltip,
                 )
             if dependency_rect is not None and dependency_rect.contains(pos):
+                if self.manager._data_graph.manages(node.uid):
+                    return _RowBadge(
+                        "source_status",
+                        dependency_rect,
+                        self.manager._data_graph.preview(node.uid, "refresh"),
+                    )
                 tooltip = self.manager.dependency_status_tooltip_for_uid(node.uid)
                 if tooltip is not None:
                     return _RowBadge("dependency_status", dependency_rect, tooltip)
@@ -1028,6 +1036,12 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
         if status_rect is None or not status_rect.contains(pos):
             return None
+        if self.manager._data_graph.manages(child_node.uid):
+            return _RowBadge(
+                "source_status",
+                status_rect,
+                self.manager._data_graph.preview(child_node.uid, "refresh"),
+            )
         if not source_status:
             tooltip = self.manager.dependency_status_tooltip_for_uid(child_node.uid)
             if tooltip is None:
@@ -2140,7 +2154,9 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
                 if isinstance(node, str):
                     self._model.manager.show_childtool(node)
             case "source_status":
-                if isinstance(node, str):
+                if isinstance(node, _ImageToolWrapper):
+                    node.show_source_update_dialog(parent=self._model.manager)
+                elif isinstance(node, str):
                     try:
                         child_node = self._model.manager._child_node(node)
                     except KeyError:

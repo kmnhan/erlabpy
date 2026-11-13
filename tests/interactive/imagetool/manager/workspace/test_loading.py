@@ -48,6 +48,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     ExtensionRoutineOperation,
     GaussianFilterOperation,
     ImageToolSelectionSourceBinding,
+    IselOperation,
     RenameOperation,
     ScriptCodeOperation,
 )
@@ -848,7 +849,7 @@ def test_workspace_replacement_preserves_failed_script_node_for_save_as(
     )
 
     with manager_context() as manager:
-        failed_target = manager.add_imagetool(
+        failed_target = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(xr.DataArray([1.0])),
             show=False,
             provenance_spec=full_data(operation),
@@ -951,7 +952,7 @@ def test_failed_workspace_replacement_restores_script_state_once(
         parameters={},
     )
     with manager_context() as manager:
-        manager.add_imagetool(
+        manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(xr.DataArray([1.0])),
             show=False,
             uid="incoming-node",
@@ -1062,7 +1063,7 @@ def test_workspace_import_rebases_only_incoming_script_requirements(
     shared_uid = "shared-node"
 
     with manager_context() as manager:
-        manager.add_imagetool(
+        manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(xr.DataArray([1.0])),
             show=False,
             uid=shared_uid,
@@ -1071,7 +1072,7 @@ def test_workspace_import_rebases_only_incoming_script_requirements(
         manager._workspace_controller.saving._save_workspace_document(source_path)
 
     with manager_context() as manager:
-        manager.add_imagetool(
+        manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(xr.DataArray([2.0])),
             show=False,
             uid=shared_uid,
@@ -1179,7 +1180,7 @@ def test_managed_tool_rebuilds_input_provenance_from_parent(
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         root = erlab.interactive.imagetool.ImageTool(data, _in_manager=True)
-        manager.add_imagetool(
+        manager.import_imagetool(
             root,
             show=False,
             provenance_spec=parent_provenance,
@@ -1249,7 +1250,7 @@ def test_legacy_tool_input_provenance_is_not_raw_copied(
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         root = erlab.interactive.imagetool.ImageTool(data, _in_manager=True)
-        manager.add_imagetool(
+        manager.import_imagetool(
             root,
             show=False,
             provenance_spec=parent_provenance,
@@ -2248,7 +2249,7 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
         root_tool = erlab.interactive.imagetool.ImageTool(root_data, _in_manager=True)
         _configure_workspace_sweep_imagetool(root_tool, source_file=source_path)
         root_provenance = _workspace_test_file_spec(source_path)
-        manager.add_imagetool(
+        manager.import_imagetool(
             root_tool,
             show=False,
             uid="root-watched",
@@ -2271,7 +2272,7 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
         peer_tool = erlab.interactive.imagetool.ImageTool(peer_data, _in_manager=True)
         peer_tool.setGeometry(7, 90, 792, 360)
         peer_tool.slicer_area.set_colormap("magma", gamma=0.8, update=False)
-        manager.add_imagetool(
+        manager.import_imagetool(
             peer_tool,
             show=True,
             uid="root-peer",
@@ -2304,7 +2305,7 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
         child_tool.slicer_area.set_colormap(
             "plasma", gamma=1.2, reverse=True, update=False
         )
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child_tool,
             0,
             show=True,
@@ -2327,7 +2328,7 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
             nested_data, _in_manager=True
         )
         nested_tool.setGeometry(80, 160, 696, 480)
-        manager.add_imagetool_child(
+        manager.import_imagetool_child(
             nested_tool,
             child_uid,
             show=True,
@@ -2388,7 +2389,7 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
         output_tool.slicer_area.set_colormap(
             "cividis", gamma=0.9, reverse=False, update=False
         )
-        output_child_uid = manager.add_imagetool_child(
+        output_child_uid = manager.import_imagetool_child(
             output_tool,
             child_tool_uid,
             show=True,
@@ -3777,6 +3778,145 @@ def test_manager_close_cancel_restores_workspace_document_closing_state(
         assert not manager._workspace_state.closing_document
 
 
+@pytest.mark.parametrize("cancel", [True, False], ids=["cancel", "discard"])
+def test_workspace_close_resolves_pending_auto_updates(
+    cancel, qtbot, accept_dialog, tmp_path, manager_context
+):
+    data = xr.DataArray(np.arange(12.0).reshape(3, 4), dims=("x", "y"))
+    with manager_context() as manager:
+        manager._data_ingress.receive_data([data], {})
+        child_tool = itool(data, manager=False, execute=False)
+        child_uid = manager.import_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=full_data(),
+            source_auto_update=True,
+        )
+        manager._workspace_state.path = tmp_path / "auto-close.itws"
+        manager._workspace_state.structure_modified = True
+        manager._note_interaction_activity()
+        manager._data_replace([data + 10], [0])
+        assert manager._interaction_gate.has_work(("data-graph-auto",))
+
+        def decide_after_auto_callback(dialog):
+            assert isinstance(dialog, QtWidgets.QMessageBox)
+            assert manager._workspace_state.closing_document
+            manager._flush_idle_work(key_prefix=("data-graph-auto",), force=True)
+            xr.testing.assert_identical(child_tool.slicer_area._data, data)
+            decision = (
+                QtWidgets.QMessageBox.StandardButton.Cancel
+                if cancel
+                else QtWidgets.QMessageBox.StandardButton.Discard
+            )
+            dialog.button(decision).click()
+
+        accept_dialog(manager.close, accept_call=decide_after_auto_callback)
+        if not cancel:
+            assert not manager.isVisible()
+            assert manager._workspace_state.closing_document
+            assert not manager._data_graph.graph.entry_ids
+            assert not manager._interaction_gate.has_work(("data-graph-auto",))
+            return
+        assert manager.isVisible()
+        assert not manager._workspace_state.closing_document
+        qtbot.wait_until(
+            lambda: child_tool.slicer_area._data.identical(data + 10), timeout=5000
+        )
+        assert not manager._data_graph.graph.is_stale(child_uid)
+        manager._data_replace([data + 20], [0])
+        qtbot.wait_until(
+            lambda: child_tool.slicer_area._data.identical(data + 20), timeout=5000
+        )
+        assert not manager._data_graph.graph.is_stale(child_uid)
+
+
+@pytest.mark.parametrize("metadata_only_seed", [False, True])
+def test_auto_update_reuses_recorded_origin_in_saved_legacy_history(
+    metadata_only_seed, qtbot, monkeypatch, tmp_path, manager_context
+):
+    from erlab.interactive.imagetool.manager import _revisions
+
+    data = xr.DataArray(
+        np.arange(60.0).reshape(3, 4, 5), dims=("scan", "x", "y"), name="scan"
+    )
+    operation = IselOperation(kwargs={"scan": 0})
+    original = data.copy(deep=True)
+    updated = data + 100
+    expected = updated.copy(deep=True)
+    path = tmp_path / "auto-history.itws"
+    with manager_context() as manager:
+        manager._data_ingress.receive_data([data], {})
+        child_tool = itool(operation.apply(data), manager=False, execute=False)
+        child_uid = manager.import_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=full_data(operation),
+            source_auto_update=True,
+        )
+        child = manager._child_node(child_uid)
+        store = manager._provenance_revisions
+        if metadata_only_seed:
+            graph = manager._data_graph.graph
+            origin = graph.recorded_lineage(graph.current_revision(child_uid))[0]
+            store.add(revision_id=origin.revision_id, source_owner_uid=origin.owner_id)
+        copied_sizes = []
+        original_checkpoint = _revisions.checkpoint_data
+
+        def track_checkpoint(array):
+            copied_sizes.append(array.nbytes)
+            return original_checkpoint(array)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(_revisions, "checkpoint_data", track_checkpoint)
+            manager._data_replace([updated], [0])
+            qtbot.wait_until(
+                lambda: child_tool.slicer_area._data.identical(
+                    operation.apply(expected)
+                )
+            )
+        assert all(size < data.nbytes for size in copied_sizes)
+        current_id = child.current_revision_id
+        current = store.get(current_id)
+        prior_id = current.primary_revision_id
+        prior = store.get(prior_id)
+        original_seed = prior.provenance_spec.replay_inputs[0].revision_id
+        updated_seed = current.provenance_spec.replay_inputs[0].revision_id
+        assert original_seed != updated_seed
+        data.values[:] = -1
+        updated.values[:] = -2
+        xr.testing.assert_identical(store.resolve_data(original_seed), original)
+        xr.testing.assert_identical(store.resolve_data(updated_seed), expected)
+        xr.testing.assert_identical(
+            store.resolve_data(prior_id), operation.apply(original)
+        )
+        xr.testing.assert_identical(
+            store.resolve_data(current_id), operation.apply(expected)
+        )
+        # A displayed historical result keeps its original replay input reachable.
+        historical = itool(operation.apply(original), manager=False, execute=False)
+        manager.import_imagetool(
+            historical, show=False, provenance_spec=prior.provenance_spec
+        )
+        manager._workspace_controller.saving._save_workspace_document(path)
+
+    with manager_context() as restored:
+        assert restored._workspace_controller.loading._load_workspace_file(
+            path, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        store = restored._provenance_revisions
+        xr.testing.assert_identical(
+            store.resolve_data(original_seed).compute(), original
+        )
+        xr.testing.assert_identical(
+            store.resolve_data(updated_seed).compute(), expected
+        )
+        xr.testing.assert_identical(
+            store.resolve_data(current_id).compute(), operation.apply(expected)
+        )
+
+
 def test_manager_open_recent_workspace_reports_load_errors(
     monkeypatch,
     tmp_path,
@@ -4902,7 +5042,7 @@ def test_workspace_imported_history_keeps_each_source_binding(
     with manager_context() as manager:
 
         def add(value, spec=None):
-            return manager.add_imagetool(
+            return manager.import_imagetool(
                 erlab.interactive.imagetool.ImageTool(value, _in_manager=True),
                 provenance_spec=spec,
                 show=False,
@@ -5019,7 +5159,7 @@ def test_workspace_open_captured_input_keeps_imported_recipe(
     with manager_context() as manager:
 
         def add(value, spec=None):
-            return manager.add_imagetool(
+            return manager.import_imagetool(
                 erlab.interactive.imagetool.ImageTool(value, _in_manager=True),
                 provenance_spec=spec,
                 show=False,
@@ -5862,7 +6002,7 @@ def test_workspace_import_keeps_closed_sources_detached(
             active_name="derived",
             script_inputs=(captured,),
         )
-        derived_index = manager.add_imagetool(
+        derived_index = manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(data + 1, _in_manager=True),
             show=False,
             provenance_spec=derived_spec,
@@ -5879,7 +6019,7 @@ def test_workspace_import_keeps_closed_sources_detached(
                 ),
             ),
         )
-        manager.add_imagetool(
+        manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(data + 2, _in_manager=True),
             show=False,
             provenance_spec=final_spec,

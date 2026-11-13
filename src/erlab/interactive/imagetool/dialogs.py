@@ -14,20 +14,24 @@ from collections.abc import Callable, Mapping
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
+import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab._provenance._graph import _SupersededEvaluation
 from erlab.interactive.imagetool import _kspace_conversion
 from erlab.interactive.imagetool._dialog_widgets import (
     CoordinateEditorWidget,
     CoordinateGridWidget,
     KspaceInputCoordinatesControl,
+    _numeric_text,
     prompt_kspace_input_coordinates,
 )
 from erlab.interactive.imagetool._provenance._code import _provenance_value_code
 from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceOperation,
     ToolProvenanceSpec,
+    _calculation_options,
     compose_full_provenance,
     operations_expression_code,
     public_data,
@@ -111,8 +115,6 @@ __all__ = [
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Iterable, Sequence
 
-    import xarray as xr
-
     from erlab.interactive.imagetool.manager import ImageToolManager
     from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
     from erlab.interactive.imagetool.plot_items import ItoolPolyLineROI
@@ -171,6 +173,22 @@ def _set_spin_value(
         spin.setValue(int(value))
     else:
         spin.setValue(float(value))
+
+
+def _restore_spin_value(
+    spin: erlab.interactive.utils.BetterSpinBox, value: float
+) -> None:
+    # Interactive limits can be narrower than the range of a recorded operation.
+    spin.setRange(min(spin.minimum(), value), max(spin.maximum(), value))
+    spin.setValue(value)
+
+
+def _checked_dims(
+    checks: Mapping[Hashable, QtWidgets.QCheckBox], recorded: Sequence[Hashable] = ()
+) -> tuple[Hashable, ...]:
+    return tuple(
+        dim for dim in dict.fromkeys((*recorded, *checks)) if checks[dim].isChecked()
+    )
 
 
 _AGGREGATION_REDUCERS: dict[str, str] = {
@@ -575,6 +593,8 @@ class DataTransformDialog(_DataManipulationDialog):
 
     - Override `source_transform_operation` or `source_operations` to generate
       operation-backed copy code, or override `make_code` only for non-operation code.
+      The Manager keeps a result without recorded operations as a separate source
+      array. Supply a recorded operation to enable refresh from the input.
 
     - Override attribute `title` to set the title of the dialog window.
 
@@ -611,8 +631,7 @@ class DataTransformDialog(_DataManipulationDialog):
         (
             "nest",
             "Open Child Window",
-            "Create a child ImageTool under this node and keep its derivation for "
-            "later refreshes.",
+            "Place the result below this ImageTool in the Manager tree.",
         ),
     )
 
@@ -629,8 +648,8 @@ class DataTransformDialog(_DataManipulationDialog):
         ),
         (
             "detach",
-            "Open Top-Level Copies",
-            "Create one detached top-level ImageTool for each selected ImageTool.",
+            "Open Top-Level Windows",
+            "Place one result at the top level for each selected ImageTool.",
         ),
     )
 
@@ -763,8 +782,12 @@ class DataTransformDialog(_DataManipulationDialog):
         self,
         data: xr.DataArray,
     ) -> ToolProvenanceSpec:
-        del data
-        return public_data(*self.source_operations())
+        return self.capture_transform()(data)
+
+    def capture_transform(self) -> Callable[[xr.DataArray], ToolProvenanceSpec]:
+        """Capture the settings used to prepare each target of this command."""
+        spec = public_data(*self.source_operations())
+        return lambda _data: spec
 
     def source_spec(self) -> ToolProvenanceSpec:
         return self.source_spec_for_data(self.data)
@@ -800,48 +823,6 @@ class DataTransformDialog(_DataManipulationDialog):
             raise RuntimeError("Could not compose ImageTool transform provenance.")
         return composed
 
-    def _compose_replace_source_spec(
-        self,
-        existing_spec: ToolProvenanceSpec,
-    ) -> ToolProvenanceSpec:
-        return self._compose_transform_provenance(
-            existing_spec,
-            self.source_spec(),
-        )
-
-    def _rewrite_target_provenance(
-        self,
-        target: int | str,
-        fallback_spec: ToolProvenanceSpec | None,
-    ) -> bool:
-        manager, _ = self._manager_target()
-        if manager is None:
-            return False
-        node = manager._node_for_target(target)
-        source_spec = node.displayed_source_spec
-        if source_spec is not None:
-            node.set_source_binding(
-                self._compose_replace_source_spec(source_spec),
-                auto_update=node.source_auto_update,
-                state=node.source_state,
-            )
-            return True
-        displayed_provenance = node.displayed_provenance_spec
-        replay_source_data = node.resolved_replay_source_data()
-        if displayed_provenance is not None:
-            node.set_detached_provenance(
-                self._compose_replace_source_spec(displayed_provenance),
-                replay_source_data=replay_source_data,
-            )
-            return True
-        if fallback_spec is not None:
-            node.set_detached_provenance(
-                fallback_spec,
-                replay_source_data=replay_source_data,
-            )
-            return True
-        return False
-
     def _set_current_tool_provenance(
         self,
         provenance_spec: ToolProvenanceSpec | None,
@@ -859,9 +840,11 @@ class DataTransformDialog(_DataManipulationDialog):
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
         return self._apply_source_transform(data)
 
-    def preflight_data(self, data: xr.DataArray) -> None:
-        """Validate a target before processing it."""
-        del data
+    def preflight_data(
+        self, data: xr.DataArray, spec: ToolProvenanceSpec | None = None
+    ) -> None:
+        """Validate the captured operation settings for this target."""
+        del data, spec
 
     def _handle_process_error(self, exc: BaseException) -> bool:
         """Handle a transform error before the generic error dialog is shown."""
@@ -921,15 +904,11 @@ class DataTransformDialog(_DataManipulationDialog):
         except Exception:
             return ""
 
-    def _itool_kwargs(
+    def _display_options(
         self,
-        processed,
         slicer_area: ImageSlicerArea | None = None,
     ) -> dict[str, typing.Any]:
-        itool_kw: dict[str, typing.Any] = {
-            "data": processed,
-            "execute": False,
-        }
+        itool_kw: dict[str, typing.Any] = {}
 
         if slicer_area is None:
             slicer_area = self.slicer_area
@@ -989,103 +968,130 @@ class DataTransformDialog(_DataManipulationDialog):
             super().accept()
             return
 
-        input_name = self.data.name
-
         try:
-            input_data = self.data
-            self.preflight_data(input_data)
-            processed = self.process_data(input_data)
-            processed = processed.rename(input_name)
-
+            settings = _calculation_options()
             manager, target = self._manager_target()
-            source_spec = self.source_spec()
-            parent_provenance = self.slicer_area.displayed_provenance_spec()
-            if manager is not None and target is not None:
-                with contextlib.suppress(Exception):
-                    parent_provenance = manager._node_for_target(
-                        target
-                    ).displayed_provenance_spec
-            nested_provenance_spec = compose_full_provenance(
-                parent_provenance,
-                source_spec,
+            prepare_target = self.capture_transform()
+            captured = (
+                manager._data_graph.read_input(target)
+                if manager is not None and target is not None
+                else None
             )
-            detached_provenance_spec = self._detached_provenance_spec(
-                parent_provenance,
-                source_spec,
-            )
+            require_input = captured.require_current if captured is not None else None
+            input_data = self.data if captured is None else captured.data
+            source_spec: ToolProvenanceSpec | None = prepare_target(input_data)
+            if captured is not None and source_spec is not None:
+                source_spec = source_spec.capture_execution_options(settings)
+            self.preflight_data(input_data, source_spec)
+            publication = None
+            if (
+                manager is not None
+                and captured is not None
+                and source_spec is not None
+                and source_spec.operations
+            ):
+                publication = manager._data_graph.transform(
+                    captured,
+                    source_spec,
+                    keep_name=True,
+                    replace_uid=manager._node_for_target(target).uid
+                    if self.launch_mode == "replace" and target is not None
+                    else None,
+                )
+                processed = publication.data
+            else:
+                processed = self.process_data(input_data).rename(input_data.name)
+            detached_provenance_spec = None
+            if source_spec is not None and not source_spec.operations:
+                source_spec = None
+            if captured is None and source_spec is not None:
+                parent_provenance = self.slicer_area.displayed_provenance_spec()
+                detached_provenance_spec = self._detached_provenance_spec(
+                    parent_provenance, source_spec
+                )
 
+            if require_input is not None:
+                require_input()
             if self.launch_mode == "replace":
                 if (
                     manager is not None
                     and target is not None
                     and manager._is_imagetool_target(target)
                 ):
-                    manager._node_for_target(target).revision_id_for_role("source")
-                    self._rewrite_target_provenance(
-                        target,
-                        detached_provenance_spec,
+                    node = manager._node_for_target(target)
+                    node.publish_replacement(
+                        publication if publication is not None else processed,
+                        edit="edited",
                     )
                 else:
                     self._set_current_tool_provenance(detached_provenance_spec)
-                self.slicer_area.replace_source_data(processed, emit_edited=True)
+                    self.slicer_area.replace_source_data(processed, emit_edited=True)
+            else:
+                options = self._display_options()
                 if (
                     manager is not None
-                    and target is not None
-                    and manager._is_imagetool_target(target)
+                    and captured is not None
+                    and publication is not None
                 ):
-                    manager._node_for_target(target).revision_id_for_role("source")
-            else:
-                itool_kw = self._itool_kwargs(processed)
-                if self.launch_mode == "nest":
-                    manager, target = self._manager_target_for_nest()
-                    tool = typing.cast(
-                        "QtWidgets.QWidget | None",
-                        erlab.interactive.itool(manager=False, **itool_kw),
-                    )
-                    if tool is not None:  # pragma: no branch
-                        typing.cast(
-                            "erlab.interactive.imagetool.ImageTool", tool
-                        ).set_provenance_spec(nested_provenance_spec)
+                    if self.launch_mode == "nest":
+                        manager, parent = self._manager_target_for_nest()
                         manager.add_imagetool_child(
-                            typing.cast("erlab.interactive.imagetool.ImageTool", tool),
-                            target,
-                            source_spec=source_spec,
+                            publication,
+                            parent,
+                            _display_options=options,
+                            _input_checks=(captured.require_current,),
                         )
-                else:
-                    if manager is not None and self.slicer_area._in_manager:
-                        tool = typing.cast(
-                            "erlab.interactive.imagetool.ImageTool | None",
-                            erlab.interactive.itool(manager=False, **itool_kw),
-                        )
-                        if tool is not None:  # pragma: no branch
-                            tool.set_provenance_spec(detached_provenance_spec)
-                            replay_source_data = self.data
-                            if target is not None:
-                                replay_source_data = manager._node_for_target(
-                                    target
-                                ).resolved_replay_source_data()
-                            manager.add_imagetool(
-                                tool,
-                                activate=True,
-                                provenance_spec=detached_provenance_spec,
-                                replay_source_data=replay_source_data,
-                            )
                     else:
-                        tool = typing.cast(
-                            "erlab.interactive.imagetool.ImageTool | None",
-                            erlab.interactive.itool(**itool_kw),
+                        manager.add_imagetool(
+                            publication,
+                            activate=True,
+                            _display_options=options,
+                            _input_checks=(captured.require_current,),
                         )
-                        if tool is not None:
-                            tool.set_provenance_spec(
-                                detached_provenance_spec,
-                                _code_trust=typing.cast(
-                                    "erlab.interactive.imagetool.ImageTool",
-                                    self.slicer_area.window(),
-                                )._provenance_code_trust_for_copy(),
-                            )
+                elif manager is not None and self.slicer_area._in_manager:
+                    tool = typing.cast(
+                        "erlab.interactive.imagetool.ImageTool | None",
+                        erlab.interactive.itool(
+                            processed, manager=False, execute=False, **options
+                        ),
+                    )
+                    if tool is not None:
+                        if require_input is not None:
+                            manager._data_graph.verify_new_window(tool, require_input)
+                        if self.launch_mode == "nest":
+                            manager, parent = self._manager_target_for_nest()
+                            manager.add_imagetool_child(tool, parent)
+                        else:
+                            manager.add_imagetool(tool, activate=True)
+                else:
+                    tool = typing.cast(
+                        "erlab.interactive.imagetool.ImageTool | None",
+                        erlab.interactive.itool(
+                            data=processed, execute=False, **options
+                        ),
+                    )
+                    if tool is not None:
+                        tool.set_provenance_spec(
+                            detached_provenance_spec,
+                            _code_trust=typing.cast(
+                                "erlab.interactive.imagetool.ImageTool",
+                                self.slicer_area.window(),
+                            )._provenance_code_trust_for_copy(),
+                        )
 
             del processed
 
+            if source_spec is None and manager is not None and target is not None:
+                manager._status_bar.showMessage(
+                    "Kept the result as a separate data source. This transform has no "
+                    "recorded operation to refresh.",
+                    8000,
+                )
+        except _SupersededEvaluation as exc:
+            erlab.interactive.utils.MessageDialog.critical(
+                self, "Source Changed", str(exc)
+            )
+            return
         except Exception as exc:
             if self._handle_process_error(exc):
                 return
@@ -1170,38 +1176,21 @@ class DataFilterDialog(_DataManipulationDialog):
             and type(self).process_data is not _DataManipulationDialog.process_data
         )
 
-    def _apply_current_filter(
-        self,
-        *,
-        update: bool = True,
-        emit_edited: bool = False,
-        preview: bool = False,
-    ) -> None:
+    def _captured_filter_operation(self) -> ToolProvenanceOperation | None:
         operation = self.filter_operation()
-        if operation is not None:
-            self.slicer_area.apply_filter_operation(
-                operation,
-                update=update,
-                emit_edited=emit_edited,
-                preview=preview,
-            )
-            return
-        if self._uses_process_only_filter():
+        if operation is None and self._uses_process_only_filter():
             raise NotImplementedError(
                 "DataFilterDialog subclasses must implement filter_operation() "
                 "to apply accepted filters."
             )
-        self.slicer_area.apply_filter_operation(
-            None,
-            update=update,
-            emit_edited=emit_edited,
-            preview=preview,
-        )
+        return operation
 
     @QtCore.Slot()
     def _preview(self):
         self._previewed = True
-        self._apply_current_filter(preview=True)
+        self.slicer_area.apply_filter_operation(
+            self._captured_filter_operation(), preview=True
+        )
 
     @QtCore.Slot()
     def reject(self) -> None:
@@ -1238,7 +1227,7 @@ class DataFilterDialog(_DataManipulationDialog):
             return
 
         try:
-            operation = self.filter_operation()
+            operation = self._captured_filter_operation()
             emit_edited = (
                 operation is not None
                 or self._starting_filter_operation is not None
@@ -1247,7 +1236,9 @@ class DataFilterDialog(_DataManipulationDialog):
             )
             self.slicer_area.record_history_mutation(
                 None,
-                lambda: self._apply_current_filter(emit_edited=emit_edited),
+                lambda: self.slicer_area.apply_filter_operation(
+                    operation, emit_edited=emit_edited
+                ),
             )
         except Exception:
             erlab.interactive.utils.MessageDialog.critical(
@@ -1283,6 +1274,7 @@ class DataFilterDialog(_DataManipulationDialog):
 
 
 class KspaceConversionDialog(DataTransformDialog):
+    _recorded_conversion: KspaceConvertOperation | None = None
     title = "Convert to kspace"
     enable_copy = True
     grouped_operation_only = True
@@ -1322,6 +1314,10 @@ class KspaceConversionDialog(DataTransformDialog):
 
     def setup_widgets(self) -> None:
         self.setObjectName("kspaceConversionDialog")
+        self._automatic_bounds: dict[str, tuple[float, float]] = {}
+        self._automatic_resolution: dict[str, float] = {}
+        self._recorded_group: tuple[ToolProvenanceOperation, ...] = ()
+        self._initial_group: tuple[ToolProvenanceOperation, ...] = ()
         self._source_data = self.data
         self._compatible = bool(self._source_data.kspace._interactive_compatible)
         self._coordinate_preflight_cancelled = False
@@ -1536,7 +1532,7 @@ class KspaceConversionDialog(DataTransformDialog):
                 value is not None
                 and (
                     (base_value := target_base_values[name]) is None
-                    or not np.isclose(value, base_value)
+                    or value != base_value
                 )
             )
         }
@@ -1576,6 +1572,8 @@ class KspaceConversionDialog(DataTransformDialog):
         resolution_layout = typing.cast(
             "QtWidgets.QFormLayout", self.resolution_group.layout()
         )
+        self._automatic_bounds.clear()
+        self._automatic_resolution.clear()
         self._clear_layout(parameters_layout)
         self._clear_layout(normal_emission_layout)
         self._clear_layout(bounds_layout)
@@ -1589,12 +1587,13 @@ class KspaceConversionDialog(DataTransformDialog):
         self.res_npts_check.toggled.connect(self.calculate_resolution)
         self.res_npts_check.toggled.connect(self._update_memory_estimate)
 
-        self._offset_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
+        self._offset_spins: dict[str, erlab.interactive.utils.BetterSpinBox] = {}
         if self._control_data.kspace._has_hv:
-            v0_spin = QtWidgets.QDoubleSpinBox()
+            v0_spin = erlab.interactive.utils.BetterSpinBox(
+                compact=False, exact_float=True, trim="0"
+            )
             v0_spin.setRange(0, 100)
             v0_spin.setSingleStep(1)
-            v0_spin.setDecimals(1)
             v0_spin.setSuffix(self._OFFSET_UNITS["V0"])
             v0_spin.setToolTip("Inner potential of the sample.")
             v0_spin.setValue(
@@ -1604,10 +1603,11 @@ class KspaceConversionDialog(DataTransformDialog):
             self._offset_spins["V0"] = v0_spin
             parameters_layout.addRow(self._OFFSET_LABELS["V0"], v0_spin)
 
-        wf_spin = QtWidgets.QDoubleSpinBox()
+        wf_spin = erlab.interactive.utils.BetterSpinBox(
+            compact=False, exact_float=True, trim="0"
+        )
         wf_spin.setRange(0.0, 9.999)
         wf_spin.setSingleStep(0.01)
-        wf_spin.setDecimals(4)
         wf_spin.setSuffix(self._OFFSET_UNITS["wf"])
         wf_spin.setToolTip("Analyzer work function in eV.")
         wf_spin.setValue(_kspace_conversion.kspace_work_function(self._control_data))
@@ -1615,12 +1615,15 @@ class KspaceConversionDialog(DataTransformDialog):
         self._offset_spins["wf"] = wf_spin
         parameters_layout.addRow(self._OFFSET_LABELS["wf"], wf_spin)
 
-        self._normal_emission_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
+        self._normal_emission_spins: dict[
+            str, erlab.interactive.utils.BetterSpinBox
+        ] = {}
         for axis, label in self._NORMAL_EMISSION_LABELS.items():
-            spin = QtWidgets.QDoubleSpinBox()
+            spin = erlab.interactive.utils.BetterSpinBox(
+                compact=False, exact_float=True, trim="0"
+            )
             spin.setRange(-360, 360)
             spin.setSingleStep(0.01)
-            spin.setDecimals(3)
             spin.setSuffix("°")
             spin.setKeyboardTracking(False)
             spin.setToolTip("Angle corresponding to sample normal emission.")
@@ -1637,27 +1640,29 @@ class KspaceConversionDialog(DataTransformDialog):
         self._normal_delta = initial_delta
         self._set_normal_emission_spins(initial_normal_emission)
 
-        self._bound_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
-        self._resolution_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
+        self._bound_spins: dict[str, erlab.interactive.utils.BetterSpinBox] = {}
+        self._resolution_spins: dict[str, erlab.interactive.utils.BetterSpinBox] = {}
         for axis in self._control_data.kspace.momentum_axes:
             for index in range(2):
                 name = f"{axis}{index}"
-                spin = QtWidgets.QDoubleSpinBox()
+                spin = erlab.interactive.utils.BetterSpinBox(
+                    compact=False, exact_float=True, trim="0"
+                )
                 if axis == "kz":
                     spin.setRange(0, 100)
                 else:
                     spin.setRange(-10, 10)
                 spin.setSingleStep(0.01)
-                spin.setDecimals(4)
                 spin.setSuffix(" Å⁻¹")
                 spin.valueChanged.connect(self._update_memory_estimate)
                 self._bound_spins[name] = spin
                 bounds_layout.addRow(name, spin)
 
-            spin = QtWidgets.QDoubleSpinBox()
+            spin = erlab.interactive.utils.BetterSpinBox(
+                compact=False, exact_float=True, trim="0"
+            )
             spin.setRange(0.0001, 10)
             spin.setSingleStep(0.001)
-            spin.setDecimals(5)
             spin.setSuffix(" Å⁻¹")
             spin.valueChanged.connect(self._update_memory_estimate)
             self._resolution_spins[axis] = spin
@@ -1693,7 +1698,7 @@ class KspaceConversionDialog(DataTransformDialog):
         for axis, value in {"alpha": values[0], "beta": values[1]}.items():
             spin = self._normal_emission_spins[axis]
             with QtCore.QSignalBlocker(spin):
-                spin.setValue(value)
+                _restore_spin_value(spin, value)
 
     def _seed_from_current_view(self) -> None:
         initial_normal_emission, initial_delta = (
@@ -1769,39 +1774,49 @@ class KspaceConversionDialog(DataTransformDialog):
 
     @property
     def _work_function(self) -> float:
-        return _kspace_conversion.rounded_spin_value(self._offset_spins["wf"])
+        return float(self._offset_spins["wf"].value())
 
     @property
     def _inner_potential(self) -> float | None:
         if "V0" not in self._offset_spins:
             return None
-        return _kspace_conversion.rounded_spin_value(self._offset_spins["V0"])
+        return float(self._offset_spins["V0"].value())
 
     @property
     def normal_emission(self) -> tuple[float, float]:
         return (
-            _kspace_conversion.rounded_spin_value(self._normal_emission_spins["alpha"]),
-            _kspace_conversion.rounded_spin_value(self._normal_emission_spins["beta"]),
+            float(self._normal_emission_spins["alpha"].value()),
+            float(self._normal_emission_spins["beta"].value()),
         )
 
     @property
     def bounds(self) -> dict[str, tuple[float, float]] | None:
         if self.bounds_supergroup.isChecked():
-            return {
+            values = {
                 axis: (
-                    float(np.round(self._bound_spins[f"{axis}0"].value(), 5)),
-                    float(np.round(self._bound_spins[f"{axis}1"].value(), 5)),
+                    float(self._bound_spins[f"{axis}0"].value()),
+                    float(self._bound_spins[f"{axis}1"].value()),
                 )
                 for axis in self._control_data.kspace.momentum_axes
+            }
+            return {
+                axis: pair
+                for axis, pair in values.items()
+                if pair != self._automatic_bounds.get(axis)
             }
         return None
 
     @property
     def resolution(self) -> dict[str, float] | None:
         if self.resolution_supergroup.isChecked():
-            return {
-                axis: float(np.round(self._resolution_spins[axis].value(), 5))
+            values = {
+                axis: float(self._resolution_spins[axis].value())
                 for axis in self._control_data.kspace.momentum_axes
+            }
+            return {
+                axis: value
+                for axis, value in values.items()
+                if value != self._automatic_resolution.get(axis)
             }
         return None
 
@@ -1824,45 +1839,36 @@ class KspaceConversionDialog(DataTransformDialog):
             beta_scale=self._control_data.kspace.beta_scale,
         )
 
-    def _conversion_input_for_data(self, data: xr.DataArray) -> xr.DataArray:
-        source_data = data
-        if _kspace_conversion.kspace_configuration(source_data) is None:
-            source_data = _kspace_conversion.assign_kspace_configuration(
-                source_data,
-                self._source_configuration,
-            )
-        if int(source_data.kspace.configuration) != int(self.current_configuration):
-            source_data = source_data.kspace.as_configuration(
-                self.current_configuration
-            )
-        source_data = _kspace_conversion.assign_kspace_input_coordinates(
-            source_data,
-            self._input_coordinates_for_data(source_data),
-        )
-        return self._parameterized_data(
-            source_data.copy(deep=False),
-            source_data=source_data,
-        )
-
     def _input_coordinates_for_data(
         self,
         data: xr.DataArray,
     ) -> dict[str, float]:
-        source_data = data
-        if _kspace_conversion.kspace_configuration(source_data) is None:
-            source_data = _kspace_conversion.assign_kspace_configuration(
-                source_data,
-                self._source_configuration,
+        return self._resolve_input_coordinates(
+            data,
+            self._source_configuration,
+            self.current_configuration,
+            self._edited_input_coordinates(),
+        )
+
+    def _edited_input_coordinates(self) -> dict[str, float]:
+        values = self._input_coordinates_widget.resolved_values
+        return {key: values[key] for key in self._input_coordinates_widget.edited_names}
+
+    @staticmethod
+    def _resolve_input_coordinates(
+        data: xr.DataArray,
+        source_configuration: int,
+        target_configuration: int,
+        overrides: Mapping[str, float],
+    ) -> dict[str, float]:
+        if _kspace_conversion.kspace_configuration(data) is None:
+            data = _kspace_conversion.assign_kspace_configuration(
+                data, source_configuration
             )
-        if int(source_data.kspace.configuration) != int(self.current_configuration):
-            source_data = source_data.kspace.as_configuration(
-                self.current_configuration
-            )
-        values = _kspace_conversion.kspace_input_coordinate_values(source_data)
-        edited_values = self._input_coordinates_widget.resolved_values
-        for name in self._input_coordinates_widget.edited_names:
-            if name in values:
-                values[name] = edited_values[name]
+        if int(data.kspace.configuration) != int(target_configuration):
+            data = data.kspace.as_configuration(target_configuration)
+        values = _kspace_conversion.kspace_input_coordinate_values(data)
+        values.update((key, value) for key, value in overrides.items() if key in values)
         unresolved = [name for name, value in values.items() if value is None]
         if unresolved:
             raise ValueError(
@@ -1872,14 +1878,24 @@ class KspaceConversionDialog(DataTransformDialog):
         return typing.cast("dict[str, float]", values)
 
     def conversion_estimate_for_data(
-        self,
-        data: xr.DataArray,
+        self, data: xr.DataArray, spec: ToolProvenanceSpec | None = None
     ) -> _kspace_conversion.KspaceConversionEstimate:
+        operations = (
+            self._capture_operations()(data) if spec is None else spec.operations
+        )
+        *preparation, conversion = operations
+        if not isinstance(conversion, KspaceConvertOperation):
+            raise TypeError("The final operation must be a momentum conversion")
+        for operation in preparation:
+            data = operation.apply(data)
         return _kspace_conversion.estimate_kspace_conversion(
-            self._conversion_input_for_data(data),
-            bounds=self.bounds,
-            resolution=self.resolution,
-            jacobian=self.jacobian_check.isChecked(),
+            data,
+            bounds=conversion.bounds,
+            resolution=conversion.resolution,
+            fixed_coords={
+                name: vector.values for name, vector in conversion.coords.items()
+            },
+            jacobian=conversion.jacobian,
         )
 
     def _set_memory_estimate(
@@ -1888,9 +1904,14 @@ class KspaceConversionDialog(DataTransformDialog):
     ) -> None:
         if not hasattr(self, "_memory_estimate_label"):
             return
-        self._memory_estimate_label.setText(
-            _kspace_conversion.kspace_conversion_estimate_text(estimate)
-        )
+        text = _kspace_conversion.kspace_conversion_estimate_text(estimate)
+        if self._recorded_conversion is not None and self._recorded_conversion.coords:
+            axes = ", ".join(self._recorded_conversion.coords)
+            text += (
+                f"\nRecorded coordinates for {axes} set the grid. "
+                "Use kspace.convert in the console to change those coordinates."
+            )
+        self._memory_estimate_label.setText(text)
         self._memory_estimate_label.updateGeometry()
         self._memory_estimate_label.setProperty(
             "kspaceMemoryUnsafe",
@@ -1917,8 +1938,10 @@ class KspaceConversionDialog(DataTransformDialog):
             return
         self._set_memory_estimate(estimate)
 
-    def preflight_data(self, data: xr.DataArray) -> None:
-        estimate = self.conversion_estimate_for_data(data)
+    def preflight_data(
+        self, data: xr.DataArray, spec: ToolProvenanceSpec | None = None
+    ) -> None:
+        estimate = self.conversion_estimate_for_data(data, spec)
         self._set_memory_estimate(estimate)
         if not estimate.is_safe:
             raise _kspace_conversion.KspaceConversionMemoryError(estimate)
@@ -1970,43 +1993,72 @@ class KspaceConversionDialog(DataTransformDialog):
                 )
         self._update_memory_estimate()
 
-    def _operations_for_data(
+    def _commit_numeric_inputs(self) -> None:
+        for spin in (
+            *self._offset_spins.values(),
+            *self._normal_emission_spins.values(),
+            *self._bound_spins.values(),
+            *self._resolution_spins.values(),
+        ):
+            spin.interpretText()
+
+    def _capture_operations(
         self,
-        data: xr.DataArray,
-    ) -> tuple[ToolProvenanceOperation, ...]:
-        source_data = data
-        source_configuration = _kspace_conversion.kspace_configuration(source_data)
-        if source_configuration is None:
-            source_configuration = erlab.constants.AxesConfiguration(
-                self._source_configuration
+    ) -> Callable[[xr.DataArray], tuple[ToolProvenanceOperation, ...]]:
+        source_configuration = self._source_configuration
+        target_configuration = self.current_configuration
+        overrides = self._edited_input_coordinates()
+        work_function = self._work_function
+        inner_potential = self._inner_potential
+        normal_emission = self.normal_emission
+        delta = self._normal_delta
+        alpha_scale = self._control_data.kspace.alpha_scale
+        beta_scale = self._control_data.kspace.beta_scale
+        bounds = self.bounds
+        resolution = self.resolution
+        jacobian = self.jacobian_check.isChecked()
+        recorded_conversion = self._recorded_conversion
+        initial_group = self._initial_group
+        recorded_group = self._recorded_group
+
+        def operations(data: xr.DataArray) -> tuple[ToolProvenanceOperation, ...]:
+            configuration = _kspace_conversion.kspace_configuration(data)
+            steps = _kspace_conversion.kspace_conversion_operations(
+                data,
+                target_configuration=target_configuration,
+                source_configuration=configuration
+                if configuration is not None
+                else source_configuration,
+                work_function=work_function,
+                inner_potential=inner_potential,
+                normal_emission=normal_emission,
+                delta=delta,
+                alpha_scale=alpha_scale,
+                beta_scale=beta_scale,
+                bounds=bounds,
+                resolution=resolution,
+                force_scalars=True,
+                input_coordinates=KspaceConversionDialog._resolve_input_coordinates(
+                    data, source_configuration, target_configuration, overrides
+                ),
+                jacobian=jacobian,
+                recorded_conversion=recorded_conversion,
             )
-        return _kspace_conversion.kspace_conversion_operations(
-            source_data,
-            target_configuration=self.current_configuration,
-            source_configuration=source_configuration,
-            work_function=self._work_function,
-            inner_potential=self._inner_potential,
-            normal_emission=self.normal_emission,
-            delta=self._normal_delta,
-            alpha_scale=self._control_data.kspace.alpha_scale,
-            beta_scale=self._control_data.kspace.beta_scale,
-            bounds=self.bounds,
-            resolution=self.resolution,
-            force_scalars=True,
-            input_coordinates=self._input_coordinates_for_data(source_data),
-            jacobian=self.jacobian_check.isChecked(),
-        )
+            if initial_group:
+                return _kspace_conversion.edit_kspace_conversion_group(
+                    recorded_group, initial_group, steps
+                )
+            return steps
 
-    def source_operations(
-        self,
-    ) -> list[ToolProvenanceOperation]:
-        return list(self._operations_for_data(self.data))
+        return operations
 
-    def source_spec_for_data(
-        self,
-        data: xr.DataArray,
-    ) -> ToolProvenanceSpec:
-        return public_data(*self._operations_for_data(data))
+    def capture_transform(self) -> Callable[[xr.DataArray], ToolProvenanceSpec]:
+        self._commit_numeric_inputs()
+        operations = self._capture_operations()
+        return lambda data: public_data(*operations(data))
+
+    def source_operations(self) -> list[ToolProvenanceOperation]:
+        return list(self.capture_transform()(self.data).operations)
 
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
         return self.source_spec_for_data(data).apply(data)
@@ -2045,6 +2097,9 @@ class KspaceConversionDialog(DataTransformDialog):
         if group != (0, len(operations)):
             raise ValueError("Expected a complete kspace conversion operation group")
 
+        self._initial_group = ()
+        self._automatic_bounds.clear()
+        self._automatic_resolution.clear()
         normal: tuple[float, float] | None = None
         delta: float | None = None
         bounds: dict[str, tuple[float, float]] | None = None
@@ -2097,13 +2152,15 @@ class KspaceConversionDialog(DataTransformDialog):
                 operation,
                 KspaceWorkFunctionOperation,
             ):
-                self._offset_spins["wf"].setValue(operation.work_function)
+                _restore_spin_value(self._offset_spins["wf"], operation.work_function)
             elif isinstance(
                 operation,
                 KspaceInnerPotentialOperation,
             ):
                 if "V0" in self._offset_spins:
-                    self._offset_spins["V0"].setValue(operation.inner_potential)
+                    _restore_spin_value(
+                        self._offset_spins["V0"], operation.inner_potential
+                    )
             elif isinstance(
                 operation,
                 KspaceSetNormalOperation,
@@ -2122,6 +2179,7 @@ class KspaceConversionDialog(DataTransformDialog):
             ):
                 bounds = operation.bounds
                 resolution = operation.resolution
+                self._recorded_conversion = operation
                 self.jacobian_check.setChecked(operation.jacobian)
 
         if normal is not None:
@@ -2136,12 +2194,33 @@ class KspaceConversionDialog(DataTransformDialog):
                 for index, value in enumerate(values):
                     name = f"{axis}{index}"
                     if name in self._bound_spins:
-                        self._bound_spins[name].setValue(value)
+                        _restore_spin_value(self._bound_spins[name], value)
         self.resolution_supergroup.setChecked(resolution is not None)
         if resolution is not None:
             for axis, value in resolution.items():
                 if axis in self._resolution_spins:
-                    self._resolution_spins[axis].setValue(value)
+                    _restore_spin_value(self._resolution_spins[axis], value)
+        for axis, spin in self._resolution_spins.items():
+            fixed = (
+                self._recorded_conversion is not None
+                and axis in self._recorded_conversion.coords
+            )
+            spin.setEnabled(not fixed)
+            for index in range(2):
+                self._bound_spins[f"{axis}{index}"].setEnabled(not fixed)
+        self._automatic_bounds = {
+            axis: values
+            for axis, values in (self.bounds or {}).items()
+            if bounds is not None and axis not in bounds
+        }
+        self._automatic_resolution = {
+            axis: value
+            for axis, value in (self.resolution or {}).items()
+            if resolution is not None and axis not in resolution
+        }
+        self._recorded_group = tuple(operations)
+        self._initial_group = self._capture_operations()(self.data)
+        self._update_memory_estimate()
 
     def restore_transform_operation(
         self,
@@ -2162,50 +2241,97 @@ class KspaceConversionDialog(DataTransformDialog):
         return QtWidgets.QDialog.DialogCode.Rejected
 
 
-class RotationDialog(DataTransformDialog):
-    enable_copy = True
-    operation_types = (RotateOperation,)
+class _RotationPlaneDialog(DataTransformDialog):
+    _recorded_plane: RotateOperation | SymmetrizeNfoldOperation | None = None
+    center_spins: tuple[erlab.interactive.utils.BetterSpinBox, ...]
+    order_spin: QtWidgets.QSpinBox
+    reshape_check: QtWidgets.QCheckBox
 
-    @property
-    def _rotate_params(self) -> dict[str, typing.Any]:
-        return {
-            "angle": float(
-                np.round(self.angle_spin.value(), self.angle_spin.decimals())
-            ),
-            "axes": typing.cast(
-                "tuple[str, str]", tuple(self.slicer_area.main_image.axis_dims)
-            ),
-            "center": typing.cast(
-                "tuple[float, float]", tuple(spin.value() for spin in self.center_spins)
-            ),
+    def _add_center_spins(self, *, use_cursor: bool) -> None:
+        image = self.slicer_area.main_image
+        self.center_spins = tuple(
+            erlab.interactive.utils.BetterSpinBox(
+                compact=False,
+                exact_float=True,
+                trim="0",
+                singleStep=float(abs(self.array_slicer.incs[axis])),
+                value=self.slicer_area.current_values[axis] if use_cursor else 0.0,
+            )
+            for axis in image.display_axis
+        )
+        for dim, spin in zip(image.axis_dims, self.center_spins, strict=True):
+            self.layout_.addRow(f"Center {dim}", spin)
+
+    def _plane_params(self, *, mapping_center: bool) -> dict[str, typing.Any]:
+        visible = tuple(self.slicer_area.main_image.axis_dims)
+        values = {}
+        for dim, spin in zip(visible, self.center_spins, strict=True):
+            spin.interpretText()
+            values[dim] = float(spin.value())
+        recorded = self._recorded_plane
+        if recorded is not None:
+            mapping_center = isinstance(recorded.center, Mapping)
+        # The transform interprets tuple centers in data dimension order.
+        center = (
+            values
+            if mapping_center
+            else tuple(values[dim] for dim in self.data.dims if dim in values)
+        )
+        params: dict[str, typing.Any] = {
+            "axes": visible if recorded is None else recorded.axes,
+            "center": center,
             "reshape": self.reshape_check.isChecked(),
             "order": self.order_spin.value(),
         }
+        if recorded is not None:
+            params.update(
+                mode=recorded.mode, cval=recorded.cval, prefilter=recorded.prefilter
+            )
+        return params
+
+    def _restore_plane(
+        self, operation: RotateOperation | SymmetrizeNfoldOperation
+    ) -> None:
+        axes = operation.axes
+        if isinstance(axes[0], int):
+            axes = tuple(
+                self.data.dims[i] for i in typing.cast("tuple[int, int]", axes)
+            )
+        visible = tuple(self.slicer_area.main_image.axis_dims)
+        if set(axes) != set(visible):
+            raise ValueError(
+                "Rotation axes are not currently visible. "
+                "Show the recorded plane to edit it."
+            )
+        center = operation.center
+        if not isinstance(center, Mapping):
+            center = dict(
+                zip((dim for dim in self.data.dims if dim in axes), center, strict=True)
+            )
+        for dim, spin in zip(visible, self.center_spins, strict=True):
+            spin.setValue(center[dim])
+        self.reshape_check.setChecked(operation.reshape)
+        self.order_spin.setValue(operation.order)
+        self._recorded_plane = operation
+
+
+class RotationDialog(_RotationPlaneDialog):
+    enable_copy = True
+    operation_types = (RotateOperation,)
 
     def setup_widgets(self) -> None:
         main_image = self.slicer_area.main_image
-        self.angle_spin = QtWidgets.QDoubleSpinBox()
-        self.angle_spin.setRange(-360, 360)
-        self.angle_spin.setSingleStep(1)
-        self.angle_spin.setValue(0)
-        self.angle_spin.setDecimals(2)
-        self.angle_spin.setSuffix("°")
-        self.layout_.addRow("Angle", self.angle_spin)
-
-        self.center_spins = (
-            pg.SpinBox(dec=True, compactHeight=False),
-            pg.SpinBox(dec=True, compactHeight=False),
+        self.angle_spin = erlab.interactive.utils.BetterSpinBox(
+            compact=False,
+            exact_float=True,
+            trim="0",
+            suffix="°",
+            minimum=-360,
+            maximum=360,
+            singleStep=1,
         )
-        for i in range(2):
-            axis: int = main_image.display_axis[i]
-            dim: str = str(main_image.axis_dims[i])
-            self.center_spins[i].setDecimals(
-                self.array_slicer.get_significant(axis, uniform=False)
-            )
-            self.center_spins[i].setSingleStep(float(abs(self.array_slicer.incs[axis])))
-            self.center_spins[i].setValue(0.0)
-
-            self.layout_.addRow(f"Center {dim}", self.center_spins[i])
+        self.layout_.addRow("Angle", self.angle_spin)
+        self._add_center_spins(use_cursor=False)
 
         self.order_spin: QtWidgets.QSpinBox = QtWidgets.QSpinBox()
         self.order_spin.setRange(0, 5)
@@ -2230,7 +2356,11 @@ class RotationDialog(DataTransformDialog):
     def source_transform_operation(
         self,
     ) -> ToolProvenanceOperation:
-        return RotateOperation(**self._rotate_params)
+        self.angle_spin.interpretText()
+        return RotateOperation(
+            angle=float(self.angle_spin.value()),
+            **self._plane_params(mapping_center=False),
+        )
 
     def restore_transform_operation(
         self,
@@ -2241,16 +2371,12 @@ class RotationDialog(DataTransformDialog):
             RotateOperation,
         ):
             return
-        if tuple(operation.axes) != tuple(self.slicer_area.main_image.axis_dims):
-            raise ValueError("Rotation axes are not currently visible")
-        self.angle_spin.setValue(float(operation.angle))
-        for spin, value in zip(self.center_spins, operation.center, strict=True):
-            spin.setValue(float(value))
-        self.reshape_check.setChecked(operation.reshape)
-        self.order_spin.setValue(int(operation.order))
+        self._restore_plane(operation)
+        _restore_spin_value(self.angle_spin, operation.angle)
 
 
 class AggregateDialog(DataTransformDialog):
+    _recorded_aggregation: AverageOperation | QSelAggregationOperation | None = None
     title = "Aggregate Over Dimensions"
     enable_copy = True
     operation_types = (
@@ -2277,7 +2403,10 @@ class AggregateDialog(DataTransformDialog):
 
     @property
     def _target_dims(self) -> tuple[Hashable, ...]:
-        return tuple(k for k, v in self.dim_checks.items() if v.isChecked())
+        return _checked_dims(
+            self.dim_checks,
+            self._recorded_aggregation.dims if self._recorded_aggregation else (),
+        )
 
     @property
     def _reducer(self) -> typing.Literal["mean", "min", "max", "sum"]:
@@ -2288,6 +2417,11 @@ class AggregateDialog(DataTransformDialog):
     ) -> ToolProvenanceOperation:
         if not self._target_dims:
             raise ValueError("No dimensions selected")
+        if (
+            isinstance(self._recorded_aggregation, AverageOperation)
+            and self._reducer == "mean"
+        ):
+            return AverageOperation(dims=self._target_dims)
         return QSelAggregationOperation(
             dims=self._target_dims,
             func=self._reducer,
@@ -2311,6 +2445,7 @@ class AggregateDialog(DataTransformDialog):
             func = operation.func
         else:
             return
+        self._recorded_aggregation = operation
         for check in self.dim_checks.values():
             check.setChecked(False)
         for dim in dims:
@@ -2346,6 +2481,8 @@ AverageDialog = AggregateDialog
 
 
 class _SelectionRow:
+    _restored_range = False
+
     def __init__(
         self,
         dialog: SelectionDialog,
@@ -2559,6 +2696,18 @@ class _SelectionRow:
             return slice(start, stop, self._step_value())
         return slice(stop, start, self._step_value())
 
+    @staticmethod
+    def _restore_label(
+        spin: erlab.interactive.utils.BetterSpinBox, label: float
+    ) -> None:
+        _restore_spin_value(spin, float(label))
+        if isinstance(label, int):
+            # Preserve integer labels beyond the precision of a binary64 float.
+            line = spin.lineEdit()
+            if line is not None:
+                line.setText(str(label))
+                spin.interpretText()
+
     def indexer(self) -> tuple[Hashable, typing.Any]:
         if self.method == "isel":
             start = int(self.index_start_spin.value())
@@ -2570,11 +2719,11 @@ class _SelectionRow:
                 if self.stop_none_check.isChecked()
                 else int(self.index_stop_spin.value())
             )
-            if range_start is None or range_stop is None:
+            if self._restored_range or range_start is None or range_stop is None:
                 return self.dim, slice(range_start, range_stop, self._step_value())
             return self.dim, self._isel_slice(range_start, range_stop)
 
-        start = float(self.value_start_spin.value())
+        start = _numeric_text(self.value_start_spin.text())
         if self.kind == "point":
             return self.dim, start
 
@@ -2582,9 +2731,9 @@ class _SelectionRow:
         range_stop = (
             None
             if self.stop_none_check.isChecked()
-            else float(self.value_stop_spin.value())
+            else _numeric_text(self.value_stop_spin.text())
         )
-        if range_start is None or range_stop is None:
+        if self._restored_range or range_start is None or range_stop is None:
             return self.dim, slice(range_start, range_stop, self._step_value())
         if self._coord_ascending:
             return self.dim, slice(
@@ -2614,6 +2763,7 @@ class _SelectionRow:
         indexer: typing.Any,
         width: float | None = None,
     ) -> None:
+        self._restored_range = isinstance(indexer, slice)
         self.use_check.setChecked(True)
         if not _set_combo_data(self.method_combo, method):
             raise ValueError(f"Selection method {method!r} is not available")
@@ -2623,33 +2773,33 @@ class _SelectionRow:
             else:
                 step = self._validate_restored_step(indexer.step)
                 self.step_check.setChecked(True)
-                self.step_spin.setValue(step)
+                _restore_spin_value(self.step_spin, step)
             _set_combo_data(self.kind_combo, "range")
             self.start_none_check.setChecked(indexer.start is None)
             self.stop_none_check.setChecked(indexer.stop is None)
             if method == "isel":
                 if indexer.start is not None:
-                    self.index_start_spin.setValue(int(indexer.start))
+                    _restore_spin_value(self.index_start_spin, int(indexer.start))
                 if indexer.stop is not None:
-                    self.index_stop_spin.setValue(int(indexer.stop))
+                    _restore_spin_value(self.index_stop_spin, int(indexer.stop))
             else:
                 if indexer.start is not None:
-                    self.value_start_spin.setValue(float(indexer.start))
+                    self._restore_label(self.value_start_spin, indexer.start)
                 if indexer.stop is not None:
-                    self.value_stop_spin.setValue(float(indexer.stop))
+                    self._restore_label(self.value_stop_spin, indexer.stop)
         else:
             _set_combo_data(self.kind_combo, "point")
             self.step_check.setChecked(False)
             self.start_none_check.setChecked(False)
             self.stop_none_check.setChecked(False)
             if method == "isel":
-                self.index_start_spin.setValue(int(indexer))
+                _restore_spin_value(self.index_start_spin, int(indexer))
             else:
-                self.value_start_spin.setValue(float(indexer))
+                self._restore_label(self.value_start_spin, indexer)
 
         if method == "qsel" and width is not None:
             self.width_check.setChecked(True)
-            self.width_spin.setValue(float(width))
+            _restore_spin_value(self.width_spin, float(width))
         else:
             self.width_check.setChecked(False)
         self.sync_widgets()
@@ -2667,6 +2817,7 @@ class _SelectionRow:
 
 
 class SelectionDialog(DataTransformDialog):
+    _recorded_selection: IselOperation | SelOperation | QSelOperation | None = None
     title = "Select Data"
     enable_copy = True
     operation_types = (
@@ -2824,28 +2975,31 @@ class SelectionDialog(DataTransformDialog):
     ) -> list[ToolProvenanceOperation]:
         isel_kwargs, sel_kwargs, qsel_kwargs = self._selection_kwargs()
         operations: list[ToolProvenanceOperation] = []
-        if isel_kwargs:
-            operations.append(IselOperation(kwargs=isel_kwargs))
-        if sel_kwargs:
-            operations.append(SelOperation(kwargs=sel_kwargs))
-        if qsel_kwargs:
-            operations.append(QSelOperation(kwargs=qsel_kwargs))
+        for cls, kwargs in (
+            (IselOperation, isel_kwargs),
+            (SelOperation, sel_kwargs),
+            (QSelOperation, qsel_kwargs),
+        ):
+            if kwargs:
+                options = (
+                    self._recorded_selection.options
+                    if isinstance(self._recorded_selection, cls)
+                    else {}
+                )
+                operations.append(cls(kwargs=kwargs, **options))
         return operations
 
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
-        isel_kwargs, sel_kwargs, qsel_kwargs = self._selection_kwargs()
-        if isel_kwargs:
-            data = data.isel(isel_kwargs)
-        if sel_kwargs:
-            data = data.sel(sel_kwargs)
-        if qsel_kwargs:
-            data = data.qsel(qsel_kwargs)
+        for operation in self.source_operations():
+            data = operation.apply(data)
         return data
 
     def restore_transform_operation(
         self,
         operation: ToolProvenanceOperation,
     ) -> None:
+        if isinstance(operation, (IselOperation, SelOperation, QSelOperation)):
+            self._recorded_selection = operation
         if isinstance(operation, IselOperation):
             self._restore_selection_operation("isel", operation.decoded_kwargs)
         elif isinstance(operation, SelOperation):
@@ -2939,6 +3093,7 @@ class SelectionDialog(DataTransformDialog):
 
 
 class InterpolationDialog(DataTransformDialog):
+    _recorded_interpolation: InterpolationOperation | None = None
     title = "Interpolate"
     enable_copy = True
     operation_types = (InterpolationOperation,)
@@ -3015,7 +3170,7 @@ class InterpolationDialog(DataTransformDialog):
         self.coord_widget.set_reference_coord(coord)
 
     def _target_values(self) -> npt.NDArray:
-        values = np.asarray(self.coord_widget.new_coord, dtype=np.float64)
+        values = self.coord_widget.new_coord
         if values.ndim != 1:
             raise ValueError("Target coordinates must be one-dimensional.")
         if not np.all(np.isfinite(values)):
@@ -3031,9 +3186,13 @@ class InterpolationDialog(DataTransformDialog):
         source_error = self._source_coord_error(dim)
         if source_error is not None:
             raise ValueError(source_error)
+        values = self._target_values()
+        recorded = self._recorded_interpolation
         return InterpolationOperation(
             dim=dim,
-            values=self._target_values(),
+            values=recorded.values
+            if recorded is not None and np.array_equal(values, recorded.decoded_values)
+            else values,
             method=typing.cast(
                 "typing.Literal['linear', 'nearest']",
                 self.method_combo.currentText(),
@@ -3048,6 +3207,7 @@ class InterpolationDialog(DataTransformDialog):
             return
         if not _set_combo_data(self.dim_combo, operation.dim):
             raise ValueError(f"Dimension {operation.dim!r} is not available")
+        self._recorded_interpolation = operation
         values = operation.decoded_values
         self.coord_widget.count_spin.setValue(int(values.size))
         self.coord_widget._set_table_values(values)
@@ -3168,6 +3328,7 @@ class _ImageDerivativeDialog(DataTransformDialog):
     title = "Image Derivative"
     enable_copy = True
     operation_types = (ImageDerivativeOperation,)
+    _recorded_derivative: ImageDerivativeOperation | None = None
     _METHODS: typing.ClassVar[tuple[tuple[str, str], ...]] = (
         ("diffn", "Second Derivative"),
         ("scaled_laplace", "Scaled Laplace"),
@@ -3263,6 +3424,16 @@ class _ImageDerivativeDialog(DataTransformDialog):
             }
         else:
             kwargs = {}
+        if (
+            self._recorded_derivative is not None
+            and self._recorded_derivative.method == method
+        ):
+            kwargs = {
+                **typing.cast(
+                    "dict[str, typing.Any]", self._recorded_derivative.kwargs
+                ),
+                **kwargs,
+            }
         return ImageDerivativeOperation(
             method=typing.cast(
                 "typing.Literal['diffn', 'scaled_laplace', 'curvature1d', "
@@ -3278,6 +3449,7 @@ class _ImageDerivativeDialog(DataTransformDialog):
     ) -> None:
         if not isinstance(operation, ImageDerivativeOperation):
             return
+        self._recorded_derivative = operation
         if not _set_combo_data(self.method_combo, operation.method):
             raise ValueError(f"Derivative method {operation.method!r} is not available")
         kwargs = typing.cast("dict[str, typing.Any]", dict(operation.kwargs))
@@ -3310,6 +3482,7 @@ class _ImageDerivativeDialog(DataTransformDialog):
 class _DenoiseDialog(DataTransformDialog):
     """Parameter editor for denoising provenance."""
 
+    _scalar_resize = False
     title = "Denoise"
     enable_copy = True
     operation_types = (DenoiseOperation,)
@@ -3389,9 +3562,12 @@ class _DenoiseDialog(DataTransformDialog):
         along = self.along_combo.currentData(QtCore.Qt.ItemDataRole.UserRole)
         if "eV" not in self.data.dims or not isinstance(along, str):
             raise ValueError("Denoising requires energy and angle dimensions")
+        resize = (self.energy_spin.value(), self.angle_spin.value())
         return DenoiseOperation(
             along=along,
-            resize=(self.energy_spin.value(), self.angle_spin.value()),
+            resize=resize[0]
+            if self._scalar_resize and resize[0] == resize[1]
+            else resize,
             model_path=self._model_path,
             tta=self.tta_check.isChecked(),
             restore_scale=self.scale_check.isChecked(),
@@ -3404,6 +3580,7 @@ class _DenoiseDialog(DataTransformDialog):
             return
         if not _set_combo_data(self.along_combo, operation.along):
             raise ValueError(f"Dimension {operation.along!r} is not available")
+        self._scalar_resize = isinstance(operation.resize, int)
         resize = (
             (operation.resize, operation.resize)
             if isinstance(operation.resize, int)
@@ -3509,7 +3686,9 @@ class _RemoveMeshDialog(DataTransformDialog):
             values,
         )
 
-    def preflight_data(self, data: xr.DataArray) -> None:
+    def preflight_data(
+        self, data: xr.DataArray, spec: ToolProvenanceSpec | None = None
+    ) -> None:
         missing = {"alpha", "eV"} - set(data.dims)
         if missing:
             raise ValueError("Mesh removal requires 'alpha' and 'eV' dimensions")
@@ -3745,6 +3924,7 @@ class SortByDialog(DataTransformDialog):
 
 
 class LeadingEdgeDialog(DataTransformDialog):
+    _on_failure: typing.Literal["nan", "raise"] = "nan"
     title = "Leading Edge"
     enable_copy = True
     operation_types = (LeadingEdgeOperation,)
@@ -3760,11 +3940,15 @@ class LeadingEdgeDialog(DataTransformDialog):
             self.dim_combo.setCurrentIndex(ev_index)
         self.layout_.addRow("Dimension", self.dim_combo)
 
-        self.fraction_spin = QtWidgets.QDoubleSpinBox()
-        self.fraction_spin.setDecimals(6)
-        self.fraction_spin.setRange(0.000001, 1.0)
-        self.fraction_spin.setSingleStep(0.05)
-        self.fraction_spin.setValue(0.5)
+        self.fraction_spin = erlab.interactive.utils.BetterSpinBox(
+            compact=False,
+            exact_float=True,
+            trim="0",
+            minimum=0.000001,
+            maximum=1.0,
+            singleStep=0.05,
+            value=0.5,
+        )
         self.layout_.addRow("Fraction", self.fraction_spin)
 
         self.direction_combo = QtWidgets.QComboBox()
@@ -3812,10 +3996,12 @@ class LeadingEdgeDialog(DataTransformDialog):
         source_error = self._source_coord_error(dim)
         if source_error is not None:
             raise ValueError(source_error)
+        self.fraction_spin.interpretText()
         return LeadingEdgeOperation(
             fraction=float(self.fraction_spin.value()),
             dim=dim,
             direction=self._direction,
+            on_failure=self._on_failure,
         )
 
     def restore_transform_operation(
@@ -3829,7 +4015,12 @@ class LeadingEdgeDialog(DataTransformDialog):
             return
         if not _set_combo_data(self.dim_combo, operation.dim):
             raise ValueError(f"Dimension {operation.dim!r} is not available")
-        self.fraction_spin.setValue(float(operation.fraction))
+        self._on_failure = operation.on_failure
+        if not np.isfinite(operation.fraction):
+            raise ValueError(
+                "Use a finite leading-edge fraction to edit this operation here."
+            )
+        _restore_spin_value(self.fraction_spin, operation.fraction)
         if not _set_combo_data(self.direction_combo, operation.direction):
             raise ValueError(f"Direction {operation.direction!r} is not available")
 
@@ -3855,6 +4046,7 @@ class LeadingEdgeDialog(DataTransformDialog):
 
 
 class CoarsenDialog(DataTransformDialog):
+    _recorded_keep_attrs: bool | None = None
     title = "Coarsen"
     enable_copy = True
     operation_types = (CoarsenOperation,)
@@ -3955,6 +4147,9 @@ class CoarsenDialog(DataTransformDialog):
             side=self.side_combo.currentText(),
             coord_func=self._coord_func,
             reducer=self._reducer,
+            keep_attrs=self._recorded_keep_attrs
+            if self._recorded_keep_attrs is not None
+            else xr.get_options()["keep_attrs"] is not False,
         )
 
     def restore_transform_operation(
@@ -3966,6 +4161,7 @@ class CoarsenDialog(DataTransformDialog):
             CoarsenOperation,
         ):
             return
+        self._recorded_keep_attrs = operation.keep_attrs
         for check in self.dim_checks.values():
             check.setChecked(False)
         for dim, window in operation.dim.items():
@@ -4027,6 +4223,7 @@ class CoarsenDialog(DataTransformDialog):
 
 
 class ThinDialog(DataTransformDialog):
+    _recorded_thin: ThinOperation | None = None
     title = "Thin Data"
     enable_copy = True
     operation_types = (ThinOperation,)
@@ -4124,13 +4321,16 @@ class ThinDialog(DataTransformDialog):
     def source_transform_operation(
         self,
     ) -> ToolProvenanceOperation:
-        if self._use_global_mode:
-            if self.global_spin.value() <= 1:
-                raise ValueError("No thinning requested")
-            return ThinOperation(mode="global", factor=self.global_spin.value())
-        if not self._effective_factors:
+        if not self._effective_factors and self._recorded_thin is None:
             raise ValueError("No thinning requested")
-        return ThinOperation(mode="per_dim", factors=self._effective_factors)
+        if self._use_global_mode:
+            return ThinOperation(mode="global", factor=self.global_spin.value())
+        return ThinOperation(
+            mode="per_dim",
+            factors=self._selected_factors
+            if self._recorded_thin
+            else self._effective_factors,
+        )
 
     def restore_transform_operation(
         self,
@@ -4138,6 +4338,7 @@ class ThinDialog(DataTransformDialog):
     ) -> None:
         if not isinstance(operation, ThinOperation):
             return
+        self._recorded_thin = operation
         for check in self.dim_checks.values():
             check.setChecked(False)
         if operation.mode == "global":
@@ -4162,7 +4363,7 @@ class ThinDialog(DataTransformDialog):
             )
             return
 
-        if not self._effective_factors:
+        if not self._effective_factors and self._recorded_thin is None:
             QtWidgets.QMessageBox.warning(
                 self,
                 "No Thinning Requested",
@@ -4174,6 +4375,7 @@ class ThinDialog(DataTransformDialog):
 
 
 class SqueezeDialog(DataTransformDialog):
+    _recorded_dims: tuple[Hashable, ...] | None = ()
     title = "Squeeze Dimensions"
     enable_copy = True
     operation_types = (SqueezeOperation,)
@@ -4211,7 +4413,7 @@ class SqueezeDialog(DataTransformDialog):
 
     @property
     def _selected_dims(self) -> tuple[Hashable, ...]:
-        return tuple(dim for dim, check in self.dim_checks.items() if check.isChecked())
+        return _checked_dims(self.dim_checks, self._recorded_dims or ())
 
     def _validate(self) -> QtWidgets.QDialog.DialogCode:
         if not self.dim_checks:
@@ -4241,8 +4443,19 @@ class SqueezeDialog(DataTransformDialog):
             return
         super().accept()
 
-    def preflight_data(self, data: xr.DataArray) -> None:
-        selected_dims = self._selected_dims
+    def preflight_data(
+        self, data: xr.DataArray, spec: ToolProvenanceSpec | None = None
+    ) -> None:
+        operation = (
+            self.source_transform_operation() if spec is None else spec.operations[0]
+        )
+        if not isinstance(operation, SqueezeOperation):
+            raise TypeError("Expected a squeeze operation")
+        selected_dims = (
+            operation.dims
+            if operation.dims is not None
+            else tuple(dim for dim, size in data.sizes.items() if size == 1)
+        )
         missing_dims = [dim for dim in selected_dims if dim not in data.dims]
         if missing_dims:
             raise ValueError(f"Dimensions are not available: {missing_dims!r}")
@@ -4258,7 +4471,10 @@ class SqueezeDialog(DataTransformDialog):
         if not self._selected_dims:
             raise ValueError("No dimensions selected")
         return SqueezeOperation(
-            dims=self._selected_dims,
+            dims=None
+            if self._recorded_dims is None
+            and len(self._selected_dims) == len(self.dim_checks)
+            else self._selected_dims,
             drop=self.drop_check.isChecked(),
         )
 
@@ -4280,10 +4496,12 @@ class SqueezeDialog(DataTransformDialog):
             if dim not in self.dim_checks:
                 raise ValueError(f"Dimension {dim!r} is not available")
             self.dim_checks[dim].setChecked(True)
+        self._recorded_dims = operation.dims
         self.drop_check.setChecked(operation.drop)
 
 
 class SymmetrizeDialog(DataTransformDialog):
+    _interp_kw: dict[str, typing.Any] | None = None
     title = "Symmetrize"
     enable_copy = True
     operation_types = (SymmetrizeOperation,)
@@ -4294,10 +4512,13 @@ class SymmetrizeDialog(DataTransformDialog):
         dim_group.setLayout(dim_layout)
 
         self._dim_combo = QtWidgets.QComboBox()
-        self._dim_combo.addItems([str(d) for d in self.data.dims])
+        for dim in self.data.dims:
+            self._dim_combo.addItem(str(dim), userData=dim)
         dim_layout.addWidget(self._dim_combo)
 
-        self._center_spin = QtWidgets.QDoubleSpinBox()
+        self._center_spin = erlab.interactive.utils.BetterSpinBox(
+            compact=False, exact_float=True, trim="0"
+        )
         dim_layout.addWidget(self._center_spin)
         self._dim_combo.currentIndexChanged.connect(self._update_spin)
         self._update_spin()
@@ -4353,26 +4574,23 @@ class SymmetrizeDialog(DataTransformDialog):
 
     @QtCore.Slot()
     def _update_spin(self) -> None:
-        dim = self._dim_combo.currentText()
+        dim = self._dim_combo.currentData()
         coord = np.asarray(self.data[dim].values, dtype=np.float64)
         self._center_spin.setRange(float(coord.min()), float(coord.max()))
         if dim in self.array_slicer.physical_dims:
             axis = self.array_slicer.physical_dims.index(dim)
             self._center_spin.setSingleStep(float(abs(self.array_slicer.incs[axis])))
-            self._center_spin.setDecimals(self.array_slicer.get_significant(axis))
             self._center_spin.setValue(self.slicer_area.current_values[axis])
         else:
             self._center_spin.setSingleStep(1.0)
-            self._center_spin.setDecimals(3)
             self._center_spin.setValue(float(coord[0]))
 
     @property
     def _params(self) -> dict[str, typing.Any]:
+        self._center_spin.interpretText()
         return {
-            "dim": self._dim_combo.currentText(),
-            "center": float(
-                np.round(self._center_spin.value(), self._center_spin.decimals())
-            ),
+            "dim": self._dim_combo.currentData(),
+            "center": float(self._center_spin.value()),
             "subtract": self.subtract_check.isChecked(),
             "average": self.average_check.isChecked(),
             "mode": ("full", "valid")[
@@ -4386,7 +4604,7 @@ class SymmetrizeDialog(DataTransformDialog):
     def source_transform_operation(
         self,
     ) -> ToolProvenanceOperation:
-        return SymmetrizeOperation(**self._params)
+        return SymmetrizeOperation(**self._params, interp_kw=self._interp_kw)
 
     def restore_transform_operation(
         self,
@@ -4397,9 +4615,10 @@ class SymmetrizeDialog(DataTransformDialog):
             SymmetrizeOperation,
         ):
             return
-        if not _set_combo_text(self._dim_combo, str(operation.dim)):
+        self._interp_kw = operation.interp_kw
+        if not _set_combo_data(self._dim_combo, operation.dim):
             raise ValueError(f"Dimension {operation.dim!r} is not available")
-        self._center_spin.setValue(float(operation.center))
+        _restore_spin_value(self._center_spin, operation.center)
         self.subtract_check.setChecked(operation.subtract)
         self.average_check.setChecked(operation.average)
         self.opt_mode[0 if operation.mode == "full" else 1].setChecked(True)
@@ -4407,7 +4626,7 @@ class SymmetrizeDialog(DataTransformDialog):
         self.opt_part[part_index].setChecked(True)
 
 
-class SymmetrizeNfoldDialog(DataTransformDialog):
+class SymmetrizeNfoldDialog(_RotationPlaneDialog):
     title = "Rotational Symmetrize"
     enable_copy = True
     operation_types = (SymmetrizeNfoldOperation,)
@@ -4416,13 +4635,7 @@ class SymmetrizeNfoldDialog(DataTransformDialog):
     def _params(self) -> dict[str, typing.Any]:
         return {
             "fold": self.fold_spin.value(),
-            "axes": self._axes,
-            "center": {
-                dim: float(np.round(spin.value(), spin.decimals()))
-                for dim, spin in zip(self._axes, self.center_spins, strict=True)
-            },
-            "reshape": self.reshape_check.isChecked(),
-            "order": self.order_spin.value(),
+            **self._plane_params(mapping_center=True),
         }
 
     def setup_widgets(self) -> None:
@@ -4449,19 +4662,7 @@ class SymmetrizeNfoldDialog(DataTransformDialog):
         self.fold_spin.setValue(4)
         self.layout_.addRow("Fold", self.fold_spin)
 
-        self.center_spins = (
-            erlab.interactive.utils.BetterSpinBox(compact=False),
-            erlab.interactive.utils.BetterSpinBox(compact=False),
-        )
-        for i in range(2):
-            axis = main_image.display_axis[i]
-            dim = str(main_image.axis_dims[i])
-            self.center_spins[i].setDecimals(
-                self.array_slicer.get_significant(axis, uniform=False)
-            )
-            self.center_spins[i].setSingleStep(float(abs(self.array_slicer.incs[axis])))
-            self.center_spins[i].setValue(self.slicer_area.current_values[axis])
-            self.layout_.addRow(f"Center {dim}", self.center_spins[i])
+        self._add_center_spins(use_cursor=True)
 
         self.order_spin = QtWidgets.QSpinBox()
         self.order_spin.setRange(0, 5)
@@ -4496,18 +4697,9 @@ class SymmetrizeNfoldDialog(DataTransformDialog):
             SymmetrizeNfoldOperation,
         ):
             return
-        if tuple(operation.axes) != self._axes:
-            raise ValueError("Rotational symmetrize axes are not currently visible")
+        self._restore_plane(operation)
+        self.fold_spin.setMaximum(max(self.fold_spin.maximum(), operation.fold))
         self.fold_spin.setValue(int(operation.fold))
-        self.reshape_check.setChecked(operation.reshape)
-        self.order_spin.setValue(int(operation.order))
-        center = operation.center
-        if isinstance(center, Mapping):
-            values = [center[dim] for dim in self._axes]
-        else:
-            values = center
-        for spin, value in zip(self.center_spins, values, strict=True):
-            spin.setValue(float(value))
 
 
 class EdgeCorrectionDialog(DataTransformDialog):
@@ -4776,6 +4968,9 @@ class ShiftDialog(DataTransformDialog):
         manager: ImageToolManager,
         uid: str,
         source_data: xr.DataArray,
+        *,
+        shift_data: xr.DataArray | None = None,
+        operation: ShiftOperation | None = None,
     ) -> xr.DataArray:
         node = manager._tool_graph.nodes.get(uid)
         if node is None:
@@ -4788,7 +4983,8 @@ class ShiftDialog(DataTransformDialog):
         }:
             raise ValueError("The selected shift ImageTool is not current.")
         try:
-            shift_data = node.data_for_role("source", owner_node=node)
+            if shift_data is None:
+                shift_data = node.data_for_role("source", owner_node=node)
         except (OSError, RuntimeError) as exc:
             raise ValueError(
                 "The selected shift ImageTool data is unavailable."
@@ -4796,8 +4992,10 @@ class ShiftDialog(DataTransformDialog):
         erlab.analysis.transform._validate_shift_inputs(
             source_data,
             shift_data,
-            typing.cast("str", self.along),
-            assume_sorted=self.assume_sorted_check.isChecked(),
+            typing.cast("str", self.along if operation is None else operation.along),
+            assume_sorted=self.assume_sorted_check.isChecked()
+            if operation is None
+            else operation.assume_sorted,
         )
         return shift_data
 
@@ -4916,8 +5114,21 @@ class ShiftDialog(DataTransformDialog):
                     "Select a compatible shift ImageTool.",
                 )
                 return
-            data = current_node.data_for_role("source", owner_node=current_node)
-            shift_data = self._candidate_data(manager, selected_uid, data)
+            settings = _calculation_options()
+            inputs = tuple(
+                manager._data_graph.read_input(uid, data_role="source")
+                for uid in (target, selected_uid)
+            )
+            input_checks = tuple(item.require_current for item in inputs)
+            data = inputs[0].data
+            operation = self.source_transform_operation()
+            self._candidate_data(
+                manager,
+                selected_uid,
+                data,
+                shift_data=inputs[1].data,
+                operation=operation,
+            )
             if self.launch_mode == "replace" and not self._replacement_is_safe():
                 QtWidgets.QMessageBox.warning(
                     self,
@@ -4926,76 +5137,48 @@ class ShiftDialog(DataTransformDialog):
                     "top-level result.",
                 )
                 return
-            operation = self.source_transform_operation()
-            effective_shift = -shift_data if operation.negate else shift_data
-            processed = erlab.analysis.transform.shift(
-                data,
-                effective_shift,
-                **operation.kwargs,
-            ).rename(data.name)
-            provenance_spec = manager._multi_input_operation_provenance(
-                (target, selected_uid),
-                operation=ShiftFromInputOperation(
-                    negate=operation.negate,
-                    along=operation.along,
-                    shift_coords=operation.shift_coords,
-                    keep_dim_order=operation.keep_dim_order,
-                    assume_sorted=operation.assume_sorted,
-                    order=operation.order,
-                    mode=operation.mode,
-                    cval=operation.cval,
-                    prefilter=operation.prefilter,
-                ),
-                active_name="shifted",
-                start_label="Shift ImageTool data",
-                detached_input_uid=(
-                    current_node.uid if self.launch_mode == "replace" else None
-                ),
-                data_role="source",
+            shift_operation = ShiftFromInputOperation(
+                negate=operation.negate,
+                along=operation.along,
+                shift_coords=operation.shift_coords,
+                keep_dim_order=operation.keep_dim_order,
+                assume_sorted=operation.assume_sorted,
+                order=operation.order,
+                mode=operation.mode,
+                cval=operation.cval,
+                prefilter=operation.prefilter,
+            ).capture_execution_options(settings)
+            publication = manager._data_graph.calculate(
+                (shift_operation,),
+                inputs,
                 input_names=("data", "shift"),
-                primary_input="data",
-                input_bindings={"shift": "shift"},
+                output_name="shifted",
+                keep_name=True,
+                replace_uid=current_node.uid if self.launch_mode == "replace" else None,
             )
+            for check in input_checks:
+                check()
             if self.launch_mode == "replace":
-                current_node.replace_with_detached_data(
-                    processed,
-                    provenance_spec,
-                    propagate_descendants=True,
-                    preserve_filter=False,
-                    replay_source_data=data,
-                )
+                current_node.publish_replacement(publication)
                 manager.tree_view.refresh(current_node.uid)
                 manager._sigDataReplaced.emit()
             else:
-                tool = typing.cast(
-                    "erlab.interactive.imagetool.ImageTool | None",
-                    erlab.interactive.itool(
-                        manager=False,
-                        **self._itool_kwargs(processed),
-                    ),
-                )
-                if tool is None:
-                    erlab.interactive.utils.MessageDialog.critical(
-                        self,
-                        "Error",
-                        "Could not create the shifted ImageTool.",
-                    )
-                    return
                 if self.launch_mode == "nest":
                     manager.add_imagetool_child(
-                        tool,
+                        publication,
                         target,
                         activate=True,
-                        provenance_spec=provenance_spec,
-                        source_state="fresh",
+                        _display_options=self._display_options(),
+                        _input_checks=input_checks,
                     )
                 else:
                     manager.add_imagetool(
-                        tool,
+                        publication,
                         activate=True,
-                        provenance_spec=provenance_spec,
+                        _display_options=self._display_options(),
+                        _input_checks=input_checks,
                     )
-        except (KeyError, TypeError, ValueError) as exc:
+        except (_SupersededEvaluation, KeyError, TypeError, ValueError) as exc:
             QtWidgets.QMessageBox.warning(self, "Cannot Shift", str(exc))
             return
         except Exception:
@@ -5184,6 +5367,8 @@ class CropDialog(_BaseCropDialog):
 
 
 class NormalizeDialog(DataFilterDialog):
+    _recorded_keep_attrs: bool | typing.Literal["default"] | None = None
+    _recorded_dims: tuple[Hashable, ...] = ()
     title = "Normalize"
     enable_copy = True
     operation_types = (NormalizeOperation,)
@@ -5222,7 +5407,7 @@ class NormalizeDialog(DataFilterDialog):
 
     @property
     def _norm_dims(self) -> tuple[Hashable, ...]:
-        return tuple(k for k, v in self.dim_checks.items() if v.isChecked())
+        return _checked_dims(self.dim_checks, self._recorded_dims)
 
     @property
     def _mode(self) -> typing.Literal["area", "minmax", "min", "min_area"]:
@@ -5246,6 +5431,9 @@ class NormalizeDialog(DataFilterDialog):
             dims=norm_dims,
             mode=self._mode,
             denominator_rtol=self.denominator_rtol,
+            keep_attrs=self._recorded_keep_attrs
+            if self._recorded_keep_attrs is not None
+            else xr.get_options()["keep_attrs"],
         )
 
     def restore_filter_operation(
@@ -5260,10 +5448,13 @@ class NormalizeDialog(DataFilterDialog):
         for check in self.dim_checks.values():
             check.setChecked(False)
         for dim in operation.dims:
-            if dim in self.dim_checks:
-                self.dim_checks[dim].setChecked(True)
+            if dim not in self.dim_checks:
+                raise ValueError(f"Dimension {dim!r} is not available")
+            self.dim_checks[dim].setChecked(True)
+        self._recorded_dims = operation.dims
         self.opts[self._MODES.index(operation.mode)].setChecked(True)
         self.denominator_rtol = operation.denominator_rtol
+        self._recorded_keep_attrs = operation.keep_attrs
 
 
 class DivideByCoordDialog(DataTransformDialog):
@@ -5370,6 +5561,7 @@ class GaussianFilterDialog(DataFilterDialog):
     title = "Gaussian Filter"
     enable_copy = True
     operation_types = (GaussianFilterOperation,)
+    _recorded_filter: GaussianFilterOperation | None = None
 
     def setup_widgets(self) -> None:
         self._source_data = self.slicer_area._data
@@ -5538,10 +5730,8 @@ class GaussianFilterDialog(DataFilterDialog):
         return sigma_values, sigma_literals
 
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
-        sigma_values, _ = self._sigma_values()
-        if not sigma_values:
-            return data
-        return erlab.analysis.image.gaussian_filter(data, sigma=sigma_values)
+        operation = self.filter_operation()
+        return data if operation is None else operation.apply(data)
 
     def filter_operation(
         self,
@@ -5549,7 +5739,37 @@ class GaussianFilterDialog(DataFilterDialog):
         sigma_values, _ = self._sigma_values()
         if not sigma_values:
             return None
-        return GaussianFilterOperation(sigma=sigma_values)
+        recorded = self._recorded_filter
+        if recorded is None:
+            return GaussianFilterOperation(sigma=sigma_values)
+        original_sigma = recorded.sigma_for_dims(self._source_data.dims)
+        if original_sigma == sigma_values:
+            return recorded
+        updates: dict[str, typing.Any] = {"sigma": sigma_values}
+        if original_sigma.keys() != sigma_values.keys():
+            # gaussian_filter passes sequences to SciPy in data dimension order,
+            # even when the original sigma mapping was supplied in a different order.
+            axes = [dim for dim in self._source_data.dims if dim in original_sigma]
+            for name in ("order", "mode", "radius"):
+                values = getattr(recorded, name)
+                if isinstance(values, tuple):
+                    values = dict(zip(axes, values, strict=True))
+                if not isinstance(values, dict):
+                    continue
+                selected = {}
+                for dim, sigma in sigma_values.items():
+                    if dim in values:
+                        selected[dim] = values[dim]
+                    elif name == "radius":
+                        # Match the default truncated kernel for a newly added axis.
+                        step = self._coord_step(dim)
+                        samples = int(recorded.truncate * (sigma / step) + 0.5)
+                        selected[dim] = samples * step
+                    elif name == "mode":
+                        selected[dim] = "nearest"
+                    # The public filter uses order zero for a missing mapping entry.
+                updates[name] = selected
+        return recorded.model_copy(update=updates)
 
     def restore_filter_operation(
         self,
@@ -5562,7 +5782,8 @@ class GaussianFilterDialog(DataFilterDialog):
             return
         for check in self.dim_checks.values():
             check.setChecked(False)
-        for dim, sigma in operation.sigma.items():
+        self._recorded_filter = operation
+        for dim, sigma in operation.sigma_for_dims(self._source_data.dims).items():
             if dim not in self.dim_checks or not self.dim_checks[dim].isEnabled():
                 continue
             self.dim_checks[dim].setChecked(True)
@@ -5576,6 +5797,7 @@ class _BoxcarFilterDialog(DataFilterDialog):
     title = "Boxcar Filter"
     enable_copy = True
     operation_types = (BoxcarFilterOperation,)
+    _recorded_filter: BoxcarFilterOperation | None = None
 
     def setup_widgets(self) -> None:
         self._source_data = self.data
@@ -5600,7 +5822,16 @@ class _BoxcarFilterDialog(DataFilterDialog):
         self.layout_.addRow(dim_group)
 
         self.mode_combo = QtWidgets.QComboBox()
-        for mode in ("nearest", "reflect", "constant", "mirror", "wrap"):
+        for mode in (
+            "nearest",
+            "reflect",
+            "constant",
+            "mirror",
+            "wrap",
+            "grid-mirror",
+            "grid-constant",
+            "grid-wrap",
+        ):
             self.mode_combo.addItem(mode.title(), userData=mode)
         self.layout_.addRow("Boundary Mode", self.mode_combo)
 
@@ -5629,8 +5860,12 @@ class _BoxcarFilterDialog(DataFilterDialog):
     def filter_operation(self) -> ToolProvenanceOperation | None:
         if not (sizes := self._sizes):
             return None
+        recorded = self._recorded_filter
         return BoxcarFilterOperation(
-            size=sizes,
+            size=recorded.size
+            if recorded is not None
+            and recorded.size_for_dims(self._source_data.dims) == sizes
+            else sizes,
             mode=typing.cast(
                 "typing.Literal['reflect', 'constant', 'nearest', 'mirror', 'wrap']",
                 self.mode_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
@@ -5646,7 +5881,8 @@ class _BoxcarFilterDialog(DataFilterDialog):
             return
         for check in self.dim_checks.values():
             check.setChecked(False)
-        for dim, size in operation.size.items():
+        self._recorded_filter = operation
+        for dim, size in operation.size_for_dims(self._source_data.dims).items():
             if dim not in self.dim_checks:
                 raise ValueError(f"Dimension {dim!r} is not available")
             self.dim_checks[dim].setChecked(True)
@@ -5665,6 +5901,7 @@ class _BoxcarFilterDialog(DataFilterDialog):
 
 
 class SwapDimsDialog(DataTransformDialog):
+    _recorded_swap: SwapDimsOperation | None = None
     title = "Swap Dimensions"
     enable_copy = True
     operation_types = (SwapDimsOperation,)
@@ -5718,13 +5955,14 @@ class SwapDimsDialog(DataTransformDialog):
     def _swap_mapping(self) -> dict[Hashable, Hashable]:
         mapping: dict[Hashable, Hashable] = {}
         for dim, combo in self.target_combos.items():
-            if not combo.isEnabled():
-                continue
             target = typing.cast(
                 "Hashable | None",
                 combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
             )
-            if target is not None and target != dim:
+            if target is not None and (
+                target != dim
+                or (self._recorded_swap and self._recorded_swap.mapping.get(dim) == dim)
+            ):
                 mapping[dim] = target
         return mapping
 
@@ -5765,6 +6003,7 @@ class SwapDimsDialog(DataTransformDialog):
             SwapDimsOperation,
         ):
             return
+        self._recorded_swap = operation
         remaining = set(operation.mapping)
         for dim, combo in self.target_combos.items():
             target = operation.mapping.get(dim, dim)
@@ -5777,6 +6016,7 @@ class SwapDimsDialog(DataTransformDialog):
 
 
 class RenameDimsCoordsDialog(DataTransformDialog):
+    _recorded_rename: RenameDimsCoordsOperation | None = None
     title = "Rename Coordinates and Dimensions"
     enable_copy = True
     operation_types = (RenameDimsCoordsOperation,)
@@ -5829,11 +6069,17 @@ class RenameDimsCoordsDialog(DataTransformDialog):
         return item.text().strip()
 
     @property
-    def _rename_mapping(self) -> dict[Hashable, str]:
-        mapping: dict[Hashable, str] = {}
+    def _rename_mapping(self) -> dict[Hashable, Hashable]:
+        mapping: dict[Hashable, Hashable] = {}
         for row, name in enumerate(self._rename_sources):
             new_name = self._new_name_for_row(row)
-            if new_name != str(name):
+            if (
+                self._recorded_rename
+                and name in self._recorded_rename.mapping
+                and str(self._recorded_rename.mapping[name]) == new_name
+            ):
+                mapping[name] = self._recorded_rename.mapping[name]
+            elif new_name != str(name):
                 mapping[name] = new_name
         return mapping
 
@@ -5890,9 +6136,7 @@ class RenameDimsCoordsDialog(DataTransformDialog):
     ) -> ToolProvenanceOperation:
         if not self._rename_mapping:
             raise ValueError("No names changed")
-        return RenameDimsCoordsOperation(
-            mapping=typing.cast("dict[Hashable, Hashable]", self._rename_mapping)
-        )
+        return RenameDimsCoordsOperation(mapping=self._rename_mapping)
 
     def restore_transform_operation(
         self,
@@ -5903,6 +6147,7 @@ class RenameDimsCoordsDialog(DataTransformDialog):
             RenameDimsCoordsOperation,
         ):
             return
+        self._recorded_rename = operation
         remaining = set(operation.mapping)
         for row, name in enumerate(self._rename_sources):
             item = self.table.item(row, 1)
@@ -5915,6 +6160,9 @@ class RenameDimsCoordsDialog(DataTransformDialog):
 
 
 class AssignCoordsDialog(DataTransformDialog):
+    _recorded_coords: AssignCoordsOperation | AssignCoord1DOperation | None = None
+    _recorded_remove: tuple[Hashable, ...] = ()
+    _recorded_add_name: Hashable | None = None
     title = "Coordinate Editor"
     operation_types = (
         AffineCoordOperation,
@@ -6080,8 +6328,11 @@ class AssignCoordsDialog(DataTransformDialog):
     def _selected_remove_coords(self) -> tuple[Hashable, ...]:
         return tuple(
             name
-            for name, item in self._remove_coord_items.items()
-            if item.checkState() == QtCore.Qt.CheckState.Checked
+            for name in dict.fromkeys(
+                (*self._recorded_remove, *self._remove_coord_items)
+            )
+            if self._remove_coord_items[name].checkState()
+            == QtCore.Qt.CheckState.Checked
         )
 
     @QtCore.Slot()
@@ -6241,7 +6492,11 @@ class AssignCoordsDialog(DataTransformDialog):
             return DropScalarCoordsOperation(names=self._selected_remove_coords)
         if self._mode_tabs.currentIndex() == 1:
             values, dim = self._add_coord_values()
-            name = self._add_name_edit.text().strip()
+            name: Hashable = self._add_name_edit.text().strip()
+            if self._recorded_add_name is not None and name == str(
+                self._recorded_add_name
+            ):
+                name = self._recorded_add_name
             if dim is None:
                 return AssignScalarCoordOperation(
                     coord_name=name,
@@ -6250,7 +6505,7 @@ class AssignCoordsDialog(DataTransformDialog):
             return AssignCoord1DOperation(
                 coord_name=name,
                 dim=dim,
-                values=values,
+                values=self._recorded_values(values),
             )
         if self.coord_widget.use_affine_transform:
             return AffineCoordOperation(
@@ -6262,14 +6517,21 @@ class AssignCoordsDialog(DataTransformDialog):
             )
         return AssignCoordsOperation(
             coord_name=self.current_coord_name,
-            values=self.coord_widget.new_coord,
+            values=self._recorded_values(self.coord_widget.new_coord),
         )
+
+    def _recorded_values(self, values: npt.NDArray) -> typing.Any:
+        recorded = self._recorded_coords
+        if recorded is not None and np.array_equal(values, recorded.decoded_values):
+            return recorded.values
+        return values
 
     def restore_transform_operation(
         self,
         operation: ToolProvenanceOperation,
     ) -> None:
         if isinstance(operation, DropScalarCoordsOperation):
+            self._recorded_remove = operation.names
             for name in operation.names:
                 if name not in self._remove_coord_items:
                     raise ValueError(f"Scalar coordinate {name!r} is not available")
@@ -6317,6 +6579,7 @@ class AssignCoordsDialog(DataTransformDialog):
                 )
             self._mode_tabs.setCurrentIndex(0)
             self.coord_widget.edit_mode_tabs.setCurrentIndex(0)
+            self._recorded_coords = operation
             self.coord_widget._set_table_values(operation.decoded_values)
             return
         if isinstance(
@@ -6324,6 +6587,7 @@ class AssignCoordsDialog(DataTransformDialog):
             AssignScalarCoordOperation,
         ):
             self._mode_tabs.setCurrentIndex(1)
+            self._recorded_add_name = operation.coord_name
             self._add_name_edit.setText(str(operation.coord_name))
             self._add_kind_combo.setCurrentText("Scalar")
             self._add_literal_edit.setText(
@@ -6336,13 +6600,20 @@ class AssignCoordsDialog(DataTransformDialog):
             AssignCoord1DOperation,
         ):
             self._mode_tabs.setCurrentIndex(1)
+            self._recorded_add_name = operation.coord_name
             self._add_name_edit.setText(str(operation.coord_name))
             self._add_kind_combo.setCurrentText("1D Along Coordinate")
             if not _set_combo_data(self._add_ref_combo, operation.dim):
                 raise ValueError(f"Dimension {operation.dim!r} is not available")
             self._add_value_mode_combo.setCurrentText("Numeric Values")
             self._add_reference_changed()
-            self._add_coord_widget._set_table_values(operation.decoded_values)
+            self._recorded_coords = operation
+            values = operation.decoded_values
+            if values.dtype.kind in "iuf":
+                self._add_coord_widget._set_table_values(values)
+            else:
+                self._add_value_mode_combo.setCurrentText("Python Literal")
+                self._add_literal_edit.setText(repr(values.tolist()))
             self._sync_add_widgets()
 
 
@@ -6406,6 +6677,7 @@ def _attr_values_equal(left: typing.Any, right: typing.Any) -> bool:
 
 
 class AssignAttrsDialog(DataTransformDialog):
+    _recorded_keys: tuple[Hashable, ...] = ()
     title = "Attribute Editor"
     operation_types = (AssignAttrsOperation,)
 
@@ -6472,7 +6744,9 @@ class AssignAttrsDialog(DataTransformDialog):
         if item is None:
             return ""
         original = item.data(QtCore.Qt.ItemDataRole.UserRole)
-        if original in self._original_attrs:
+        if original in self._original_attrs or (
+            original in self._recorded_keys and item.text() == str(original)
+        ):
             return typing.cast("Hashable", original)
         return item.text().strip()
 
@@ -6499,7 +6773,8 @@ class AssignAttrsDialog(DataTransformDialog):
         return {
             key: value
             for key, value in attrs.items()
-            if key not in self._original_attrs
+            if key in self._recorded_keys
+            or key not in self._original_attrs
             or not _attr_values_equal(value, self._original_attrs[key])
         }
 
@@ -6559,6 +6834,7 @@ class AssignAttrsDialog(DataTransformDialog):
             AssignAttrsOperation,
         ):
             return
+        self._recorded_keys = tuple(operation.attrs)
         row_by_key = {self._row_key(row): row for row in range(self.table.rowCount())}
         for key, value in operation.attrs.items():
             row = row_by_key.get(key)

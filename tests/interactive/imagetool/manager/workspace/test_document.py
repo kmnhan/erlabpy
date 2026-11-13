@@ -2668,6 +2668,10 @@ def test_manager_workspace_state_save_keeps_external_reader_usable(
 
         manager.rename_imagetool(0, "lazy state")
         assert _request_workspace_save_and_wait(qtbot, manager)
+        node = manager._node_for_target(0)
+        graph = manager._data_graph.graph
+        assert _compute_first_value(node.slicer_area._data) == 0
+        assert _compute_first_value(graph.data(graph.current_revision(node.uid))) == 0
         assert _compute_first_value(lazy) == 0
         with contextlib.suppress(Exception):
             lazy.close()
@@ -2865,7 +2869,7 @@ def test_manager_workspace_roundtrip_fit1d_child(
         data = xr.DataArray(
             3.0 * np.exp(-t / 2.0), dims=("t",), coords={"t": t}, name="decay"
         )
-        manager.add_imagetool(
+        manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
             show=False,
             provenance_spec=full_data().to_replay_spec(),
@@ -2922,12 +2926,12 @@ def test_manager_workspace_roundtrip_weighted_ftool_preserves_both_input_uids(
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         manager.show()
-        manager.add_imagetool(
+        manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True),
             show=False,
             provenance_spec=full_data().to_replay_spec(),
         )
-        manager.add_imagetool(
+        manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(uncertainty, _in_manager=True),
             show=False,
             provenance_spec=full_data().to_replay_spec(),
@@ -2979,7 +2983,7 @@ def test_manager_workspace_roundtrip_fit2d_child(
             coords={"y": y, "t": t},
             name="decay2d",
         )
-        manager.add_imagetool(
+        manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(source_data, _in_manager=True),
             show=False,
             provenance_spec=full_data().to_replay_spec(),
@@ -3053,7 +3057,7 @@ def test_manager_workspace_roundtrip_fit2d_child_with_spaced_axis(
             },
             name="decay2d",
         )
-        manager.add_imagetool(
+        manager.import_imagetool(
             erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
             show=False,
             provenance_spec=full_data().to_replay_spec(),

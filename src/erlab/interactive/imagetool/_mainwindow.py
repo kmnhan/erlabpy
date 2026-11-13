@@ -38,7 +38,13 @@ from erlab.interactive._code_trust import (
 from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool._controls_bar import _ControlsBar
 from erlab.interactive.imagetool._load_source import _load_provenance_from_file_details
-from erlab.interactive.imagetool.viewer_state import _select_input_dataarrays
+from erlab.interactive.imagetool._provenance._operations._coordinates import (
+    ImageToolInputOperation,
+)
+from erlab.interactive.imagetool.viewer_state import (
+    _select_input_dataarrays,
+    restore_source_order,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -86,7 +92,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         self._provenance_spec: ToolProvenanceSpec | None = None
         self._provenance_code_trust = new_document_trust()
         self._slicer_area = erlab.interactive.imagetool.viewer.ImageSlicerArea(
-            self, data, **kwargs
+            self, restore_source_order(data, state), **kwargs
         )
         self.cursor_controls = (
             erlab.interactive.imagetool.controls.ItoolCrosshairControls(
@@ -188,6 +194,9 @@ class BaseImageTool(QtWidgets.QMainWindow):
         self,
     ) -> ToolProvenanceSpec | None:
         """Canonical replay provenance for the current ImageTool data."""
+        node = self.slicer_area._managed_node()
+        if node is not None and node.manager._data_graph.owns_result(node.uid):
+            return node.manager._data_graph.result_spec(node.uid, displayed=False)
         return self._provenance_spec
 
     def set_provenance_spec(
@@ -240,16 +249,31 @@ class BaseImageTool(QtWidgets.QMainWindow):
         file_path = self.slicer_area._file_path
         if file_path is None:
             return
-        replay_steps: tuple[ReplayStep, ...] = ()
-        if self.slicer_area._load_preparation_operations:
-            replay_steps = tuple(
-                ReplayStep(operation=operation, input_policy="current")
-                for operation in self.slicer_area._load_preparation_operations
+        area = self.slicer_area
+        replay_steps = [
+            ReplayStep(operation=operation, input_policy="current")
+            for operation in area._load_preparation_operations
+        ]
+        # ImageTool converts the prepared result, after selecting or reducing it.
+        load_dtype = None if replay_steps else area._source_input_dtype
+        cast_result = bool(replay_steps) and area._source_input_dtype not in (
+            None,
+            np.float32,
+            np.float64,
+        )
+        if cast_result or area._degree_coords:
+            replay_steps.append(
+                ReplayStep(
+                    operation=ImageToolInputOperation(
+                        cast_float64=cast_result, degree_coords=area._degree_coords
+                    ),
+                    input_policy="current",
+                )
             )
         provenance_spec = _load_provenance_from_file_details(
             file_path,
             self.slicer_area._load_func,
-            source_input_dtype=self.slicer_area._source_input_dtype,
+            source_input_dtype=load_dtype,
             replay_steps=replay_steps,
         )
         self.set_provenance_spec(provenance_spec)
@@ -287,9 +311,11 @@ class BaseImageTool(QtWidgets.QMainWindow):
             "itool_window_state": _qt_state.qt_window_state_json(self),
             "erlab_version": erlab.__version__,
         }
-        if self._provenance_spec is not None:
+        if self.slicer_area._source_input_dtype is not None:
+            attrs["itool_source_input_dtype"] = self.slicer_area._source_input_dtype.str
+        if provenance := self.provenance_spec:
             attrs[_persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR] = json.dumps(
-                self._provenance_spec.model_dump(mode="json")
+                provenance.model_dump(mode="json")
             )
         return ds.assign_attrs(attrs)
 
@@ -341,6 +367,11 @@ class BaseImageTool(QtWidgets.QMainWindow):
             _saved_window_state=ds.attrs.get("itool_window_state"),
             _legacy_window_rect=ds.attrs.get("itool_rect"),
             **kwargs,
+        )
+        # Older files only contain the already normalized, displayed array.
+        dtype = ds.attrs.get("itool_source_input_dtype")
+        tool.slicer_area._source_input_dtype = (
+            np.dtype(dtype) if dtype is not None else None
         )
         migrated_file_selection = tool._migrate_legacy_file_load_selection()
         if migrated_file_selection:
@@ -417,6 +448,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         data, state = self.slicer_area.persistence_data_and_state()
         kwargs["state"] = state
         new_tool = self.__class__(data.copy(deep=False), **kwargs)
+        new_tool.slicer_area._source_input_dtype = self.slicer_area._source_input_dtype
         new_tool.set_provenance_spec(
             self.provenance_spec, _code_trust=self._provenance_code_trust_for_copy()
         )
@@ -622,6 +654,9 @@ class ImageTool(BaseImageTool):
 
     @QtCore.Slot()
     def _open_file(self, *, native: bool = True) -> None:
+        if (node := self.slicer_area._managed_node()) is not None:
+            node.manager._data_ingress.open(native=native, target=node)
+            return
         dialog = QtWidgets.QFileDialog(self)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)

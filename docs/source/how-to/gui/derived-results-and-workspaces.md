@@ -7,18 +7,25 @@ manage workspaces.
 
 ## Keeping source data during a transformation
 
-Use a managed child result when an ImageTool transformation must preserve the source
-data and record how the result was made.
+Open a separate result window to keep the source ImageTool available during an
+analysis.
 
 1. Open the source data in ImageTool Manager.
 2. Open the required transformation from the ImageTool {guilabel}`Edit` menu.
 3. Enter the transformation parameters.
-4. Set {guilabel}`Result Placement` to {guilabel}`Open Child Window`.
+4. Choose {guilabel}`Open Child Window` to place the result below its source or
+   {guilabel}`Open Top-Level Window` to place it alongside other top-level rows.
 5. Open the result and inspect it before continuing the analysis.
 
-The Manager places the result below its source and records the operation. Use
+Both placements record the operation and its inputs. Use
 {guilabel}`Copy Code` in the dialog or {guilabel}`Copy Full Code` in the Manager to
 reproduce it in Python.
+
+Choose {guilabel}`Promote Window` to move a recorded result to the top level.
+It keeps its input bindings and Auto setting. To work on an independent copy,
+duplicate the source together with its children. Updating a copied child then
+uses the copied source. Inputs outside that subtree still refer to their
+original sources.
 
 Use {guilabel}`Replace Current` only when replacing the current ImageTool is intended.
 See {ref}`imagetool-editing` for the available operations and
@@ -40,8 +47,8 @@ When a source row changes, select its derived row and check the state badge:
 
 Click the badge or the update banner in the tool window. Choose
 {guilabel}`Update Now` to repeat the operation once. To change future behavior, enable
-or disable automatic updates and choose {guilabel}`Save`. Saving the preference does
-not update the current result.
+or disable automatic updates and choose {guilabel}`Save`. For a live ImageTool result,
+enabling Auto schedules an update when its inputs are ready.
 
 For ftool, goldtool, or restool, enable {guilabel}`Refit after update` only when the same
 fit model and settings remain valid for the changed input. Inspect the repeated fit
@@ -51,12 +58,22 @@ before using its parameters.
 
 ### Updating a result with several inputs
 
-For a concatenation or console expression made from several ImageTools:
+For a result with {guilabel}`Inputs used`, expand that group to inspect each
+source revision. Right-click an input and choose {guilabel}`Open Input` to inspect
+that array in its own ImageTool. If the result is stale, expand
+{guilabel}`Inputs for next update` below the list to see which sources the update
+will use. Choose {guilabel}`Update Now` to use the current source data. To read the source files again, inspect the tooltip for
+{guilabel}`Reload Data` and choose that action.
 
-1. Confirm whether the badge is {guilabel}`Changed` or {guilabel}`Missing`.
-2. Check whether a closed input has recorded data or an available source file.
-3. Choose {guilabel}`Reload Data`.
-4. Inspect the recomputed result and its input list.
+An input can appear more than once. For example, concatenating scans A, B, and
+A in that order shows three inputs. The first and third positions refer to the
+same recorded revision of A.
+
+To change the momentum conversion used by one child, select that child and expand
+{guilabel}`Inputs used` to the conversion steps. Right-click a setup step or
+{guilabel}`Convert to momentum` and choose {guilabel}`Edit Step…`. Either row opens
+the full conversion dialog with the recorded settings. Applying an edit rebuilds
+the selected child's calculation. Other children keep their original conversion.
 
 If a recorded file moved, edit the file-load step and enable
 {guilabel}`Also relink selected file loads` to update related inputs together. Only
@@ -83,8 +100,29 @@ coordinates, and metadata.
 
 To continue in Python, copy the selected steps or choose {guilabel}`Copy Full Code`.
 Inspect file paths, variable names, and operation parameters before running the code.
-Code for data loaded from files includes the load operation. Code for watched data uses
-the watched variable name.
+For a result with {guilabel}`Inputs used`, the code reproduces the revision
+on screen, including when the result is stale. If the code needs a recorded source
+array, the dialog asks for its notebook variable name. Use the displayed
+`tools.checkpoint(...)` expression in the Manager console to retrieve that array.
+The code can use a file load when the Manager can verify that the file still
+reproduces the recorded revision. For a custom loader, {guilabel}`Copy Full Code`
+uses the recorded array. To run the loader on the files available now, open
+{guilabel}`Data Source` and choose {guilabel}`Copy Load Code`.
+
+For a chunked source, a selection can read just the chunks it needs. Refresh and
+Reload use the same compute threshold as opening an ImageTool, so large results
+stay chunked. A stale result remains sliceable after its source ImageTool changes
+or closes. Its recorded computation retains the original input. If an external
+backing file changes, earlier unread chunks can become unavailable. The Manager
+keeps computed selections as checkpoints for that case. Use the checkpoint to
+reproduce the earlier result. If a slice cannot be read, the ImageTool shows the
+file path and stops cursor changes. Choose {guilabel}`Reload Data` to read the
+current file through an open source. If the source was closed or the result uses
+a fixed recorded input, open the current file in a new ImageTool and repeat the
+calculation. The unavailable message explains which action applies.
+The Manager can also read an originally unchunked file in chunks. In that case
+repeating a floating-point sum or mean can change its last digits because the
+values are added in a different order.
 
 (how-to-gui-save-manager-workspace)=
 

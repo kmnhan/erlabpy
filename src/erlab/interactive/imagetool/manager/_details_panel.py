@@ -8,6 +8,7 @@ import json
 import logging
 import traceback
 import typing
+import unicodedata
 from dataclasses import replace
 
 from qtpy import QtCore, QtGui, QtWidgets
@@ -15,6 +16,8 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.utils
+from erlab._provenance._graph import _SupersededEvaluation
+from erlab._provenance._records import FileLoad
 from erlab.interactive._widgets import _CenteredIconToolButton
 from erlab.interactive.imagetool._provenance._graph import (
     ReplayGraphError,
@@ -379,11 +382,12 @@ class _DetailsPanelController:
         same_node = self._manager._metadata_node_uid == node.uid
         self._metadata_multi_node_uids = ()
         self._set_notes_node(node)
-        displayed_spec = node.passive_displayed_provenance_spec
+        recorded = self._manager._data_graph.owns_result(node.uid)
+        displayed_spec = None if recorded else node.passive_displayed_provenance_spec
         if displayed_spec is None and node.tool_window is not None:
             displayed_spec = node.displayed_provenance_spec
         self._manager._metadata_full_code_available = (
-            displayed_spec is not None or node.tool_window is not None
+            recorded or displayed_spec is not None or node.tool_window is not None
         )
         self._metadata_derivation_spec = displayed_spec
         self._manager._metadata_node_uid = node.uid
@@ -434,6 +438,10 @@ class _DetailsPanelController:
         node: _ImageToolWrapper | _ManagedWindowNode,
         row: _ProvenanceDisplayRow,
     ) -> tuple[object, ...]:
+        if row.graph_revision is not None:
+            key = self._manager._provenance_edit_controller.recorded_row_key(row)
+            if key is not None:
+                return key
         ref = row.replay_ref
         if ref is not None and ref.kind == "operation":
             spec = self._manager._provenance_edit_controller._display_spec_for_row(
@@ -479,6 +487,24 @@ class _DetailsPanelController:
             tuple[tuple[str, _ProvenanceDisplayRow], ...],
         ]
     ]:
+        projected: list[
+            tuple[
+                _ProvenanceDisplayRow,
+                tuple[tuple[str, _ProvenanceDisplayRow], ...],
+            ]
+        ] = []
+
+        # Compare authored steps separately. Some selected windows can have
+        # input history even when the same operation rows appear in all of them.
+        has_input_group = [
+            bool(rows and rows[0].is_input_group) for _, rows in rows_by_node
+        ]
+        if any(has_input_group) and not all(has_input_group):
+            projected.append((_MULTI_PROVENANCE_DIFFERENCE_ROW, ()))
+            rows_by_node = tuple(
+                (node, rows[1:] if rows and rows[0].is_input_group else rows)
+                for node, rows in rows_by_node
+            )
         row_lists = tuple(rows for _node, rows in rows_by_node)
         limit = min(len(rows) for rows in row_lists)
         prefix = 0
@@ -512,13 +538,6 @@ class _DetailsPanelController:
                 break
             suffix += 1
 
-        projected: list[
-            tuple[
-                _ProvenanceDisplayRow,
-                tuple[tuple[str, _ProvenanceDisplayRow], ...],
-            ]
-        ] = []
-
         def append_shared(indices: tuple[int, ...]) -> None:
             target_rows = tuple(
                 (node.uid, rows[index])
@@ -532,7 +551,9 @@ class _DetailsPanelController:
 
         for index in range(prefix):
             append_shared((index,) * len(rows_by_node))
-        if any(len(rows) > prefix + suffix for rows in row_lists):
+        if any(len(rows) > prefix + suffix for rows in row_lists) and (
+            not projected or projected[-1][0] is not _MULTI_PROVENANCE_DIFFERENCE_ROW
+        ):
             projected.append((_MULTI_PROVENANCE_DIFFERENCE_ROW, ()))
         for offset in range(suffix, 0, -1):
             append_shared(tuple(len(rows) - offset for rows in row_lists))
@@ -716,14 +737,13 @@ class _DetailsPanelController:
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
     ) -> list[_ProvenanceDisplayRow]:
+        rows = node.derivation_display_rows
+        if not any(
+            row.has_children or row.replay_ref is not None for row in rows
+        ) or self._manager._data_graph.owns_result(node.uid):
+            return list(rows)
         spec = node.passive_displayed_provenance_spec
-        return [
-            self._current_derivation_display_row(
-                row,
-                spec,
-            )
-            for row in node.derivation_display_rows
-        ]
+        return [self._current_derivation_display_row(row, spec) for row in rows]
 
     @staticmethod
     def _flatten_derivation_rows(
@@ -762,14 +782,28 @@ class _DetailsPanelController:
                 _MAXIMUM_DERIVATION_TOOLTIP_WIDTH,
             )
         ]
-        if not can_activate and activation_reason:
-            tooltip_lines.extend(("", activation_reason))
-        if (
-            not entry.copyable
-            and entry.code is None
-            and not entry.label.startswith("Start from ")
-        ):
-            tooltip_lines.extend(("", "Replay code is unavailable for this step."))
+        input_revision = row.revision_id is not None and row.replay_ref is None
+        if row.is_input_group:
+            tooltip_lines.extend(
+                (
+                    "",
+                    "Inputs to the operation that produced the displayed result. "
+                    "Expand an input to see its history.",
+                )
+            )
+        elif input_revision:
+            tooltip_lines.extend(
+                ("", "Choose Open Input to inspect this revision in an ImageTool.")
+            )
+        else:
+            if not can_activate and activation_reason:
+                tooltip_lines.extend(("", activation_reason))
+            if (
+                not entry.copyable
+                and entry.code is None
+                and not entry.label.startswith("Start from ")
+            ):
+                tooltip_lines.extend(("", "Replay code is unavailable for this step."))
         item.setToolTip(0, "\n".join(tooltip_lines))
         item.setData(0, _METADATA_DERIVATION_CODE_ROLE, entry.code)
         item.setData(0, _METADATA_DERIVATION_COPYABLE_ROLE, entry.copyable)
@@ -778,7 +812,7 @@ class _DetailsPanelController:
         item.setData(0, _METADATA_DERIVATION_TARGET_ROWS_ROLE, target_rows)
         if row is _MULTI_PROVENANCE_DIFFERENCE_ROW:
             item.setDisabled(True)
-        if not can_activate:
+        if not can_activate and not (row.is_input_group or input_revision):
             item.setForeground(
                 0,
                 self._manager.metadata_derivation_list.palette().color(
@@ -864,13 +898,13 @@ class _DetailsPanelController:
                 node = self._manager._tool_graph.nodes.get(uid)
                 if node is None:
                     return
-                current_rows = tuple(
-                    self._current_derivation_display_row(
-                        child_row,
-                        node.passive_displayed_provenance_spec,
+                current_rows = target_row.materialized_children()
+                if not self._manager._data_graph.owns_result(uid):
+                    spec = node.passive_displayed_provenance_spec
+                    current_rows = tuple(
+                        self._current_derivation_display_row(child, spec)
+                        for child in current_rows
                     )
-                    for child_row in target_row.materialized_children()
-                )
                 rows_by_node.append((node, current_rows))
             for current_row, current_targets in self._multi_provenance_rows(
                 tuple(rows_by_node)
@@ -1125,10 +1159,45 @@ class _DetailsPanelController:
         }:
             candidate = "source_data"
 
+        return self._ask_source_name(
+            "Source variable name:", typing.cast("str", candidate)
+        )
+
+    def _checkpoint_name(
+        self, revision: str, suggestion: str, used_names: frozenset[str]
+    ) -> str | None:
+        data_graph = self._manager._data_graph
+        label = data_graph.revision_label(revision)
+        if reason := data_graph.graph.checkpoint_problem(revision):
+            prompt = (
+                f"{reason}\nEnter the name of an independently saved array for {label}:"
+            )
+        else:
+            prompt = (
+                f"Notebook variable for {label}:\nRetrieve this array in the Manager "
+                f"console with tools.checkpoint({revision!r})."
+            )
+            producer = data_graph.graph.revision(revision).producer
+            if isinstance(producer, FileLoad):
+                prompt = (
+                    f"The Manager could not verify that loading {producer.source.path} "
+                    f"reproduces this revision.\n{prompt}"
+                )
+        question = prompt
+        while (name := self._ask_source_name(question, suggestion)) is not None:
+            if unicodedata.normalize("NFKC", name) not in used_names:
+                return name
+            question = (
+                f"{prompt}\nAnother revision already uses {name!r}. "
+                "Enter a different name."
+            )
+        return None
+
+    def _ask_source_name(self, prompt: str, candidate: str) -> str | None:
         dialog = QtWidgets.QInputDialog(self._manager)
         dialog.setWindowTitle("Copy Full Code")
-        dialog.setLabelText("Source variable name:")
-        dialog.setTextValue(typing.cast("str", candidate))
+        dialog.setLabelText(prompt)
+        dialog.setTextValue(candidate)
         dialog.setInputMode(QtWidgets.QInputDialog.InputMode.TextInput)
         line_edit = dialog.findChild(QtWidgets.QLineEdit)
         if line_edit is not None:
@@ -1142,11 +1211,60 @@ class _DetailsPanelController:
             return None
         return source_name
 
+    def _update_pending_inputs(self) -> bool:
+        manager = self._manager
+        uids = (
+            (manager._metadata_node_uid,)
+            if manager._metadata_node_uid is not None
+            else self._metadata_multi_node_uids
+        )
+        host = manager._data_graph
+        pending = [
+            uid for uid in uids if uid in host.graph and host.graph.is_stale(uid)
+        ]
+        manager.update_inputs_panel.setVisible(bool(pending))
+        expanded = manager.update_inputs_button.isChecked()
+        manager.update_inputs_button.setArrowType(
+            QtCore.Qt.ArrowType.DownArrow
+            if expanded
+            else QtCore.Qt.ArrowType.RightArrow
+        )
+        details = manager.update_inputs_text
+        details.setVisible(bool(pending) and expanded)
+        if not pending:
+            details.clear()
+            return False
+
+        def auto_status(uid: str) -> str:
+            return "Auto on" if host.graph.auto_enabled(uid) else "Auto off"
+
+        multiple = len(uids) > 1
+        manager.update_auto_label.setText(
+            f"{len(pending)} pending" if multiple else auto_status(pending[0])
+        )
+        if expanded:
+            sections = []
+            for uid in pending:
+                lines = host.next_input_labels(uid)
+                if multiple:
+                    lines = (f"{host.label(uid)} · {auto_status(uid)}", *lines)
+                sections.append("\n".join(lines))
+            text = "\n\n".join(sections)
+            if details.toPlainText() != text:
+                details.setPlainText(text)
+            lines_shown = min(5, max(2, len(text.splitlines())))
+            details.setFixedHeight(
+                lines_shown * details.fontMetrics().lineSpacing() + 12
+            )
+        return True
+
     def _update_metadata_pane(self) -> None:
         has_details = bool(self._manager._metadata_detail_labels)
         derivation_count = self._manager.metadata_derivation_list.topLevelItemCount()
         has_note_target = self._manager._notes_node_uid is not None
-        has_metadata = has_details or derivation_count > 0 or has_note_target
+        has_pending = self._update_pending_inputs()
+        has_provenance = derivation_count > 0 or has_pending
+        has_metadata = has_details or has_provenance or has_note_target
 
         self._manager.metadata_group.setVisible(has_metadata)
         self._manager.metadata_details_widget.setVisible(has_details)
@@ -1162,12 +1280,10 @@ class _DetailsPanelController:
         self._manager.inspector_tabs.setTabEnabled(
             details_index, has_details or not has_metadata
         )
-        self._manager.inspector_tabs.setTabEnabled(
-            provenance_index, derivation_count > 0
-        )
+        self._manager.inspector_tabs.setTabEnabled(provenance_index, has_provenance)
         self._manager.inspector_tabs.setTabEnabled(notes_index, has_note_target)
         if current_widget is self._manager.metadata_details_page and not has_details:
-            if derivation_count > 0:
+            if has_provenance:
                 self._manager.inspector_tabs.setCurrentWidget(
                     self._manager.metadata_provenance_page
                 )
@@ -1175,7 +1291,7 @@ class _DetailsPanelController:
                 self._manager.inspector_tabs.setCurrentWidget(self._manager.notes_page)
         elif (
             current_widget is self._manager.metadata_provenance_page
-            and derivation_count == 0
+            and not has_provenance
         ):
             if has_details:
                 self._manager.inspector_tabs.setCurrentWidget(
@@ -1188,7 +1304,7 @@ class _DetailsPanelController:
                 self._manager.inspector_tabs.setCurrentWidget(
                     self._manager.metadata_details_page
                 )
-            elif derivation_count > 0:
+            elif has_provenance:
                 self._manager.inspector_tabs.setCurrentWidget(
                     self._manager.metadata_provenance_page
                 )
@@ -1221,6 +1337,29 @@ class _DetailsPanelController:
     def _selected_derivation_scopes(
         self,
     ) -> list[SelectedProvenanceScope]:
+        selected_items = self._manager._selected_derivation_items()
+        revisions: dict[str, set[int | None]] = {}
+        uid = self._manager._metadata_node_uid
+        legacy_rows = False
+        for item in selected_items:
+            targets = item.data(0, _METADATA_DERIVATION_TARGET_ROWS_ROLE)
+            if targets:
+                uid, row = targets[0]
+            else:
+                row = item.data(0, _METADATA_DERIVATION_ROW_ROLE)
+            if row is not None and row.graph_revision is not None:
+                revisions.setdefault(row.graph_revision, set()).add(row.program_index)
+            elif row is not None and row.replay_ref is not None:
+                legacy_rows = True
+        if uid is not None and (
+            self._manager._data_graph.owns_result(uid)
+            or (revisions and not legacy_rows)
+        ):
+            return (
+                self._manager._data_graph.selected_scopes(uid, revisions)
+                if revisions
+                else []
+            )
         groups = [
             tuple(group)
             for _key, group in itertools.groupby(
@@ -1473,7 +1612,9 @@ class _DetailsPanelController:
         if len(target_rows) == 1:
             row = target_rows[0][1]
             ref = row.replay_ref
-            if ref is not None and ref.kind == "script_input":
+            if (ref is None and row.revision_id is not None) or (
+                ref is not None and ref.kind == "script_input"
+            ):
                 enabled, reason = (
                     self._manager._provenance_edit_controller.can_open_input_row(row)
                 )
@@ -1705,6 +1846,20 @@ class _DetailsPanelController:
         )
         if node is None or not self._manager._metadata_full_code_available:
             return
+        try:
+            if self._manager._data_graph.has_recorded_code(node):
+                code = self._manager._data_graph.copy_code(node, self._checkpoint_name)
+                if code:
+                    erlab.interactive.utils.copy_to_clipboard(code)
+                return
+        except (ValueError, ReplayGraphError, _SupersededEvaluation) as exc:
+            erlab.interactive.utils.MessageDialog.critical(
+                self._manager,
+                "Replay Code Unavailable",
+                "Could not copy the selected revision.",
+                informative_text=str(exc),
+            )
+            return
         compiled = node._derivation_replay_graph()
         if compiled is None:
             self._show_unavailable_replay_code_dialog(node)
@@ -1724,7 +1879,11 @@ class _DetailsPanelController:
                 if graph_node.key == source_input_key
             )
             source_name: str | None = None
-            if source_input_node.kind == "caller_input":
+            if source_input_node.kind == "external_input":
+                source_name = self._manager._data_graph.watched_name(
+                    source_input_node.payload.get("revision_id")
+                )
+            elif source_input_node.kind == "caller_input":
                 input_name = typing.cast("str", source_input_node.payload["name"])
                 current = node
                 while True:
@@ -2066,6 +2225,10 @@ class _DetailsPanelController:
         reload_tooltip = "Reload selected data from its saved files, parent, or inputs"
         if reload_candidates is not None and reload_candidates[2] is not None:
             reload_tooltip = reload_candidates[2]
+        elif single_selected and imagetool_targets:
+            node = self._manager._node_for_target(imagetool_targets[0])
+            if self._manager._data_graph.manages(node.uid):
+                reload_tooltip = self._manager._data_graph.preview(node.uid, "reload")
         self._manager.reload_action.setToolTip(reload_tooltip)
         self._manager.unwatch_action.setVisible(
             bool(imagetool_targets)

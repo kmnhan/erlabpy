@@ -91,8 +91,8 @@ Adding a new provenance-carrying operation follows the same pattern every time:
 8. If the operation maps cleanly from manager-console calls, declare
    :attr:`ToolProvenanceOperation.console_patterns` or implement
    :meth:`ToolProvenanceOperation.from_console_call`. Unsupported or ambiguous console
-   calls should return ``None`` so they remain valid script provenance instead of being
-   recorded as lossy structured operations.
+   calls should return ``None``. The console can then use the public expression for
+   a supported handle operation, or require an explicit DataArray snapshot.
 
 9. Make generated code executable in the replay namespace. Use the literal helpers in
    this module for persisted values, and make ``expression_code`` honor the input name
@@ -120,10 +120,13 @@ from __future__ import annotations
 import ast
 import base64
 import contextlib
+import copy
 import importlib
 import inspect
 import json
 import keyword
+import sys
+import textwrap
 import typing
 import uuid
 from collections.abc import Callable, Collection, Hashable, Iterable, Mapping, Sequence
@@ -145,6 +148,7 @@ from erlab.interactive.imagetool._provenance._code import (
     _CodeAnalyzer,
     _expression_receiver_code,
     _migrate_legacy_nonuniform_restore_code,
+    _provenance_value_code,
     _receiver_path,
     _script_codes_output_name,
     _validate_active_name,
@@ -208,6 +212,10 @@ class _ProvenanceDisplayRow:
     script_input_path: tuple[int, ...] = ()
     on_primary_chain: bool = True
     revision_id: str | None = None
+    graph_revision: str | None = None
+    program_index: int | None = None
+    graph_group: tuple[str, ...] = ()
+    is_input_group: bool = False
     _children_factory: Callable[[], tuple[_ProvenanceDisplayRow, ...]] | None = field(
         default=None, compare=False, repr=False
     )
@@ -324,7 +332,7 @@ class _ProvenanceDisplayContext:
         operation_name = getattr(operation, "op", None)
         if operation_name == "rename":
             return self
-        if operation_name == "source_view":
+        if operation_name in {"source_view", "imagetool_input"}:
             return self
         if operation_name in {"qsel", "sel"}:
             return (
@@ -411,8 +419,25 @@ class OperationGroupMarker(pydantic.BaseModel):
         default=None,
         exclude_if=lambda value: value is None,
     )
+    # A console conversion completes the group after its setup operations have
+    # already run. Their focus belongs to this branch of the recorded history.
+    console_prefix: tuple[tuple[str, str | None], ...] = pydantic.Field(
+        default=(), exclude=True, repr=False
+    )
 
     model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
+
+    def member_operation(
+        self, operation: ToolProvenanceOperation, index: int
+    ) -> ToolProvenanceOperation:
+        if operation.group is None and 0 <= index < len(self.console_prefix):
+            kind, focus = self.console_prefix[index]
+            if getattr(operation, "op", None) == kind:
+                marker = self.model_copy(
+                    update={"index": index, "focus": focus, "console_prefix": ()}
+                )
+                return operation.model_copy(update={"group": marker})
+        return operation
 
     @pydantic.model_validator(mode="after")
     def _validate_marker(self) -> typing.Self:
@@ -427,6 +452,15 @@ class OperationGroupMarker(pydantic.BaseModel):
         if self.index >= self.size:
             raise ValueError("operation group index must be smaller than size")
         return self
+
+    def _matches_member(self, member: OperationGroupMarker | None, index: int) -> bool:
+        return (
+            member is not None
+            and member.kind == self.kind
+            and member.id == self.id
+            and member.size == self.size
+            and member.index == index
+        )
 
 
 def _encode_fit_dataset(value: xr.Dataset) -> str:
@@ -502,7 +536,7 @@ def encode_provenance_value(value: typing.Any) -> typing.Any:
             ]
         }
     if isinstance(value, np.ndarray):
-        return [encode_provenance_value(item) for item in value.tolist()]
+        return encode_provenance_value(value.tolist())
     if isinstance(value, tuple):
         return {_TUPLE_MARKER: [encode_provenance_value(item) for item in value]}
     if isinstance(value, list):
@@ -638,6 +672,8 @@ def _ensure_float_tuple(
 
 
 def _coerce_float_sequence(value: typing.Any) -> list[float]:
+    if isinstance(value, np.ndarray) and value.ndim == 1:
+        value = value.tolist()
     if not isinstance(value, Sequence) or isinstance(value, str):
         raise TypeError("expected an array-like sequence")
     return [float(item) for item in value]
@@ -837,6 +873,41 @@ def _callable_paths(func: Callable[..., typing.Any]) -> set[str]:
     return paths
 
 
+class ProvenanceNumericVector(pydantic.BaseModel):
+    """A recorded one-dimensional numeric argument with its NumPy dtype."""
+
+    model_config = pydantic.ConfigDict(
+        frozen=True, extra="forbid", ser_json_inf_nan="constants"
+    )
+    values: tuple[int | float, ...]
+    dtype: str
+
+    @pydantic.model_validator(mode="before")
+    @classmethod
+    def _capture_vector(cls, value: typing.Any) -> typing.Any:
+        if isinstance(value, Mapping):
+            return value
+        array = np.asarray(value)
+        if array.ndim != 1:
+            raise ValueError("Expected a one-dimensional numeric argument")
+        return {"values": array.tolist(), "dtype": array.dtype.str}
+
+    @pydantic.field_validator("dtype")
+    @classmethod
+    def _numeric_dtype(cls, dtype: str) -> str:
+        value = np.dtype(dtype)
+        if value.kind not in "iuf":
+            raise ValueError("Expected a real numeric dtype")
+        return value.str
+
+    def array(self) -> np.ndarray:
+        return np.asarray(self.values, dtype=self.dtype)
+
+    def expression_code(self) -> str:
+        values = _provenance_value_code(list(self.values))
+        return f"np.array({values}, dtype={self.dtype!r})"
+
+
 class ConsoleCall:
     """Normalized runtime call observed by the ImageTool manager console.
 
@@ -893,6 +964,7 @@ class ConsoleOperationPattern:
         "accessor_path",
         "dataarray_method",
         "defaults",
+        "extra_kwargs_field",
         "field_aliases",
         "fields",
         "ignored_defaults",
@@ -913,6 +985,7 @@ class ConsoleOperationPattern:
         mapping_kwarg: str | Sequence[str] | None = None,
         defaults: Mapping[str, typing.Any] | None = None,
         ignored_defaults: Mapping[str, typing.Any] | None = None,
+        extra_kwargs_field: str | None = None,
     ) -> None:
         self.targets = () if target is None else (target,)
         self.dataarray_method = dataarray_method
@@ -928,6 +1001,7 @@ class ConsoleOperationPattern:
         self.mapping_kwargs = mapping_kwargs
         self.defaults = dict(defaults or {})
         self.ignored_defaults = dict(ignored_defaults or {})
+        self.extra_kwargs_field = extra_kwargs_field
 
     def match(self, call: ConsoleCall) -> dict[str, typing.Any] | None:
         if call.has_extra_tracked_inputs:
@@ -966,14 +1040,19 @@ class ConsoleOperationPattern:
             kwargs.pop(key)
 
         if self.kwargs_field is not None:
+            options = {
+                key: kwargs.pop(key, default) for key, default in self.defaults.items()
+            }
             mapped = _console_mapping_values(
                 call.args, kwargs, mapping_kwargs=self.mapping_kwargs
             )
             if mapped is None:
                 return None
-            return {self.kwargs_field: mapped}
+            return {self.kwargs_field: mapped, **options}
 
         if len(call.args) > len(self.fields):
+            return None
+        if any(name in kwargs for name in self.fields[: len(call.args)]):
             return None
         values: dict[str, typing.Any] = dict(zip(self.fields, call.args, strict=False))
         for field_name in self.fields[len(call.args) :]:
@@ -983,10 +1062,15 @@ class ConsoleOperationPattern:
                 values[field_name] = self.defaults[field_name]
             else:
                 return None
-        for key, value in kwargs.items():
-            if key not in self.defaults:
+        for key in self.defaults:
+            if key in kwargs:
+                values[key] = kwargs.pop(key)
+        if kwargs:
+            # Functions such as slice_along_path accept either a mapping or its
+            # keyword form. Passing both would be an error in the public call.
+            if self.extra_kwargs_field is None or values.get(self.extra_kwargs_field):
                 return None
-            values[key] = value
+            values[self.extra_kwargs_field] = kwargs
         for key, value in self.defaults.items():
             values.setdefault(key, value)
         return values
@@ -1081,6 +1165,30 @@ def _assignment_code(
     )
 
 
+_CALCULATION_OPTIONS = (
+    "keep_attrs",
+    "arithmetic_join",
+    "arithmetic_compat",
+    "arithmetic_broadcast",
+    "use_new_combine_kwarg_defaults",
+    "use_bottleneck",
+    "use_numbagg",
+    "use_flox",
+    "use_opt_einsum",
+)
+
+
+def _calculation_options(*, replay: bool = True) -> dict[str, bool | str]:
+    """Capture xarray policies that affect array operations in a managed calculation."""
+    options = xr.get_options()
+    captured = {name: options[name] for name in _CALCULATION_OPTIONS if name in options}
+    # Replay disables this native accelerator on PySide6/Python 3.14 while Qt
+    # threads are alive. Record the effective setting for exported notebook code.
+    if replay and sys.version_info[:2] == (3, 14) and "PySide6.QtCore" in sys.modules:
+        captured["use_numbagg"] = False
+    return captured
+
+
 class ToolProvenanceOperation(pydantic.BaseModel):
     """Base class for typed operations stored in :class:`ToolProvenanceSpec`.
 
@@ -1098,18 +1206,27 @@ class ToolProvenanceOperation(pydantic.BaseModel):
     Operation instances store the exact arguments used by live refresh, replay graph
     execution, copied code, and derivation display. If a public console call maps
     exactly to an operation, expose it with ``console_patterns`` or
-    :meth:`from_console_call`; ambiguous calls should return ``None`` so script
-    provenance records the original code instead.
+    :meth:`from_console_call`. Ambiguous calls should return ``None``. The console
+    records a public expression only for supported handle operations; other calls
+    require an explicit DataArray snapshot.
     """
 
     live_applicable: typing.ClassVar[bool] = True
     batch_available: typing.ClassVar[bool] = False
     console_applies_to_receiver: typing.ClassVar[bool] = False
+    # Pure selection operations can read a protected graph input directly.
+    reads_input_only: typing.ClassVar[bool] = False
     statement_mutates_input: typing.ClassVar[bool] = False
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = ()
     group: OperationGroupMarker | None = pydantic.Field(
         default=None,
         exclude_if=lambda value: value is None,
+    )
+
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = _CALCULATION_OPTIONS
+    execution_options: dict[str, bool | str] = pydantic.Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
     )
 
     model_config = pydantic.ConfigDict(
@@ -1149,6 +1266,8 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         error: str,
         predicate: Callable[[typing.Any], bool],
     ) -> typing.Any:
+        if isinstance(value, Mapping) and set(value) == {_TUPLE_MARKER}:
+            value = decode_provenance_value(value)
         encoded = encode_provenance_value(value)
         if not predicate(encoded):
             raise TypeError(error)
@@ -1498,6 +1617,42 @@ class ToolProvenanceOperation(pydantic.BaseModel):
             return expression
         return _assignment_code(output_name, expression)
 
+    @pydantic.field_validator("execution_options")
+    @classmethod
+    def _validate_execution_options(
+        cls, options: dict[str, bool | str]
+    ) -> dict[str, bool | str]:
+        if options.keys() - set(_CALCULATION_OPTIONS):
+            raise ValueError("Unknown calculation option")
+        return options
+
+    def capture_execution_options(
+        self, settings: Mapping[str, bool | str] | None = None
+    ) -> typing.Self:
+        """Freeze ambient xarray settings used by this calculation."""
+        if self.execution_options or not self.xarray_option_names:
+            return self
+        options = {
+            key: value
+            for key, value in (
+                settings if settings is not None else _calculation_options()
+            ).items()
+            if key in self.xarray_option_names
+        }
+        return (
+            self.model_copy(update={"execution_options": options}) if options else self
+        )
+
+    def execution_code(self, code: str) -> str:
+        """Apply this operation's recorded xarray options to its Python statements."""
+        if not self.execution_options:
+            return code
+        self._validate_execution_options(self.execution_options)
+        options = ", ".join(
+            f"{key}={value!r}" for key, value in self.execution_options.items()
+        )
+        return f"with xr.set_options({options}):\n" + textwrap.indent(code, "    ")
+
     def preferred_replay_output_name(self) -> str | None:
         """Return a semantic output name when this operation changes value kind.
 
@@ -1524,7 +1679,8 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         Subclasses should reimplement this when a console call maps cleanly to the
         operation but cannot be expressed with declarative ``console_patterns`` alone.
         Return ``None`` for unsupported, ambiguous, or lossy calls so the original
-        console code remains recorded as script provenance.
+        console operations can use script provenance. Other calls require an explicit
+        DataArray snapshot.
 
         Parameters
         ----------
@@ -1608,17 +1764,10 @@ def _operation_group_markers_match(
     if start < 0 or stop > len(operations) or start >= stop:
         return False
 
-    for offset, operation in enumerate(operations[start:stop]):
-        operation_marker = operation.group
-        if (
-            operation_marker is None
-            or operation_marker.kind != marker.kind
-            or operation_marker.id != marker.id
-            or operation_marker.size != marker.size
-            or operation_marker.index != offset
-        ):
-            return False
-    return True
+    return all(
+        marker._matches_member(operation.group, offset)
+        for offset, operation in enumerate(operations[start:stop])
+    )
 
 
 def operation_group_range(
@@ -1870,6 +2019,15 @@ ProvenanceHashablePair: typing.TypeAlias = typing.Annotated[
 ProvenanceMapping: typing.TypeAlias = typing.Annotated[
     dict[Hashable, typing.Any],
     pydantic.BeforeValidator(ToolProvenanceOperation._coerce_hashable_mapping_field),
+    pydantic.PlainSerializer(
+        ToolProvenanceOperation._json_encode_field, when_used="json"
+    ),
+]
+
+ProvenanceKeywords: typing.TypeAlias = typing.Annotated[
+    dict[str, typing.Any],
+    pydantic.BeforeValidator(ToolProvenanceOperation._coerce_hashable_mapping_field),
+    pydantic.AfterValidator(lambda value: copy.deepcopy(value)),
     pydantic.PlainSerializer(
         ToolProvenanceOperation._json_encode_field, when_used="json"
     ),
@@ -2304,6 +2462,10 @@ class FileReplayCall(pydantic.BaseModel):
     selection: FileDataSelection
     cast_float64: bool = False
 
+    # A live file open can use a closure with no importable Python name.
+    # Only the in-process call retains it. Saved payloads cannot install a callable.
+    _session_loader: Callable[..., typing.Any] = pydantic.PrivateAttr()
+
     model_config = pydantic.ConfigDict(
         frozen=True,
         arbitrary_types_allowed=True,
@@ -2401,6 +2563,8 @@ class ReplayStage(pydantic.BaseModel):
 
 
 class _SourceViewOperation(ToolProvenanceOperation):
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
+    reads_input_only: typing.ClassVar[bool] = True
     op: typing.Literal["source_view"] = "source_view"
     source_kind: _SourceKind
 
@@ -2916,7 +3080,240 @@ class _ScriptContextBinding(pydantic.BaseModel):
         return tuple(names)
 
 
-class ToolProvenanceSpec(pydantic.BaseModel):
+class _OrderedOperations:
+    """Group and validate movement of the operations in one recorded sequence."""
+
+    @property
+    def operations(self) -> tuple[ToolProvenanceOperation, ...]:
+        raise NotImplementedError
+
+    @staticmethod
+    def _operation_is_reorderable(operation: ToolProvenanceOperation) -> bool:
+        if not _operation_is(operation, "script_code"):
+            return operation.live_applicable
+        return bool(
+            getattr(operation, "copyable", False) and getattr(operation, "code", None)
+        )
+
+    @staticmethod
+    def _operation_reorder_entry(
+        operation: ToolProvenanceOperation,
+    ) -> DerivationEntry | None:
+        """Return the stable reorder-dialog entry for one stored operation.
+
+        This intentionally excludes only operations that are structurally internal or
+        explicitly hidden. Context-dependent display cleanup, such as eliding a no-op
+        transpose or squeeze, must not change reorder boundaries.
+        """
+        entry = operation.derivation_entry()
+        if _operation_is(operation, "script_code"):
+            if not getattr(operation, "visible", True):
+                return None
+            if entry.code in {
+                "derived = derived.isel()",
+                "derived = derived.qsel()",
+                "derived = derived.sel()",
+            }:
+                return None
+        elif _operation_is(operation, "qsel", "isel", "sel"):
+            if not getattr(operation, "decoded_kwargs", {}):
+                return None
+        elif _operation_is(operation, "rename", "source_view"):
+            return None
+        return entry
+
+    def _operation_block_ref(
+        self,
+        ref: _ProvenanceStepRef,
+    ) -> _ProvenanceOperationBlockRef | None:
+        """Return the complete structural block containing an operation row."""
+        if ref.kind != "operation" or ref.operation_index is None:
+            return None
+        operation_index = ref.operation_index
+        if not 0 <= operation_index < len(self.operations):
+            return None
+        operation = self.operations[operation_index]
+        if operation.group is None:
+            return _ProvenanceOperationBlockRef(
+                operation_index,
+                operation_index + 1,
+            )
+        group_range = operation_group_range(self.operations, operation_index)
+        if group_range is None:
+            return None
+        return _ProvenanceOperationBlockRef(*group_range)
+
+    def _operation_block_refs(self) -> tuple[_ProvenanceOperationBlockRef, ...]:
+        """Return every complete group and ungrouped operation in recipe order."""
+        blocks: list[_ProvenanceOperationBlockRef] = []
+        operation_index = 0
+        while operation_index < len(self.operations):
+            ref = self._operation_block_ref(
+                _ProvenanceStepRef("operation", operation_index=operation_index)
+            )
+            if ref is None:
+                operation_index += 1
+                continue
+            blocks.append(ref)
+            operation_index = ref.stop
+        return tuple(blocks)
+
+    def _reorderable_operation_blocks(
+        self,
+        *,
+        fixed_refs: Collection[_ProvenanceStepRef] = (),
+    ) -> tuple[_ProvenanceReorderBlock, ...]:
+        """Return the structural atomic operation blocks in the flat recipe.
+
+        Operation identity, grouping, and reorder visibility come directly from the
+        stored provenance. Display streamlining and the hierarchical ``display_rows()``
+        representation are deliberately not part of reorder planning.
+        """
+        fixed_ref_set = set(fixed_refs)
+        operations = self.operations
+        reorder_entries = tuple(
+            self._operation_reorder_entry(operation) for operation in operations
+        )
+        blocks: list[_ProvenanceReorderBlock] = []
+        for block_ref in self._operation_block_refs():
+            start, stop = block_ref.start, block_ref.stop
+            entries = tuple(
+                entry
+                for index in range(start, stop)
+                if (entry := reorder_entries[index]) is not None
+            )
+            if not entries:
+                continue
+            block_refs = {
+                _ProvenanceStepRef("operation", operation_index=index)
+                for index in range(start, stop)
+            }
+            if block_refs & fixed_ref_set or any(
+                not self._operation_is_reorderable(item)
+                for item in operations[start:stop]
+            ):
+                continue
+            blocks.append(
+                _ProvenanceReorderBlock(
+                    block_ref,
+                    entries,
+                )
+            )
+        return tuple(blocks)
+
+    def _reorder_sections(
+        self,
+        *,
+        fixed_refs: Collection[_ProvenanceStepRef] = (),
+    ) -> tuple[_ProvenanceReorderSection, ...]:
+        """Return contiguous flat operation sections safe to permute."""
+        segments: list[list[_ProvenanceReorderBlock]] = []
+        for block in self._reorderable_operation_blocks(fixed_refs=fixed_refs):
+            if not segments or segments[-1][-1].ref.stop != block.ref.start:
+                segments.append([block])
+            else:
+                segments[-1].append(block)
+        movable_segments = [segment for segment in segments if len(segment) >= 2]
+        return tuple(
+            _ProvenanceReorderSection(
+                ref=_ProvenanceReorderSectionRef(
+                    segment[0].ref.start,
+                    segment[-1].ref.stop,
+                ),
+                label=(
+                    "Steps"
+                    if len(movable_segments) == 1
+                    else f"Steps — section {segment_index}"
+                ),
+                blocks=tuple(segment),
+            )
+            for segment_index, segment in enumerate(movable_segments, start=1)
+        )
+
+    def _reorder_indices(
+        self,
+        sections: Sequence[_ProvenanceReorderSection],
+        orders: Mapping[
+            _ProvenanceReorderSectionRef,
+            Sequence[_ProvenanceOperationBlockRef],
+        ],
+    ) -> list[int]:
+        """Return the validated permutation of recorded operations."""
+        expected_section_refs = tuple(section.ref for section in sections)
+        if len(set(expected_section_refs)) != len(expected_section_refs):
+            raise ValueError("Provenance reorder sections must be unique")
+        if set(orders) != set(expected_section_refs):
+            raise ValueError("Provenance reorder plan does not match its sections")
+
+        allowed_block_refs = {
+            block.ref for block in self._reorderable_operation_blocks()
+        }
+        structural_block_refs = set(self._operation_block_refs())
+        index_order = list(range(len(self.operations)))
+        occupied_ranges: list[tuple[int, int]] = []
+        for section in sections:
+            section_ref = section.ref
+            if not (0 <= section_ref.start < section_ref.stop <= len(self.operations)):
+                raise ValueError("Provenance reorder section is out of range")
+            if any(
+                section_ref.start < stop and start < section_ref.stop
+                for start, stop in occupied_ranges
+            ):
+                raise ValueError("Provenance reorder sections must not overlap")
+            occupied_ranges.append((section_ref.start, section_ref.stop))
+
+            expected_blocks = tuple(block.ref for block in section.blocks)
+            if not set(expected_blocks) <= allowed_block_refs:
+                raise ValueError(
+                    "Provenance reorder blocks must represent movable displayed steps"
+                )
+            cursor = section_ref.start
+            for block_ref in expected_blocks:
+                if (
+                    block_ref.start != cursor
+                    or not block_ref.start < block_ref.stop <= section_ref.stop
+                ):
+                    raise ValueError(
+                        "Provenance reorder blocks must partition their section"
+                    )
+                if block_ref not in structural_block_refs:
+                    raise ValueError(
+                        "Provenance blocks must contain one complete structural block"
+                    )
+                cursor = block_ref.stop
+            if cursor != section_ref.stop or len(set(expected_blocks)) != len(
+                expected_blocks
+            ):
+                raise ValueError(
+                    "Provenance reorder blocks must partition their section"
+                )
+
+            requested_blocks = tuple(orders[section_ref])
+            if len(requested_blocks) != len(expected_blocks) or set(
+                requested_blocks
+            ) != set(expected_blocks):
+                raise ValueError(
+                    "Provenance reorder plan must contain every block exactly once"
+                )
+            index_order[section_ref.start : section_ref.stop] = [
+                index
+                for block_ref in requested_blocks
+                for index in range(block_ref.start, block_ref.stop)
+            ]
+
+        return index_order
+
+
+@dataclass(frozen=True)
+class _RecordedOperations(_OrderedOperations):
+    members: tuple[ToolProvenanceOperation, ...]
+
+    @property
+    def operations(self) -> tuple[ToolProvenanceOperation, ...]:
+        return self.members
+
+
+class ToolProvenanceSpec(_OrderedOperations, pydantic.BaseModel):
     """Saved provenance recipe for ImageTool data.
 
     Live child-tool refresh uses single-parent specs from :func:`full_data`,
@@ -3284,6 +3681,20 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             return tuple(step.operation for step in self.steps)
         return self.source_operations
 
+    def capture_execution_options(
+        self, settings: Mapping[str, bool | str]
+    ) -> ToolProvenanceSpec:
+        """Bind all operations of an accepted live command to its xarray settings."""
+        require_live_source_spec(self)
+        return self.model_copy(
+            update={
+                "source_operations": tuple(
+                    op.capture_execution_options(settings)
+                    for op in self.source_operations
+                )
+            }
+        )
+
     @property
     def script_context_bindings(self) -> tuple[_ScriptContextBinding, ...]:
         """Compatibility projection of explicit replay-step context names."""
@@ -3574,149 +3985,6 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         }
         return tuple(item for item in self.script_inputs if item.name in input_names)
 
-    @staticmethod
-    def _operation_is_reorderable(operation: ToolProvenanceOperation) -> bool:
-        if not _operation_is(operation, "script_code"):
-            return operation.live_applicable
-        return bool(
-            getattr(operation, "copyable", False) and getattr(operation, "code", None)
-        )
-
-    @staticmethod
-    def _operation_reorder_entry(
-        operation: ToolProvenanceOperation,
-    ) -> DerivationEntry | None:
-        """Return the stable reorder-dialog entry for one stored operation.
-
-        This intentionally excludes only operations that are structurally internal or
-        explicitly hidden. Context-dependent display cleanup, such as eliding a no-op
-        transpose or squeeze, must not change reorder boundaries.
-        """
-        entry = operation.derivation_entry()
-        if _operation_is(operation, "script_code"):
-            if not getattr(operation, "visible", True):
-                return None
-            if entry.code in {
-                "derived = derived.isel()",
-                "derived = derived.qsel()",
-                "derived = derived.sel()",
-            }:
-                return None
-        elif _operation_is(operation, "qsel", "isel", "sel"):
-            if not getattr(operation, "decoded_kwargs", {}):
-                return None
-        elif _operation_is(operation, "rename", "source_view"):
-            return None
-        return entry
-
-    def _operation_block_ref(
-        self,
-        ref: _ProvenanceStepRef,
-    ) -> _ProvenanceOperationBlockRef | None:
-        """Return the complete structural block containing an operation row."""
-        if ref.kind != "operation" or ref.operation_index is None:
-            return None
-        operation_index = ref.operation_index
-        if not 0 <= operation_index < len(self.operations):
-            return None
-        operation = self.operations[operation_index]
-        if operation.group is None:
-            return _ProvenanceOperationBlockRef(
-                operation_index,
-                operation_index + 1,
-            )
-        group_range = operation_group_range(self.operations, operation_index)
-        if group_range is None:
-            return None
-        return _ProvenanceOperationBlockRef(*group_range)
-
-    def _operation_block_refs(self) -> tuple[_ProvenanceOperationBlockRef, ...]:
-        """Return every complete group and ungrouped operation in recipe order."""
-        blocks: list[_ProvenanceOperationBlockRef] = []
-        operation_index = 0
-        while operation_index < len(self.operations):
-            ref = self._operation_block_ref(
-                _ProvenanceStepRef("operation", operation_index=operation_index)
-            )
-            if ref is None:
-                operation_index += 1
-                continue
-            blocks.append(ref)
-            operation_index = ref.stop
-        return tuple(blocks)
-
-    def _reorderable_operation_blocks(
-        self,
-        *,
-        fixed_refs: Collection[_ProvenanceStepRef] = (),
-    ) -> tuple[_ProvenanceReorderBlock, ...]:
-        """Return the structural atomic operation blocks in the flat recipe.
-
-        Operation identity, grouping, and reorder visibility come directly from the
-        stored provenance. Display streamlining and the hierarchical ``display_rows()``
-        representation are deliberately not part of reorder planning.
-        """
-        fixed_ref_set = set(fixed_refs)
-        operations = self.operations
-        reorder_entries = tuple(
-            self._operation_reorder_entry(operation) for operation in operations
-        )
-        blocks: list[_ProvenanceReorderBlock] = []
-        for block_ref in self._operation_block_refs():
-            start, stop = block_ref.start, block_ref.stop
-            entries = tuple(
-                entry
-                for index in range(start, stop)
-                if (entry := reorder_entries[index]) is not None
-            )
-            if not entries:
-                continue
-            block_refs = {
-                _ProvenanceStepRef("operation", operation_index=index)
-                for index in range(start, stop)
-            }
-            if block_refs & fixed_ref_set or any(
-                not self._operation_is_reorderable(item)
-                for item in operations[start:stop]
-            ):
-                continue
-            blocks.append(
-                _ProvenanceReorderBlock(
-                    block_ref,
-                    entries,
-                )
-            )
-        return tuple(blocks)
-
-    def _reorder_sections(
-        self,
-        *,
-        fixed_refs: Collection[_ProvenanceStepRef] = (),
-    ) -> tuple[_ProvenanceReorderSection, ...]:
-        """Return contiguous flat operation sections safe to permute."""
-        segments: list[list[_ProvenanceReorderBlock]] = []
-        for block in self._reorderable_operation_blocks(fixed_refs=fixed_refs):
-            if not segments or segments[-1][-1].ref.stop != block.ref.start:
-                segments.append([block])
-            else:
-                segments[-1].append(block)
-        movable_segments = [segment for segment in segments if len(segment) >= 2]
-        return tuple(
-            _ProvenanceReorderSection(
-                ref=_ProvenanceReorderSectionRef(
-                    segment[0].ref.start,
-                    segment[-1].ref.stop,
-                ),
-                label=(
-                    "Steps"
-                    if len(movable_segments) == 1
-                    else f"Steps — section {segment_index}"
-                ),
-                blocks=tuple(segment),
-            )
-            for segment_index, segment in enumerate(movable_segments, start=1)
-        )
-
     def _reorder_operation_blocks(
         self,
         sections: Sequence[_ProvenanceReorderSection],
@@ -3726,68 +3994,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         ],
     ) -> ToolProvenanceSpec:
         """Return a validated spec with allowed provenance blocks permuted."""
-        expected_section_refs = tuple(section.ref for section in sections)
-        if len(set(expected_section_refs)) != len(expected_section_refs):
-            raise ValueError("Provenance reorder sections must be unique")
-        if set(orders) != set(expected_section_refs):
-            raise ValueError("Provenance reorder plan does not match its sections")
-
-        allowed_block_refs = {
-            block.ref for block in self._reorderable_operation_blocks()
-        }
-        structural_block_refs = set(self._operation_block_refs())
-        index_order = list(range(len(self.operations)))
-        occupied_ranges: list[tuple[int, int]] = []
-        for section in sections:
-            section_ref = section.ref
-            if not (0 <= section_ref.start < section_ref.stop <= len(self.operations)):
-                raise ValueError("Provenance reorder section is out of range")
-            if any(
-                section_ref.start < stop and start < section_ref.stop
-                for start, stop in occupied_ranges
-            ):
-                raise ValueError("Provenance reorder sections must not overlap")
-            occupied_ranges.append((section_ref.start, section_ref.stop))
-
-            expected_blocks = tuple(block.ref for block in section.blocks)
-            if not set(expected_blocks) <= allowed_block_refs:
-                raise ValueError(
-                    "Provenance reorder blocks must represent movable displayed steps"
-                )
-            cursor = section_ref.start
-            for block_ref in expected_blocks:
-                if (
-                    block_ref.start != cursor
-                    or not block_ref.start < block_ref.stop <= section_ref.stop
-                ):
-                    raise ValueError(
-                        "Provenance reorder blocks must partition their section"
-                    )
-                if block_ref not in structural_block_refs:
-                    raise ValueError(
-                        "Provenance blocks must contain one complete structural block"
-                    )
-                cursor = block_ref.stop
-            if cursor != section_ref.stop or len(set(expected_blocks)) != len(
-                expected_blocks
-            ):
-                raise ValueError(
-                    "Provenance reorder blocks must partition their section"
-                )
-
-            requested_blocks = tuple(orders[section_ref])
-            if len(requested_blocks) != len(expected_blocks) or set(
-                requested_blocks
-            ) != set(expected_blocks):
-                raise ValueError(
-                    "Provenance reorder plan must contain every block exactly once"
-                )
-            index_order[section_ref.start : section_ref.stop] = [
-                index
-                for block_ref in requested_blocks
-                for index in range(block_ref.start, block_ref.stop)
-            ]
-
+        index_order = self._reorder_indices(sections, orders)
         if self.kind in {"script", "file"}:
             candidate = self.model_copy(
                 update={"steps": tuple(self.steps[index] for index in index_order)}
@@ -4035,11 +4242,12 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             ):
                 data = extension_executor(operation, data)
             else:
-                data = operation._apply_schema_v2(
-                    data,
-                    parent_data=parent_data,
-                    authorization=authorization,
-                )
+                with xr.set_options(**operation.execution_options):
+                    data = operation._apply_schema_v2(
+                        data,
+                        parent_data=parent_data,
+                        authorization=authorization,
+                    )
         if self.kind == "selection":
             # Coordinate dictionary order is presentation state, not a replay step.
             # Normalize it once at the live selection boundary so it cannot split or

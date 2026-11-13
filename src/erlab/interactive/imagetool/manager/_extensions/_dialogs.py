@@ -96,6 +96,7 @@ class _ExtensionParameterDialog(QtWidgets.QDialog):
     ) -> None:
         super().__init__(parent)
         self.descriptor = descriptor
+        self._initial_values = values
         self.setObjectName("manager_extension_parameter_dialog")
         self.setWindowTitle(descriptor.name)
         layout = QtWidgets.QVBoxLayout(self)
@@ -188,7 +189,7 @@ class _ExtensionParameterDialog(QtWidgets.QDialog):
 
     @property
     def parameters(self) -> dict[str, typing.Any]:
-        values: dict[str, typing.Any] = {}
+        values: dict[str, typing.Any] = dict(self._initial_values or {})
         by_id = {item.id: item for item in self.descriptor.parameters}
         for name, editor in self._editors.items():
             parameter = by_id[name]
@@ -214,6 +215,21 @@ class _ExtensionParameterDialog(QtWidgets.QDialog):
                     and not value
                 ):
                     raise ValueError(f"{name!r} requires a value")
+            if self._initial_values is not None:
+                initial = self._initial_values.get(name, parameter.default)
+                if (
+                    parameter.kind is ParameterKind.NUMBER
+                    and isinstance(editor, QtWidgets.QLineEdit)
+                    and editor.text() == str(initial)
+                ):
+                    value = initial
+                if (
+                    name not in self._initial_values
+                    and not parameter.required
+                    and type(value) is type(initial)
+                    and value == initial
+                ):
+                    continue
             values[name] = value
         _require_finite_parameter_values(values)
         return values

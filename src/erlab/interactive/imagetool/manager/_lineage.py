@@ -47,6 +47,7 @@ from erlab.interactive.imagetool._provenance._model import (
 )
 from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
+from erlab.interactive.imagetool.manager._data_graph import _ResultWindowUnavailable
 from erlab.interactive.imagetool.manager._dependency import _combine_source_states
 from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
 from erlab.interactive.imagetool.manager._source_labels import script_input_source_label
@@ -68,6 +69,7 @@ if typing.TYPE_CHECKING:
 
     import xarray as xr
 
+    from erlab.interactive.imagetool.manager._data_graph import _CalculatedResult
     from erlab.interactive.imagetool.manager._dependency import _DependencyStatus
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
@@ -164,6 +166,13 @@ class _LineageController:
         return self._manager._dependency_tracker.refs_for_uid(uid)
 
     def dependency_status_for_uid(self, uid: str) -> _DependencyStatus | None:
+        graph = self._manager._data_graph
+        if graph.owns_result(uid):
+            if not graph.graph.follows(uid):
+                return None
+            if graph.unavailable(uid):
+                return "missing"
+            return "changed" if graph.graph.is_stale(uid) else "current"
         return self._manager._dependency_tracker.status_for_uid(uid)
 
     def dependency_status_label_for_uid(self, uid: str) -> str | None:
@@ -191,6 +200,9 @@ class _LineageController:
         return tooltip
 
     def dependency_input_summary_for_uid(self, uid: str) -> str | None:
+        graph = self._manager._data_graph
+        if graph.owns_result(uid):
+            return "\n".join(graph.next_input_labels(uid)) or None
         script_inputs = self._dependency_script_inputs(
             self._manager._tool_graph.nodes.get(uid)
         )
@@ -206,6 +218,7 @@ class _LineageController:
 
     def _show_dependency_reload_dialog(self, target: int | str) -> None:
         node = self._manager._node_for_target(target)
+        graph = self._manager._data_graph
         status = self._manager.dependency_status_for_uid(node.uid)
         if status is None:
             return
@@ -216,7 +229,9 @@ class _LineageController:
         if details:
             msg_box.setDetailedText(details)
 
-        if not self._node_can_reload_script_inputs(node):
+        if not graph.owns_result(node.uid) and not self._node_can_reload_script_inputs(
+            node
+        ):
             msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
             msg_box.setText("This result cannot be reloaded from its recorded inputs.")
             msg_box.setInformativeText(
@@ -232,7 +247,9 @@ class _LineageController:
         else:
             msg_box.setText("Reload this result from its recorded inputs?")
         msg_box.setInformativeText(
-            "The current ImageTool data will be replaced only if reload succeeds."
+            graph.preview(node.uid, "reload")
+            if graph.owns_result(node.uid)
+            else "The current ImageTool data will be replaced only if reload succeeds."
         )
         reload_button = msg_box.addButton(
             "Reload Data", QtWidgets.QMessageBox.ButtonRole.AcceptRole
@@ -241,7 +258,10 @@ class _LineageController:
         msg_box.setDefaultButton(typing.cast("QtWidgets.QPushButton", reload_button))
         msg_box.exec()
         if msg_box.clickedButton() is reload_button:
-            self._reload_script_derived_target(target)
+            if graph.owns_result(node.uid):
+                graph.run(node.uid, "reload")
+            else:
+                self._reload_script_derived_target(target)
         elif msg_box.clickedButton() is cancel_button:
             return
 
@@ -446,16 +466,23 @@ class _LineageController:
         node: _ImageToolWrapper | _ManagedWindowNode,
         *,
         name: str | None = None,
+        input_type: type[ScriptInput] = ScriptInput,
         source_spec: ToolProvenanceSpec | None = None,
         fallback_provenance_spec: dict[str, typing.Any] | None = None,
         detached_input_uid: str | None = None,
         data_role: ScriptInputDataRole = "displayed",
     ) -> ScriptInput:
-        revision_id = node.revision_id_for_role(data_role)
-        bound = self._manager._provenance_revisions.bind(
-            revision_id, node.provenance_for_role(data_role)
-        )
-        input_provenance = to_replay_provenance_spec(bound.provenance_spec)
+        adapter = self._manager._data_graph
+        revision_id = node.revision_id_for_role(data_role, retain_expression=True)
+        if adapter.owns_result(node.uid):
+            input_provenance = adapter.result_spec(
+                node.uid, displayed=data_role == "displayed"
+            )
+        else:
+            bound = self._manager._provenance_revisions.bind(
+                revision_id, node.provenance_for_role(data_role)
+            )
+            input_provenance = to_replay_provenance_spec(bound.provenance_spec)
         provenance_spec = (
             input_provenance.model_dump(mode="json")
             if input_provenance is not None
@@ -476,28 +503,24 @@ class _LineageController:
             label = node.display_text or fallback_label
         if isinstance(node, _ImageToolWrapper) and node.name:
             label += f": {node.name}"
-        if node.uid == detached_input_uid:
-            return ScriptInput(
-                name=input_name,
-                label=label,
-                revision_id=revision_id,
-                resolved_revision_id=revision_id if source_spec is None else None,
-                follow_source=False,
-                data_role=data_role,
-                source_spec=source_payload,
-                provenance_spec=provenance_spec,
-            )
-        return ScriptInput(
+        live = node.uid != detached_input_uid
+        item = input_type(
             name=input_name,
             label=label,
-            node_uid=node.uid,
-            node_snapshot_token=node.snapshot_token_for_role(data_role),
+            node_uid=node.uid if live else None,
+            node_snapshot_token=node.snapshot_token_for_role(data_role)
+            if live
+            else None,
             revision_id=revision_id,
             resolved_revision_id=revision_id if source_spec is None else None,
+            follow_source=live,
             data_role=data_role,
             source_spec=source_payload,
             provenance_spec=provenance_spec,
         )
+        if adapter.owns_result(node.uid):
+            adapter.capture_input(node, item)
+        return item
 
     def _multi_input_script_provenance(
         self,
@@ -582,61 +605,38 @@ class _LineageController:
             primary_input=primary_input,
         )
 
-    def _show_multi_input_script_result(
-        self,
-        data: xr.DataArray,
-        input_targets: Iterable[int | str],
-        *,
-        operation_label: str,
-        operation_code: str,
-        data_role: ScriptInputDataRole = "displayed",
-    ) -> int | None:
-        input_targets = tuple(input_targets)
-        return self._show_multi_input_result(
-            data,
-            input_targets,
-            provenance=lambda: self._multi_input_script_provenance(
-                input_targets,
-                operation_label=operation_label,
-                operation_code=operation_code,
-                data_role=data_role,
-            ),
-        )
-
     def _show_multi_input_result(
         self,
-        data: xr.DataArray,
-        input_targets: Iterable[int | str],
+        publication: _CalculatedResult,
         *,
-        provenance: Callable[[], ToolProvenanceSpec],
+        input_checks: Sequence[Callable[[], None]] = (),
     ) -> int | None:
-        """Capture input provenance inside the result's ownership transaction."""
-        tool = erlab.interactive.itool(data, manager=False, execute=False)
-        if not isinstance(tool, ImageTool):
-            return None
+        """Open the result with the ordered revisions used by the calculation."""
         controller = self._manager._workspace_controller
-        source_uids = tuple(
-            self._manager._node_for_target(target).uid for target in input_targets
-        )
-        with controller.local_provenance_change(
-            edited_entries=lambda: controller._locate_imagetool_code_trust_entries(
-                provenance_code_trust_entries(
-                    tool.provenance_spec,
-                    location_prefix="runtime",
-                    include_inputs=False,
+
+        try:
+            with controller.local_provenance_change(
+                edited_entries=lambda: controller._locate_imagetool_code_trust_entries(
+                    provenance_code_trust_entries(
+                        self._manager._node_for_target(created).provenance_spec,
+                        location_prefix="runtime",
+                        include_inputs=False,
+                    ),
+                    node_getter=lambda: self._manager._node_for_target(created),
                 ),
-                node_getter=lambda: self._manager._node_for_target(created),
-            ),
-            source_owners=lambda: {
-                self._manager._node_for_target(created).uid: source_uids
-            },
-        ):
-            created = self._manager.add_imagetool(
-                tool,
-                show=True,
-                activate=True,
-                provenance_spec=provenance(),
-            )
+                source_owners=lambda: {
+                    node.uid: self._manager._data_graph.graph.follows(node.uid)
+                },
+            ):
+                created = self._manager.add_imagetool(
+                    publication,
+                    show=True,
+                    activate=True,
+                    _input_checks=input_checks,
+                )
+                node = self._manager._node_for_target(created)
+        except _ResultWindowUnavailable:
+            return None
         return created
 
     def _live_script_input_node(
@@ -917,6 +917,13 @@ class _LineageController:
                 if reason is None:
                     add_action("reload", node.uid)
                 return reason
+            graph = self._manager._data_graph
+            if graph.reloads_result(node.uid):
+                reason = graph.command_issue(node.uid, "reload")
+                if reason is None:
+                    add_action("reload", node.uid)
+                return reason
+
             spec = node.provenance_spec
             if node.slicer_area._direct_reloadable():
                 add_action("reload", node.uid)
@@ -1107,7 +1114,9 @@ class _LineageController:
             ):
                 reloaded_uids.add(uid)
                 continue
-            if kind == "reload" and self._node_can_reload_script_inputs(node):
+            if kind == "reload" and self._manager._data_graph.reloads_result(uid):
+                updated = self._manager._data_graph.run(uid, "reload")
+            elif kind == "reload" and self._node_can_reload_script_inputs(node):
                 updated = self._reload_script_derived_target(
                     uid,
                     continuation_uids=() if target_uid == uid else (target_uid,),
@@ -1365,6 +1374,12 @@ class _LineageController:
     def _node_can_reload_script_inputs(
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> bool:
+        graph = self._manager._data_graph
+        if graph.reloads_result(node.uid):
+            return (
+                graph.graph.has_recipe(node.uid)
+                and graph.command_issue(node.uid, "reload") is None
+            )
         spec = node.provenance_spec
         return (
             node.is_imagetool
@@ -1463,6 +1478,14 @@ class _LineageController:
         target = self._manager.target_from_slicer_area(slicer_area)
         if target is None:
             return False
+        node = self._manager._node_for_target(target)
+        graph = self._manager._data_graph
+        if graph.reloads_result(node.uid):
+            return (
+                graph.run(node.uid, "reload")
+                if execute
+                else graph.command_issue(node.uid, "reload") is None
+            )
         if not self._node_can_reload_script_inputs(
             self._manager._node_for_target(target)
         ):
@@ -1586,7 +1609,10 @@ class _LineageController:
                                 ] = json.dumps(rebased_references)
                 if updated_attrs is not None:
                     node.update_pending_workspace_payload_attrs(updated_attrs)
-            if node.provenance_spec is None:
+            if (
+                self._manager._data_graph.owns_result(node.uid)
+                or node.provenance_spec is None
+            ):
                 continue
             rebased = rebase_script_input_node_uids(
                 node.provenance_spec,
@@ -1659,6 +1685,9 @@ class _LineageController:
         return reload_boundary
 
     def _reload_target_for_child(self, uid: str) -> int | str | None:
+        graph = self._manager._data_graph
+        if graph.reloads_result(uid):
+            return uid if graph.command_issue(uid, "reload") is None else None
         boundary = self._reload_boundary_for_child(uid)
         if boundary is None:
             return None
@@ -1669,6 +1698,9 @@ class _LineageController:
         return boundary.uid
 
     def _reload_unavailable_reason_for_child(self, uid: str) -> str:
+        graph = self._manager._data_graph
+        if graph.reloads_result(uid) and (reason := graph.command_issue(uid, "reload")):
+            return reason
         try:
             current = self._manager._child_node(uid)
         except KeyError:
@@ -1694,6 +1726,8 @@ class _LineageController:
             node = self._manager._node_for_target(target)
         except KeyError:
             return "The selected item is no longer available. Select an open item."
+        if self._manager._data_graph.reloads_result(node.uid):
+            return self._manager._data_graph.command_issue(node.uid, "reload")
         if isinstance(target, str):
             if self._reload_target_for_child(target) is not None:
                 return None
@@ -1720,6 +1754,8 @@ class _LineageController:
         reloaded_uids = set() if reloaded_uids is None else reloaded_uids
         if node.uid in reloaded_uids:
             reloaded = True
+        elif self._manager._data_graph.reloads_result(node.uid):
+            reloaded = self._manager._data_graph.run(node.uid, "reload")
         elif node.tool_script_inputs:
             reloaded = self._refresh_tool_inputs(
                 node.uid,
@@ -1760,9 +1796,13 @@ class _LineageController:
         uid = self._manager._selected_source_update_child_uid()
         if uid is None:
             return
-        self._manager._child_node(uid).show_source_update_dialog(parent=self._manager)
+        self._manager._node_for_target(uid).show_source_update_dialog(
+            parent=self._manager
+        )
 
     def _refresh_source_chain_to_uid(self, uid: str) -> bool:
+        if self._manager._data_graph.owns_result(uid):
+            return self._manager._data_graph.run(uid, "refresh")
         node = self._manager._tool_graph.nodes.get(uid)
         if (
             node is not None
@@ -2007,7 +2047,15 @@ class _LineageController:
             )
             return
 
-        reloaded_uids: set[str] = set()
+        graph = self._manager._data_graph
+        graph_targets = [
+            self._manager._node_for_target(target).uid
+            for target in reload_targets
+            if graph.reloads_result(self._manager._node_for_target(target).uid)
+        ]
+        if graph_targets and not graph.reload_selected(graph_targets):
+            return
+        reloaded_uids: set[str] = set(graph_targets)
         for target in reload_targets:
             self._reload_target_with_continuations(
                 target,
@@ -2100,6 +2148,7 @@ class _LineageController:
             preserve_filter=True,
             replay_source_data=node.replay_source_data,
             primary_checkpoint_required=False,
+            staged=result.revisions,
             on_commit=functools.partial(
                 result.commit_revisions, self._manager._provenance_revisions
             ),
@@ -2191,7 +2240,7 @@ class _LineageController:
                         )
                         return False
                     publication.require_current_for_publication()
-                    created = self._manager.add_imagetool(
+                    created = self._manager.import_imagetool(
                         tool,
                         show=True,
                         activate=True,

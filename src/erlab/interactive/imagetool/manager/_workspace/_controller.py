@@ -1558,7 +1558,7 @@ class _WorkspaceController:
                 node = saved.node
                 if uid not in self._manager._tool_graph.nodes or node.imagetool is None:
                     continue
-                node.slicer_area.set_data(saved.data, auto_compute=False)
+                node.slicer_area._set_data(saved.data, auto_compute=False)
                 node.slicer_area.state = saved.state
                 node._set_name(saved.name, manual=False)
                 node._workspace_sources = saved.sources

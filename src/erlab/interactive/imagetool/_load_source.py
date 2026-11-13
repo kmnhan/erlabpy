@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import importlib
 import pathlib
+import sys
 import types
 import typing
 from collections.abc import Callable, Mapping, Sequence
@@ -268,6 +268,7 @@ class _ResolvedLoadFunc:
     cast_float64: bool
     extension_source_hash: str | None = None
     extension_capability_id: str | None = None
+    session_loader: Callable[..., typing.Any] | None = None
 
     @property
     def kwargs_text(self) -> str:
@@ -285,7 +286,7 @@ class _ResolvedLoadFunc:
         self,
     ) -> FileReplayCall:
         """Return the serialized loader call used by structured file replay."""
-        return FileReplayCall(
+        call = FileReplayCall(
             kind=self.kind,
             target=self.target,
             source_hash=self.extension_source_hash,
@@ -294,6 +295,9 @@ class _ResolvedLoadFunc:
             selection=self.selection,
             cast_float64=self.cast_float64,
         )
+        if self.session_loader is not None:
+            call._session_loader = self.session_loader
+        return call
 
     def load_code(self, file_path: Path, *, assign: str) -> str | None:
         """Return user-facing Python that reloads the same selected file data."""
@@ -476,7 +480,9 @@ def _scan_number_load_call_args(
     return call_args
 
 
-def _loader_callable_text(loader: Callable[..., typing.Any]) -> str | None:
+def _loader_callable_text(
+    loader: Callable[..., typing.Any], *, require_identity: bool = False
+) -> str | None:
     """Return importable text for a loader callable when it has a stable path."""
     module = getattr(loader, "__module__", None)
     qualname = getattr(loader, "__qualname__", getattr(loader, "__name__", None))
@@ -486,19 +492,15 @@ def _loader_callable_text(loader: Callable[..., typing.Any]) -> str | None:
     # Prefer a public top-level alias when the callable is re-exported there so the
     # manager shows stable, user-facing load code instead of private module paths.
     top_level = module.split(".", maxsplit=1)[0]
-    try:
-        package = importlib.import_module(top_level)
-    except Exception:
-        return f"{module}.{qualname}"
-
-    target: typing.Any = package
-    for attr in qualname.split("."):
-        target = getattr(target, attr, None)
-        if target is None:
-            break
-    if target is loader:
-        return f"{top_level}.{qualname}"
-    return f"{module}.{qualname}"
+    for name in dict.fromkeys((top_level, module)):
+        target: typing.Any = sys.modules.get(name)
+        for attr in qualname.split("."):
+            target = getattr(target, attr, None)
+            if target is None:
+                break
+        if target is loader:
+            return f"{name}.{qualname}"
+    return None if require_identity else f"{module}.{qualname}"
 
 
 def _register_local_callable_loader(
@@ -609,6 +611,7 @@ def _extension_loader_load_code(
 def _resolve_load_func(
     load_func: _LoadFunc | None,
     *,
+    capture_session: bool = False,
     source_input_dtype: np.dtype[typing.Any] | str | None = None,
 ) -> _ResolvedLoadFunc | None:
     if load_func is None:
@@ -621,6 +624,7 @@ def _resolve_load_func(
             "selections are only supported while migrating persisted state"
         )
     cast_float64 = _needs_float64_cast(source_input_dtype)
+    imports: tuple[str, ...]
     if isinstance(loader, str):
         return _ResolvedLoadFunc(
             kind="erlab_loader",
@@ -703,21 +707,46 @@ def _resolve_load_func(
             cast_float64=cast_float64,
         )
 
-    target = _register_local_callable_loader(loader)
-    if target is None:
-        return None
+    bound_instance = func_instance is not None and not isinstance(
+        func_instance, (type, types.ModuleType)
+    )
+    target = _loader_callable_text(loader, require_identity=capture_session)
+    session_loader = None
+    if capture_session and (
+        target is None or _SUPPORTED_CALLABLE_LOADERS.get(target) is not loader
+    ):
+        if target in _SUPPORTED_CALLABLE_LOADERS:
+            target = None
+
+        # Replay the callable that ran even if its module binding later changes.
+        # Copying a closure also preserves the instance behind a bound method.
+        def load_local(path: Path, **kwargs: typing.Any) -> typing.Any:
+            return loader(path, **kwargs)
+
+        session_loader = load_local
+    if capture_session and (target is None or "<" in target or bound_instance):
+        target = f"session_loader_{id(loader):x}"
+        text = getattr(loader, "__qualname__", type(loader).__qualname__)
+        expression, imports = "", ()
+    else:
+        if target is None:
+            return None
+        _LOCAL_CALLABLE_LOADERS[target] = loader
+        text = expression = target
+        imports = (_import_for_callable(loader, target),)
     return _ResolvedLoadFunc(
         kind="callable",
         target=target,
         loader_label="Load Function",
-        loader_text=target,
-        loader_expr=target,
-        imports=(_import_for_callable(loader, target),),
+        loader_text=text,
+        loader_expr=expression,
+        imports=imports,
         setup_lines=(),
         loader_name=None,
         kwargs=kwargs,
         selection=selection,
         cast_float64=cast_float64,
+        session_loader=session_loader,
     )
 
 

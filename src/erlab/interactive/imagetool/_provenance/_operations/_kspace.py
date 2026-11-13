@@ -9,11 +9,16 @@ import numpy as np
 import pydantic
 
 import erlab
-from erlab.interactive.imagetool._provenance._code import _TUPLE_MARKER
+from erlab.interactive.imagetool._provenance._code import (
+    _TUPLE_MARKER,
+    _provenance_value_code,
+)
 from erlab.interactive.imagetool._provenance._model import (
     ConsoleOperationPattern,
+    NullableProvenanceHashableTuple,
     ProvenanceFloatSequenceMapping,
-    ProvenanceHashableTuple,
+    ProvenanceKeywords,
+    ProvenanceNumericVector,
     ToolProvenanceOperation,
     _format_derivation_value,
 )
@@ -23,6 +28,7 @@ if typing.TYPE_CHECKING:
 
 
 class KspaceConfigurationOperation(ToolProvenanceOperation):
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
     op: typing.Literal["kspace_configuration"] = "kspace_configuration"
     batch_available: typing.ClassVar[bool] = True
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
@@ -52,6 +58,7 @@ class KspaceConfigurationOperation(ToolProvenanceOperation):
 
 
 class _MutatingKspaceOperation(ToolProvenanceOperation):
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
     batch_available: typing.ClassVar[bool] = True
     console_applies_to_receiver: typing.ClassVar[bool] = True
     statement_mutates_input: typing.ClassVar[bool] = True
@@ -117,7 +124,7 @@ class KspaceSetNormalOperation(_MutatingKspaceOperation):
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
         ConsoleOperationPattern(
             accessor_path=("kspace", "set_normal"),
-            fields=("alpha", "beta", "alpha_scale", "beta_scale"),
+            fields=("alpha", "beta"),
             defaults={"delta": None, "alpha_scale": None, "beta_scale": None},
         ),
     )
@@ -132,9 +139,9 @@ class KspaceSetNormalOperation(_MutatingKspaceOperation):
         kwargs = {"alpha": self.alpha, "beta": self.beta}
         if self.delta is not None:
             kwargs["delta"] = self.delta
-        if self.alpha_scale is not None and not np.isclose(self.alpha_scale, 1.0):
+        if self.alpha_scale is not None:
             kwargs["alpha_scale"] = self.alpha_scale
-        if self.beta_scale is not None and not np.isclose(self.beta_scale, 1.0):
+        if self.beta_scale is not None:
             kwargs["beta_scale"] = self.beta_scale
         return kwargs
 
@@ -157,6 +164,7 @@ class KspaceConvertOperation(ToolProvenanceOperation):
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
         ConsoleOperationPattern(
             accessor_path=("kspace", "convert"),
+            extra_kwargs_field="coords",
             fields=("bounds", "resolution"),
             defaults={
                 "bounds": None,
@@ -172,6 +180,7 @@ class KspaceConvertOperation(ToolProvenanceOperation):
     method: str = "linear"
     silent: bool = True
     jacobian: bool = False
+    coords: dict[str, ProvenanceNumericVector] = pydantic.Field(default_factory=dict)
 
     @property
     def kwargs(self) -> dict[str, typing.Any]:
@@ -186,16 +195,11 @@ class KspaceConvertOperation(ToolProvenanceOperation):
             kwargs["silent"] = self.silent
         if self.jacobian:
             kwargs["jacobian"] = True
+        kwargs.update({name: vector.array() for name, vector in self.coords.items()})
         return kwargs
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
-        return data.kspace.convert(
-            bounds=self.bounds,
-            resolution=self.resolution,
-            method=self.method,
-            silent=self.silent,
-            jacobian=self.jacobian,
-        )
+        return data.kspace.convert(**self.kwargs)
 
     def derivation_label(self) -> str:
         return f"Convert to momentum({_format_derivation_value(self.kwargs)})"
@@ -203,7 +207,14 @@ class KspaceConvertOperation(ToolProvenanceOperation):
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
-        kwargs_code = erlab.interactive.utils.format_call_kwargs(self.kwargs)
+        kwargs = self.kwargs
+        kwargs.update(
+            {
+                name: f"|{vector.expression_code()}|"
+                for name, vector in self.coords.items()
+            }
+        )
+        kwargs_code = erlab.interactive.utils.format_call_kwargs(kwargs)
         return f"{input_name}.kspace.convert({kwargs_code})"
 
 
@@ -212,14 +223,20 @@ class SliceAlongPathOperation(ToolProvenanceOperation):
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
         ConsoleOperationPattern(
             target="erlab.analysis.interpolate.slice_along_path",
-            fields=("vertices", "step_size", "dim_name"),
-            defaults={"dim_name": "path"},
-            ignored_defaults={"interp_kwargs": None},
+            fields=("vertices", "step_size", "dim_name", "interp_kwargs"),
+            defaults={
+                "vertices": None,
+                "step_size": None,
+                "dim_name": "path",
+                "interp_kwargs": None,
+            },
+            extra_kwargs_field="vertices",
         ),
     )
     vertices: ProvenanceFloatSequenceMapping = pydantic.Field(default_factory=dict)
-    step_size: float
-    dim_name: str
+    step_size: float | None = None
+    dim_name: str = "path"
+    interp_kwargs: ProvenanceKeywords | None = None
 
     @property
     def kwargs(self) -> dict[str, typing.Any]:
@@ -227,6 +244,11 @@ class SliceAlongPathOperation(ToolProvenanceOperation):
             "vertices": self.vertices,
             "step_size": self.step_size,
             "dim_name": self.dim_name,
+            **(
+                {"interp_kwargs": dict(self.interp_kwargs)}
+                if self.interp_kwargs is not None
+                else {}
+            ),
         }
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
@@ -238,10 +260,13 @@ class SliceAlongPathOperation(ToolProvenanceOperation):
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
+        kwargs = self.kwargs
+        if self.interp_kwargs is not None:
+            kwargs["interp_kwargs"] = f"|{_provenance_value_code(self.interp_kwargs)}|"
         return erlab.interactive.utils.generate_code(
             erlab.analysis.interpolate.slice_along_path,
             [f"|{input_name}|"],
-            self.kwargs,
+            kwargs,
             module="era.interpolate",
         )
 
@@ -252,11 +277,11 @@ class MaskWithPolygonOperation(ToolProvenanceOperation):
         ConsoleOperationPattern(
             target="erlab.analysis.mask.mask_with_polygon",
             fields=("vertices", "dims"),
-            defaults={"invert": False, "drop": False},
+            defaults={"dims": None, "invert": False, "drop": False},
         ),
     )
     vertices: typing.Any
-    dims: ProvenanceHashableTuple
+    dims: NullableProvenanceHashableTuple = None
     invert: bool = False
     drop: bool = False
 

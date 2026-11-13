@@ -866,13 +866,15 @@ def _add_external_input_node(
             input_revision,
         )
         if has_stable_identity
+        else ("variable", script_input.name)
+        if script_input.node_uid is None
         else uuid.uuid4().hex
     )
     input_key = graph.add_node(
         f"external_input:{identity!r}",
         "external_input",
-        cacheable=has_stable_identity,
-        payload={"name": script_input.name},
+        cacheable=has_stable_identity or script_input.node_uid is None,
+        payload={"name": script_input.name, "revision_id": script_input.revision_id},
     )
     source_spec = script_input.parsed_source_spec()
     if source_spec is None:
@@ -964,7 +966,7 @@ def _operation_replay_code(
         and getattr(operation, "statement_mutates_input", False)
     ):
         raise ReplayGraphError("Operation replay code does not assign its output")
-    return code
+    return operation.execution_code(code)
 
 
 def _compile_script_input(
@@ -1163,6 +1165,13 @@ def _compile_spec(
             for script_input in parsed.script_inputs:
                 if input_keys is not None and script_input.name in input_keys:
                     input_key = input_keys[script_input.name]
+                    if selection := script_input.parsed_source_spec():
+                        input_key = _compile_replay_steps(
+                            graph,
+                            input_key,
+                            ReplayStep.from_source_spec(selection),
+                            display=display,
+                        )
                 else:
                     input_key = _compile_script_input(
                         graph,
@@ -1489,14 +1498,14 @@ def _compile_spec(
 
             if display:
                 entry = operation.derivation_entry()
-                if entry.code in {
+                if getattr(operation, "op", None) == "source_view" or entry.code in {
                     "derived = derived.isel()",
                     "derived = derived.qsel()",
                     "derived = derived.sel()",
                 }:
-                    previous_input_policy = step.input_policy
-                    continue
-                if getattr(operation, "op", None) == "source_view":
+                    if index == len(operations) - 1:
+                        ensure_script_current_key()
+                        current_name = active_name
                     previous_input_policy = step.input_policy
                     continue
 
@@ -3558,14 +3567,14 @@ def emit_replay_code(
             if isinstance(operation, ExtensionRoutineOperation):
                 module_name, function_name = extension_binding(node.key)
                 consume(node.parents)
+                statement = operation._bound_script_statement_code(
+                    parent_name,
+                    output_name=name,
+                    module_name=module_name,
+                    function_name=function_name,
+                )
                 append_code(
-                    operation._bound_script_statement_code(
-                        parent_name,
-                        output_name=name,
-                        module_name=module_name,
-                        function_name=function_name,
-                    ),
-                    allowed_accesses=(parent_name,),
+                    operation.execution_code(statement), allowed_accesses=(parent_name,)
                 )
             else:
                 bound_input_names = {

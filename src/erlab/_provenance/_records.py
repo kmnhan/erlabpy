@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import copy
 import keyword
+import os
 import typing
 from dataclasses import dataclass, field
 
+import numpy as np
 import xarray as xr
 
 if typing.TYPE_CHECKING:
@@ -29,11 +31,168 @@ def check_id(identifier: object) -> None:
         raise ValueError(f"Invalid provenance ID {identifier!r}")
 
 
+class WorkspaceSourcePath(str):
+    """Logical workspace location. Its reader owns the payload across saves."""
+
+
+def _file_version(path: str) -> tuple[int, int, int, int, int] | None:
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+@dataclass(frozen=True)
+class _LazyReadGuard:
+    versions: tuple[tuple[str, tuple[int, int, int, int, int] | None], ...]
+
+    def problem(self) -> str | None:
+        for path, version in self.versions:
+            if version is None or _file_version(path) != version:
+                return f"Recorded lazy input {path!r} is unavailable or has changed."
+        return None
+
+
+def _check_lazy_input(block, *, guard: _LazyReadGuard):
+    # Dask checks the source again after reading each block, including any
+    # change that occurs between previewing a command and running the read.
+    if reason := guard.problem():
+        raise OSError(reason)
+    return block
+
+
+def lazy_input_guards(data: xr.DataArray) -> tuple[_LazyReadGuard, ...]:
+    """Return retained file versions without reading any chunk."""
+    from dask.highlevelgraph import HighLevelGraph
+
+    guards: dict[_LazyReadGuard, None] = {}
+    for variable in (
+        data.variable,
+        *(coord.variable for coord in data.coords.values()),
+    ):
+        if variable.chunks is None:
+            continue
+        collection = variable.data.__dask_graph__()
+        if isinstance(collection, HighLevelGraph):
+            for layer in collection.layers.values():
+                guard = (layer.annotations or {}).get("erlab_recorded_input")
+                if isinstance(guard, _LazyReadGuard):
+                    guards[guard] = None
+    return tuple(guards)
+
+
+def lazy_input_problem(data: xr.DataArray) -> str | None:
+    """Check the same guards as the array's chunk tasks without reading any chunk."""
+    for guard in lazy_input_guards(data):
+        if reason := guard.problem():
+            return reason
+    return None
+
+
+def guard_lazy_data(
+    data: xr.DataArray, guards: typing.Iterable[_LazyReadGuard]
+) -> xr.DataArray:
+    """Apply recorded file checks to an existing computation, without replaying it."""
+    import dask
+
+    guards = tuple(dict.fromkeys(guards))
+    if not guards:
+        return data
+    needed = []
+    for variable in (data.variable, *(c.variable for c in data.coords.values())):
+        existing = lazy_input_guards(xr.DataArray(variable))
+        needed.append(
+            tuple(guard for guard in guards if guard not in existing)
+            if variable.chunks is not None
+            else ()
+        )
+    if not any(needed):
+        return data
+    result = data.copy(deep=True)
+    for variable, extra in zip(
+        (result.variable, *(c.variable for c in result.coords.values())),
+        needed,
+        strict=True,
+    ):
+        if not extra:
+            continue
+        array = variable.data
+        for guard in extra:
+            with dask.annotate(erlab_recorded_input=guard):
+                array = array.map_blocks(
+                    _check_lazy_input,
+                    guard=guard,
+                    dtype=array.dtype,
+                    meta=array._meta,
+                )
+        variable.data = array
+    return result
+
+
 def checkpoint_data(data: xr.DataArray) -> xr.DataArray:
+    """Freeze an explicit checkpoint before the caller can change its source."""
     if not isinstance(data, xr.DataArray):
         raise TypeError("Revision data must be a DataArray")
-    # A copied lazy array can still read from a mutable external source.
+    # A NumPy array backed by immutable bytes can be shared even if the sender
+    # keeps its view. Read-only flags alone can be reset by a writeable owner.
+    if data.variable._in_memory:
+        buffer = data.data
+        while isinstance(buffer, (np.ndarray, memoryview)):
+            buffer = buffer.base if isinstance(buffer, np.ndarray) else buffer.obj
+        if isinstance(buffer, bytes):
+            return data.copy(deep=True, data=data.data).load()
     return data.copy(deep=True).load()
+
+
+def own_eager_data(data: xr.DataArray) -> xr.DataArray:
+    """Accept eager values before the caller can reuse its mutable allocation."""
+    values = data.data
+    if values.dtype.hasobject:
+        return data.copy(deep=True)
+    buffer = values
+    while isinstance(buffer, (np.ndarray, memoryview)):
+        buffer = buffer.base if isinstance(buffer, np.ndarray) else buffer.obj
+    if not isinstance(buffer, bytes):
+        values = np.frombuffer(values.tobytes(), dtype=values.dtype).reshape(
+            values.shape
+        )
+    # Metadata and coordinate arrays remain isolated, including for shared values.
+    return data.copy(deep=True, data=values)
+
+
+def capture_display_data(
+    data: xr.DataArray,
+    *,
+    source_path: str | None = None,
+    live: bool = False,
+) -> xr.DataArray:
+    if not isinstance(data, xr.DataArray):
+        raise TypeError("Revision data must be a DataArray")
+    variables = (data.variable, *(coord.variable for coord in data.coords.values()))
+    if all(variable._in_memory for variable in variables):
+        return own_eager_data(data) if live else checkpoint_data(data)
+
+    # Copy the Dask expression, not its evaluated payload. Convert unchunked
+    # backend arrays to chunked reads without indexing the complete variable.
+    # A workspace save can append a generation while an open reader still
+    # owns the same payload. Its logical path does not identify a file load.
+    encoded_sources = (
+        var.encoding.get("source") for var in variables if not var._in_memory
+    )
+    files = [
+        path for path in encoded_sources if not isinstance(path, WorkspaceSourcePath)
+    ]
+    paths = {
+        os.path.abspath(os.fsdecode(path))
+        for path in (source_path, *files)
+        if isinstance(path, (str, bytes, os.PathLike))
+    }
+    versions = tuple((path, _file_version(path)) for path in sorted(paths))
+    result = (data if data.chunks is not None else data.chunk("auto")).copy(deep=True)
+    if versions:
+        result = guard_lazy_data(result, (_LazyReadGuard(versions),))
+    return result
 
 
 @dataclass(frozen=True)
@@ -41,6 +200,7 @@ class Follow:
     """Use the revision displayed by this entry."""
 
     entry_id: str
+    source: bool = False
 
 
 @dataclass(frozen=True)
@@ -109,12 +269,28 @@ class _RecipeData:
 @dataclass(frozen=True, init=False)
 class Recipe:
     _settings: _Settings[_RecipeData]
+    input_names: tuple[str, ...]
+    output_name: str | None
+    source_kind: typing.Literal["full_data", "public_data", "selection"] | None
+    view_role: typing.Literal["layout", "filter"] | None
 
     def __init__(
         self,
         operation: ToolProvenanceOperation,
         inputs: tuple[tuple[str, Binding], ...],
+        *,
+        view_role: typing.Literal["layout", "filter"] | None = None,
+        input_names: tuple[str, ...] = (),
+        output_name: str | None = None,
+        source_kind: typing.Literal["full_data", "public_data", "selection"]
+        | None = None,
     ) -> None:
+        if input_names and len(input_names) != len(inputs):
+            raise ValueError("Each named input must correspond to one slot")
+        object.__setattr__(self, "view_role", view_role)
+        object.__setattr__(self, "input_names", input_names)
+        object.__setattr__(self, "output_name", output_name)
+        object.__setattr__(self, "source_kind", source_kind)
         _check_slots(operation, tuple(slot for slot, _ in inputs))
         object.__setattr__(
             self, "_settings", _Settings(copy.deepcopy(_RecipeData(operation, inputs)))
@@ -176,27 +352,43 @@ class Application:
     def apply(self, values: Mapping[str, xr.DataArray]) -> xr.DataArray:
         (_, primary), *others = self.inputs
         data = values[primary]
-        if others:
-            return self.operation.apply_with_inputs(
-                data, {slot: values[node] for slot, node in others}
-            )
-        return self.operation.apply(data)
+        # Lightweight graph operations can implement apply without a model.
+        with xr.set_options(**getattr(self.operation, "execution_options", {})):
+            if others:
+                return self.operation.apply_with_inputs(
+                    data, {slot: values[node] for slot, node in others}
+                )
+            return self.operation.apply(data)
 
     def code(self, names: Mapping[str, str], *, output_name: str) -> str:
         """Emit the applied step using names for its exact input revisions."""
         (_, primary), *others = self.inputs
-        return self.operation.replay_code(
+        statement = self.operation.replay_code(
             names[primary],
             output_name=output_name,
             bound_inputs={slot: names[node] for slot, node in others},
             reserved_names=(*names.values(), output_name),
         )
+        return self.operation.execution_code(statement)
 
 
 @dataclass(frozen=True)
 class FileSource:
     source_id: str
     path: str
+
+
+@dataclass(frozen=True)
+class FileLoadPresentation:
+    """Notebook names and labels retained when importing an existing file load."""
+
+    label: str
+    output_name: str
+    seed_code: str | None
+    loader_label: str
+    loader_text: str
+    kwargs_text: str
+    load_code: str | None
 
 
 @dataclass(frozen=True, init=False)
@@ -206,8 +398,16 @@ class FileLoad:
     source: FileSource
     _settings: _Settings[FileReplayCall]
 
-    def __init__(self, source: FileSource, call: FileReplayCall) -> None:
+    presentation: FileLoadPresentation | None
+
+    def __init__(
+        self,
+        source: FileSource,
+        call: FileReplayCall,
+        presentation: FileLoadPresentation | None = None,
+    ) -> None:
         object.__setattr__(self, "source", source)
+        object.__setattr__(self, "presentation", presentation)
         object.__setattr__(self, "_settings", _Settings(copy.deepcopy(call)))
 
     @property
@@ -229,6 +429,10 @@ class DataRevision:
     revision_id: str
     producer: Application | FileLoad | None
     checkpointed: bool
+    owner_id: str
+    # Imported history with no verifiable input edge is descriptive. Only
+    # the checkpoint supplies data for this revision.
+    imported_history: str | None = None
 
 
 @dataclass(frozen=True)
@@ -239,3 +443,5 @@ class ImageToolEntry:
     auto: bool
     parent_id: str | None
     order: int
+    source_revision: str | None = None
+    output_name: str | None = None

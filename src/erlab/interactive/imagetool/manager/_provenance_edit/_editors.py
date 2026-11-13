@@ -23,7 +23,7 @@ from erlab.interactive.imagetool._provenance._operations import (
 from erlab.interactive.imagetool.manager._dialogs import _ConcatDialog
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Sequence
 
     from erlab.interactive.imagetool._provenance._model import (
         ToolProvenanceOperation,
@@ -462,57 +462,42 @@ def _dialog_match_for_operation_ref(
     spec: ToolProvenanceSpec,
     ref: _ProvenanceStepRef,
 ) -> _OperationDialogMatch | None:
-    _validate_operation_editor_contract()
-    operation = spec._operation_for_ref(ref)
-    if operation is None or ref.operation_index is None:
+    if ref.operation_index is None or spec._operation_for_ref(ref) is None:
         return None
-    operations = spec.operations
-    if not operations:
-        return None
+    return _dialog_match_for_operations(spec.operations, ref.operation_index)
 
-    for dialog_base_cls in _iter_imagetool_dialog_classes(dialogs.DataTransformDialog):
-        dialog_cls = typing.cast("type[dialogs.DataTransformDialog]", dialog_base_cls)
-        if not _operation_matches_dialog(operation, dialog_cls):
+
+def _dialog_match_for_operations(
+    operations: Sequence[ToolProvenanceOperation],
+    index: int,
+) -> _OperationDialogMatch | None:
+    operation = operations[index]
+    standalone = _dialog_class_for_operation(operation)
+    marker = operation.group
+    for candidate in _iter_imagetool_dialog_classes(dialogs.DataTransformDialog):
+        dialog_cls = typing.cast("type[dialogs.DataTransformDialog]", candidate)
+        if not _dialog_overrides_operation_group_for_edit(
+            dialog_cls
+        ) or not _dialog_supports_transform_restore(dialog_cls):
             continue
-        if not _dialog_supports_transform_restore(dialog_cls):
-            continue
-        group_kind = dialog_cls.operation_group_kind
-        if group_kind is not None:
-            marker = operation.group
-            if marker is None or marker.kind != group_kind:
+        if marker is not None:
+            # Shared setup operations such as coordinate assignment also have
+            # standalone editors. The group marker takes precedence.
+            if dialog_cls.operation_group_kind != marker.kind:
                 continue
-            group = dialog_cls.operation_group_for_edit(operations, ref.operation_index)
-            if group is not None:
-                return _OperationDialogMatch(
-                    dialog_cls,
-                    group[0],
-                    group[1],
-                    marker.focus,
-                )
+        elif (
+            dialog_cls.operation_group_kind is not None
+            or not _operation_matches_dialog(operation, dialog_cls)
+        ):
             continue
-        group = dialog_cls.operation_group_for_edit(operations, ref.operation_index)
+        group = dialog_cls.operation_group_for_edit(operations, index)
         if group is not None:
-            return _OperationDialogMatch(dialog_cls, group[0], group[1])
-        if dialog_cls.grouped_operation_only:
-            continue
-        return _OperationDialogMatch(
-            dialog_cls,
-            ref.operation_index,
-            ref.operation_index + 1,
-        )
-
-    for dialog_base_cls in _iter_imagetool_dialog_classes(dialogs.DataFilterDialog):
-        dialog_cls = typing.cast("type[dialogs.DataFilterDialog]", dialog_base_cls)
-        if not _operation_matches_dialog(operation, dialog_cls):
-            continue
-        if not _dialog_supports_filter_restore(dialog_cls):
-            continue
-        return _OperationDialogMatch(
-            dialog_cls,
-            ref.operation_index,
-            ref.operation_index + 1,
-        )
-    return None
+            return _OperationDialogMatch(
+                dialog_cls, *group, marker.focus if marker else None
+            )
+    if marker is not None or standalone is None:
+        return None
+    return _OperationDialogMatch(standalone, index, index + 1)
 
 
 def _editable_group_range_for_ref(

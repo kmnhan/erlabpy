@@ -99,6 +99,7 @@ class ImageToolSelectionSourceBinding(pydantic.BaseModel):
 
 
 class QSelOperation(ToolProvenanceOperation):
+    reads_input_only: typing.ClassVar[bool] = True
     op: typing.Literal["qsel"] = "qsel"
     batch_available: typing.ClassVar[bool] = True
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
@@ -106,27 +107,38 @@ class QSelOperation(ToolProvenanceOperation):
             accessor_path=("qsel",),
             kwargs_field="kwargs",
             mapping_kwarg="indexers",
+            defaults={"func": "mean"},
         ),
     )
     kwargs: ProvenanceMapping = pydantic.Field(default_factory=dict)
+
+    func: typing.Literal["mean", "min", "max", "sum"] = "mean"
+
+    @property
+    def options(self) -> dict[str, typing.Any]:
+        return {"func": self.func} if self.func != "mean" else {}
 
     @property
     def decoded_kwargs(self) -> dict[Hashable, typing.Any]:
         return dict(self.kwargs)
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
-        return data.qsel(self.decoded_kwargs)
+        return data.qsel(self.decoded_kwargs, **self.options)
 
     def derivation_label(self) -> str:
-        return f"qsel({_format_derivation_value(self.kwargs)})"
+        return self.expression_code("").removeprefix(".")
 
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
-        return _format_selection_expr(input_name, "qsel", self.decoded_kwargs)
+        return _format_selection_expr(
+            input_name, "qsel", self.decoded_kwargs, self.options
+        )
 
 
 class IselOperation(ToolProvenanceOperation):
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
+    reads_input_only: typing.ClassVar[bool] = True
     op: typing.Literal["isel"] = "isel"
     batch_available: typing.ClassVar[bool] = True
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
@@ -134,28 +146,46 @@ class IselOperation(ToolProvenanceOperation):
             dataarray_method="isel",
             kwargs_field="kwargs",
             mapping_kwarg="indexers",
-            ignored_defaults={"drop": False, "missing_dims": "raise"},
+            defaults={"drop": False, "missing_dims": "raise"},
         ),
     )
     kwargs: ProvenanceMapping = pydantic.Field(default_factory=dict)
+
+    drop: bool = False
+    missing_dims: typing.Literal["raise", "warn", "ignore"] = "raise"
+
+    @property
+    def options(self) -> dict[str, typing.Any]:
+        return {
+            **({"drop": True} if self.drop else {}),
+            **(
+                {"missing_dims": self.missing_dims}
+                if self.missing_dims != "raise"
+                else {}
+            ),
+        }
 
     @property
     def decoded_kwargs(self) -> dict[Hashable, typing.Any]:
         return dict(self.kwargs)
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
-        return data.isel(self.decoded_kwargs)
+        return data.isel(self.decoded_kwargs, **self.options)
 
     def derivation_label(self) -> str:
-        return f"isel({_format_derivation_value(self.kwargs)})"
+        return self.expression_code("").removeprefix(".")
 
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
-        return _format_selection_expr(input_name, "isel", self.decoded_kwargs)
+        return _format_selection_expr(
+            input_name, "isel", self.decoded_kwargs, self.options
+        )
 
 
 class SelOperation(ToolProvenanceOperation):
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
+    reads_input_only: typing.ClassVar[bool] = True
     op: typing.Literal["sel"] = "sel"
     batch_available: typing.ClassVar[bool] = True
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
@@ -163,25 +193,39 @@ class SelOperation(ToolProvenanceOperation):
             dataarray_method="sel",
             kwargs_field="kwargs",
             mapping_kwarg="indexers",
-            ignored_defaults={"method": None, "tolerance": None, "drop": False},
+            defaults={"method": None, "tolerance": None, "drop": False},
         ),
     )
     kwargs: ProvenanceMapping = pydantic.Field(default_factory=dict)
+
+    method: str | None = None
+    tolerance: str | float | list[float] | None = None
+    drop: bool = False
+
+    @property
+    def options(self) -> dict[str, typing.Any]:
+        return {
+            **({"method": self.method} if self.method is not None else {}),
+            **({"tolerance": self.tolerance} if self.tolerance is not None else {}),
+            **({"drop": True} if self.drop else {}),
+        }
 
     @property
     def decoded_kwargs(self) -> dict[Hashable, typing.Any]:
         return dict(self.kwargs)
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
-        return data.sel(self.decoded_kwargs)
+        return data.sel(self.decoded_kwargs, **self.options)
 
     def derivation_label(self) -> str:
-        return f"sel({_format_derivation_value(self.kwargs)})"
+        return self.expression_code("").removeprefix(".")
 
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
-        return _format_selection_expr(input_name, "sel", self.decoded_kwargs)
+        return _format_selection_expr(
+            input_name, "sel", self.decoded_kwargs, self.options
+        )
 
 
 class SortCoordOrderOperation(ToolProvenanceOperation):
@@ -193,6 +237,7 @@ class SortCoordOrderOperation(ToolProvenanceOperation):
     the schema-v2 provenance migration.
     """
 
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
     op: typing.Literal["sort_coord_order"] = "sort_coord_order"
     coord_order: NullableProvenanceHashableTuple = None
 
@@ -235,6 +280,7 @@ class SortCoordOrderOperation(ToolProvenanceOperation):
 
 
 class SortByOperation(ToolProvenanceOperation):
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
     op: typing.Literal["sortby"] = "sortby"
     batch_available: typing.ClassVar[bool] = True
     variables: ProvenanceHashableTuple
@@ -305,6 +351,7 @@ class SortByOperation(ToolProvenanceOperation):
 
 
 class SelectCoordOperation(ToolProvenanceOperation):
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
     op: typing.Literal["select_coord"] = "select_coord"
     coord_name: ProvenanceHashable
 
@@ -323,6 +370,8 @@ class SelectCoordOperation(ToolProvenanceOperation):
 
 
 class TransposeOperation(ToolProvenanceOperation):
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
+    reads_input_only: typing.ClassVar[bool] = True
     op: typing.Literal["transpose"] = "transpose"
     dims: NullableProvenanceHashableTuple = None
 
@@ -371,6 +420,8 @@ class TransposeOperation(ToolProvenanceOperation):
 
 
 class SqueezeOperation(ToolProvenanceOperation):
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
+    reads_input_only: typing.ClassVar[bool] = True
     op: typing.Literal["squeeze"] = "squeeze"
     batch_available: typing.ClassVar[bool] = True
     dims: NullableProvenanceHashableTuple = None
@@ -439,6 +490,8 @@ class SqueezeOperation(ToolProvenanceOperation):
 
 
 class RenameOperation(ToolProvenanceOperation):
+    xarray_option_names: typing.ClassVar[tuple[str, ...]] = ()
+    reads_input_only: typing.ClassVar[bool] = True
     op: typing.Literal["rename"] = "rename"
     name: str | None
 

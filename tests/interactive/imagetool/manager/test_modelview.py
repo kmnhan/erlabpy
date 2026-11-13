@@ -748,6 +748,9 @@ def test_childtool_hover_preview_hides_missing_imageitem_pixmap(
     )
 
     class _FakeManager:
+        _data_graph = types.SimpleNamespace(
+            manages=lambda _uid: False, owns_result=lambda _uid: False
+        )
         preview_action = _FakePreviewAction()
 
         def _child_node(self, uid: str) -> object:
@@ -977,7 +980,7 @@ def test_link_selected_aligns_to_current_child_imagetool(
         assert isinstance(child, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(parent, show=False)
         manager.add_imagetool(target, show=False)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child,
             0,
             show=False,
@@ -1124,7 +1127,7 @@ def test_linked_child_imagetool_badge_is_interactive(
 
         child = itool(data, manager=False, execute=False)
         assert isinstance(child, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child,
             0,
             show=False,
@@ -1921,7 +1924,10 @@ def test_presentation_changes_refresh_only_dependent_details(
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         test_data.qshow(manager=True)
-        (test_data + 1).qshow(manager=True)
+        manager.import_imagetool(
+            itool(test_data + 1, manager=False, execute=False),
+            provenance_spec=full_data(),
+        )
         (test_data + 2).qshow(manager=True)
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
@@ -2070,11 +2076,12 @@ def test_derivation_display_rows_are_cached_until_provenance_changes(
 ) -> None:
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
-        test_data.qshow(manager=True)
+        manager.import_imagetool(
+            itool(test_data, manager=False, execute=False), provenance_spec=full_data()
+        )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         wrapper = manager._tool_graph.root_wrappers[0]
-        wrapper.set_displayed_provenance(full_data(), advance_snapshot=False)
         display_row_calls = 0
         original_display_rows = ToolProvenanceSpec.display_rows
 
@@ -2136,7 +2143,7 @@ def test_derivation_display_rows_track_watched_binding_changes(
 
         child_tool = itool(test_data.copy(deep=False), manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child_tool,
             0,
             show=False,
@@ -2154,13 +2161,18 @@ def test_derivation_display_rows_track_watched_binding_changes(
         manager._flush_idle_work(force=True)
 
         assert parent_rows
-        assert parent.derivation_display_rows == ()
-        assert len(child.derivation_display_rows) < len(child_rows)
+        assert "watched_data" in parent_rows[0].entry.label
         assert (
-            manager.metadata_derivation_list.topLevelItemCount()
-            == len(child.derivation_display_rows)
-            < initial_count
+            parent.derivation_display_rows[0].entry.label
+            == "Notebook or in-memory data"
         )
+        # Unwatch changes the live variable link. The child's recorded input
+        # still identifies the same historical array.
+        assert (
+            child.derivation_display_rows[0].children[0].revision_id
+            == child_rows[0].children[0].revision_id
+        )
+        assert manager.metadata_derivation_list.topLevelItemCount() == initial_count
 
 
 def test_derivation_display_rows_track_materialized_imagetool_state(
@@ -2178,7 +2190,7 @@ def test_derivation_display_rows_track_materialized_imagetool_state(
 
         child_tool = itool(test_data.copy(deep=False), manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child_tool,
             0,
             show=False,
@@ -2201,7 +2213,11 @@ def test_derivation_display_rows_track_materialized_imagetool_state(
 
         restored_rows = child.derivation_display_rows
         assert len(restored_rows) == len(pending_rows) + 1
-        assert restored_rows[-1].entry == operation.derivation_entry()
+        assert [
+            row.entry
+            for row in restored_rows
+            if not row.is_input_group and row not in pending_rows
+        ] == [operation.derivation_entry()]
 
         restored_tool.slicer_area.apply_filter_operation(None, update=False)
 
@@ -3767,6 +3783,7 @@ def test_remove_imagetool_removes_childtools() -> None:
     tool_graph.nodes[wrapper.uid] = wrapper
     manager = types.SimpleNamespace(
         _tool_graph=tool_graph,
+        _data_graph=types.SimpleNamespace(remove=lambda _uid: None),
         _provenance_revisions=_ProvenanceRevisionStore(),
         _workspace_controller=types.SimpleNamespace(
             local_provenance_change=contextlib.nullcontext
@@ -4686,7 +4703,7 @@ def test_manager_multifile_handler_records_delivery_result(
     class _Manager(QtCore.QObject):
         def __init__(self) -> None:
             super().__init__()
-            self._data_ingress = types.SimpleNamespace(receive_data=receive_data)
+            self._data_ingress = types.SimpleNamespace(receive_file=receive_data)
             self._status_bar = types.SimpleNamespace(showMessage=lambda *_args: None)
 
     manager = _Manager()
@@ -5171,7 +5188,7 @@ def test_manager_child_imagetool_dask_badge(
 
         child_tool = itool(test_data.copy(deep=False), manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
+        child_uid = manager.import_imagetool_child(
             child_tool,
             0,
             show=False,
@@ -5281,7 +5298,7 @@ def test_manager_badge_hit_testing_edge_paths(
         manager.show()
         manager.activateWindow()
 
-        itool(test_data, manager=True)
+        itool(test_data.astype(float), manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         view = manager.tree_view

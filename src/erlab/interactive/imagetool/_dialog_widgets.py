@@ -502,6 +502,10 @@ def prompt_kspace_input_coordinates(
     return resolved_configuration, resolved, edited_names
 
 
+def _numeric_text(text: str) -> int | float:
+    return int(text) if text.lstrip("+-").isdigit() else float(text)
+
+
 class CoordinateGridWidget(QtWidgets.QWidget):
     """Edit coordinate values using start/end-or-delta controls and a table.
 
@@ -652,24 +656,25 @@ class CoordinateGridWidget(QtWidgets.QWidget):
 
     @property
     def new_coord(self) -> npt.NDArray:
-        if self._require_complete:
-            values = np.empty(self.table.rowCount(), dtype=np.float64)
-            flat_values = values
-        else:
-            values = self._reference_coord.copy()
-            flat_values = values.reshape(-1)
-
+        values = []
+        reference = self._reference_coord.reshape(-1)
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
-            if item is None or not item.text().strip():
+            if item is None or not (text := item.text().strip()):
                 if self._require_complete:
                     raise ValueError(f"Missing value in row {row}.")
+                values.append(reference[row].item())
                 continue
             try:
-                flat_values[row] = float(item.text())
-            except Exception as exc:
-                raise ValueError(f"Invalid value in row {row}: {item.text()}") from exc
-        return values
+                values.append(_numeric_text(text))
+            except ValueError as exc:
+                raise ValueError(f"Invalid value in row {row}: {text}") from exc
+        result = np.asarray(values)
+        if not self._require_complete:
+            result = result.reshape(self._reference_coord.shape)
+            if result.tolist() == self._reference_coord.tolist():
+                return self._reference_coord.copy()
+        return result
 
     def set_reference_coord(self, values: npt.ArrayLike) -> None:
         self._reference_coord = self._coerce_reference(values)
@@ -742,7 +747,11 @@ class CoordinateGridWidget(QtWidgets.QWidget):
         self.table.setRowCount(len(flat_values))
         self.table.setVerticalHeaderLabels([str(i) for i in range(len(flat_values))])
         for row, val in enumerate(flat_values):
-            item = QtWidgets.QTableWidgetItem(np.format_float_positional(val, trim="0"))
+            item = QtWidgets.QTableWidgetItem(
+                str(int(val))
+                if isinstance(val, np.integer)
+                else np.format_float_positional(float(val), trim="0")
+            )
             item.setTextAlignment(
                 QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter
             )

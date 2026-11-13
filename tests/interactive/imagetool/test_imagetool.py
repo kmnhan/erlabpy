@@ -1157,7 +1157,9 @@ def test_itool_dataset_metadata_fields_roundtrip(qtbot, tmp_path: pathlib.Path) 
         "itool_window_state",
         "erlab_version",
         "itool_provenance_spec",
+        "itool_source_input_dtype",
     }
+    assert np.dtype(ds.attrs["itool_source_input_dtype"]) == data.dtype
     assert ds.attrs["itool_title"] == "saved scan"
     assert ds.attrs["itool_name"] == "scan"
     assert ds.attrs["erlab_version"] == erlab.__version__
@@ -1355,6 +1357,7 @@ def test_itool_state_schema_guard() -> None:
         "manual_limits",
         "axis_inversions",
         "filter_operation",
+        "source_dims",
         "cursor_colors",
         "controls_visible",
         "file_path",
@@ -3574,8 +3577,14 @@ def test_profile_menu_opens_associated_coord_targets(
         ]
     ] = []
 
-    def _capture_open(data, source_spec, *, use_parent_colormap):
-        captured.append((data, source_spec, use_parent_colormap))
+    def _capture_open(source_spec, *, use_parent_colormap):
+        captured.append(
+            (
+                source_spec.apply(profile.slicer_area.displayed_data),
+                source_spec,
+                use_parent_colormap,
+            )
+        )
 
     monkeypatch.setattr(profile, "_open_data_in_new_window", _capture_open)
 
@@ -4052,8 +4061,9 @@ def test_prepare_high_dimensional_data_dialog_branches(
         def result_data(self) -> xr.DataArray:
             return operation.apply(data)
 
-        def source_operations(self) -> list[ToolProvenanceOperation]:
-            return [operation]
+        @property
+        def accepted_operations(self) -> tuple[ToolProvenanceOperation, ...]:
+            return (operation,)
 
     monkeypatch.setattr(
         imagetool_highdim,
@@ -4095,8 +4105,9 @@ def test_itool_high_dimensional_data_dialog_branches(
         def result_data(self) -> xr.DataArray:
             return operation.apply(data)
 
-        def source_operations(self) -> list[ToolProvenanceOperation]:
-            return [operation]
+        @property
+        def accepted_operations(self) -> tuple[ToolProvenanceOperation, ...]:
+            return (operation,)
 
     monkeypatch.setattr(
         imagetool_highdim,
@@ -4150,8 +4161,9 @@ def test_show_in_manager_high_dimensional_data_dialog_branches(
         def result_data(self) -> xr.DataArray:
             return operation.apply(data)
 
-        def source_operations(self) -> list[ToolProvenanceOperation]:
-            return [operation]
+        @property
+        def accepted_operations(self) -> tuple[ToolProvenanceOperation, ...]:
+            return (operation,)
 
     monkeypatch.setattr(
         imagetool_highdim,
@@ -4427,8 +4439,9 @@ def test_itool_file_open_reduces_high_dimensional_data_with_provenance(
         def result_data(self) -> xr.DataArray:
             return operation.apply(self._data)
 
-        def source_operations(self) -> list[ToolProvenanceOperation]:
-            return [operation]
+        @property
+        def accepted_operations(self) -> tuple[ToolProvenanceOperation, ...]:
+            return (operation,)
 
     monkeypatch.setattr(
         imagetool_highdim,
@@ -4458,7 +4471,10 @@ def test_itool_file_open_reduces_high_dimensional_data_with_provenance(
 
     xr.testing.assert_identical(win.slicer_area.data, expected)
     assert win.provenance_spec is not None
-    assert list(win.provenance_spec.operations) == [operation]
+    selection, display_conversion = win.provenance_spec.operations
+    assert selection == operation
+    assert display_conversion.op == "imagetool_input"
+    assert display_conversion.cast_float64
 
     replayed = replay_file_provenance(win.provenance_spec)
     xarray.testing.assert_identical(replayed, expected)
@@ -4953,6 +4969,7 @@ def test_itool_reload_unavailable_reason_metadata_branches(
 
     manager = types.SimpleNamespace(
         target_from_slicer_area=lambda _area: "target",
+        node_from_slicer_area=lambda _area: None,
         _reload_target_for_child=lambda _target: None,
         _reload_unavailable_reason_for_target=lambda _target: "manager reason",
         _extensions=types.SimpleNamespace(
@@ -5240,7 +5257,7 @@ def test_process_only_filter_dialog_is_rejected(qtbot) -> None:
     qtbot.addWidget(dialog)
 
     with pytest.raises(NotImplementedError, match="filter_operation"):
-        dialog._apply_current_filter()
+        dialog._preview()
     xarray.testing.assert_identical(win.slicer_area.data, data)
     assert not win.slicer_area.has_active_filter
 
@@ -11077,7 +11094,7 @@ def test_high_dimensional_reduction_dialog_accept_keeps_dialog_open_on_error(
     _set_combo_data(row.action_combo, "aggregate")
     assert open_button.isEnabled()
 
-    def _raise_process(_data: xr.DataArray) -> xr.DataArray:
+    def _raise_process(_data: xr.DataArray, _ops) -> xr.DataArray:
         raise ValueError("cannot aggregate")
 
     monkeypatch.setattr(dialog, "process_data", _raise_process)
@@ -11131,7 +11148,7 @@ def test_high_dimensional_reduction_dialog_metadata_and_warning_paths(
     assert len(warnings) == 2
 
     _set_combo_data(row.action_combo, "aggregate")
-    monkeypatch.setattr(dialog, "process_data", lambda _data: data)
+    monkeypatch.setattr(dialog, "process_data", lambda _data, _ops: data)
     dialog.accept()
     assert len(warnings) == 3
     assert dialog.result() != QtWidgets.QDialog.DialogCode.Accepted
@@ -11596,6 +11613,30 @@ def test_selection_dialog_restore_stepped_selection_operation(qtbot) -> None:
     win.close()
 
 
+@pytest.mark.parametrize(
+    "operation",
+    [
+        QSelOperation(
+            kwargs={"beta": -0.12345678901234567, "beta_width": 1.9876543210987654}
+        ),
+        SelOperation(kwargs={"eV": slice(-0.12345678901234567, 9.876543210987654)}),
+        IselOperation(kwargs={"alpha": slice(-90, 99, 22)}),
+        SelOperation(kwargs={"eV": slice(1, 2**53 + 1)}),
+        IselOperation(kwargs={"alpha": slice(3, 1)}),
+    ],
+)
+def test_selection_dialog_restores_requested_limits(qtbot, operation):
+    dialog = SelectionDialog(
+        provenance_edit_mode=True, source_data=_selection_4d_data()
+    )
+    qtbot.addWidget(dialog)
+    dialog.restore_transform_operation(operation)
+    assert (
+        dialog.provenance_edit_operations()[0].model_dump_json()
+        == operation.model_dump_json()
+    )
+
+
 def test_selection_dialog_restore_negative_isel_indexers(qtbot) -> None:
     data = _selection_4d_data()
     win = itool(data, execute=False)
@@ -11748,24 +11789,24 @@ def _restore_dialog_data() -> xr.DataArray:
     [
         (
             AggregateDialog,
-            AverageOperation(dims=("x",)),
-            QSelAggregationOperation(dims=("x",), func="mean"),
+            AverageOperation(dims=("y", "x")),
+            AverageOperation(dims=("y", "x")),
         ),
         (
             AggregateDialog,
-            QSelAggregationOperation(dims=("y",), func="sum"),
-            QSelAggregationOperation(dims=("y",), func="sum"),
+            QSelAggregationOperation(dims=("y", "x"), func="sum"),
+            QSelAggregationOperation(dims=("y", "x"), func="sum"),
         ),
         (
             InterpolationDialog,
             InterpolationOperation(
                 dim="x",
-                values=[0.0, 1.5, 3.0],
+                values=(0.0, 1.5123456789012345, 3.0),
                 method="linear",
             ),
             InterpolationOperation(
                 dim="x",
-                values=[0.0, 1.5, 3.0],
+                values=(0.0, 1.5123456789012345, 3.0),
                 method="linear",
             ),
         ),
@@ -11773,12 +11814,12 @@ def _restore_dialog_data() -> xr.DataArray:
             LeadingEdgeDialog,
             LeadingEdgeOperation(
                 dim="x",
-                fraction=0.4,
+                fraction=0.41234567890123456,
                 direction="positive",
             ),
             LeadingEdgeOperation(
                 dim="x",
-                fraction=0.4,
+                fraction=0.41234567890123456,
                 direction="positive",
             ),
         ),
@@ -11797,6 +11838,26 @@ def _restore_dialog_data() -> xr.DataArray:
                 side="left",
                 coord_func="mean",
                 reducer="sum",
+                keep_attrs=True,
+            ),
+        ),
+        (
+            CoarsenDialog,
+            CoarsenOperation(
+                dim={"x": 2},
+                boundary="trim",
+                side="left",
+                coord_func="mean",
+                reducer="sum",
+                keep_attrs=False,
+            ),
+            CoarsenOperation(
+                dim={"x": 2},
+                boundary="trim",
+                side="left",
+                coord_func="mean",
+                reducer="sum",
+                keep_attrs=False,
             ),
         ),
         (
@@ -11806,14 +11867,14 @@ def _restore_dialog_data() -> xr.DataArray:
         ),
         (
             ThinDialog,
-            ThinOperation(mode="per_dim", factors={"x": 2}),
-            ThinOperation(mode="per_dim", factors={"x": 2}),
+            ThinOperation(mode="per_dim", factors={"x": 2, "y": 1}),
+            ThinOperation(mode="per_dim", factors={"x": 2, "y": 1}),
         ),
         (
             SymmetrizeDialog,
             SymmetrizeOperation(
                 dim="x",
-                center=1.0,
+                center=3.0000000000000004,
                 part="below",
                 mode="full",
                 subtract=True,
@@ -11821,7 +11882,7 @@ def _restore_dialog_data() -> xr.DataArray:
             ),
             SymmetrizeOperation(
                 dim="x",
-                center=1.0,
+                center=3.0000000000000004,
                 part="below",
                 mode="full",
                 subtract=True,
@@ -11852,13 +11913,13 @@ def _restore_dialog_data() -> xr.DataArray:
         ),
         (
             SwapDimsDialog,
-            SwapDimsOperation(mapping={"x": "kx"}),
-            SwapDimsOperation(mapping={"x": "kx"}),
+            SwapDimsOperation(mapping={"y": "y", "x": "kx"}),
+            SwapDimsOperation(mapping={"y": "y", "x": "kx"}),
         ),
         (
             RenameDimsCoordsDialog,
-            RenameDimsCoordsOperation(mapping={"x": "x_new"}),
-            RenameDimsCoordsOperation(mapping={"x": "x_new"}),
+            RenameDimsCoordsOperation(mapping={"x": 2}),
+            RenameDimsCoordsOperation(mapping={"x": 2}),
         ),
         (
             AssignCoordsDialog,
@@ -11867,8 +11928,12 @@ def _restore_dialog_data() -> xr.DataArray:
         ),
         (
             AssignCoordsDialog,
-            AssignCoordsOperation(coord_name="x", values=[0.0, 1.0, 2.0, 3.0]),
-            AssignCoordsOperation(coord_name="x", values=[0.0, 1.0, 2.0, 3.0]),
+            AssignCoordsOperation(
+                coord_name="x", values=(0.0, 1.1234567890123457, 2.0, 3.0)
+            ),
+            AssignCoordsOperation(
+                coord_name="x", values=(0.0, 1.1234567890123457, 2.0, 3.0)
+            ),
         ),
         (
             AssignCoordsDialog,
@@ -11880,18 +11945,27 @@ def _restore_dialog_data() -> xr.DataArray:
             AssignCoord1DOperation(
                 coord_name="kx_new",
                 dim="x",
-                values=[0.0, 0.1, 0.2, 0.3],
+                values=(0.0, 0.12345678901234567, 0.2, 0.3),
             ),
             AssignCoord1DOperation(
                 coord_name="kx_new",
                 dim="x",
-                values=[0.0, 0.1, 0.2, 0.3],
+                values=(0.0, 0.12345678901234567, 0.2, 0.3),
             ),
+        ),
+        (
+            AssignCoordsDialog,
+            DropScalarCoordsOperation(names=("beta", "hv")),
+            DropScalarCoordsOperation(names=("beta", "hv")),
         ),
         (
             AssignAttrsDialog,
-            AssignAttrsOperation(attrs={"note": "edited", "temperature": 20.0}),
-            AssignAttrsOperation(attrs={"note": "edited", "temperature": 20.0}),
+            AssignAttrsOperation(
+                attrs={"note": "old", "temperature": 20.123456789012345}
+            ),
+            AssignAttrsOperation(
+                attrs={"note": "old", "temperature": 20.123456789012345}
+            ),
         ),
     ],
 )
@@ -11901,17 +11975,37 @@ def test_transform_dialog_restore_operation_roundtrip(
     operation: ToolProvenanceOperation,
     expected: ToolProvenanceOperation,
 ) -> None:
-    win = itool(_restore_dialog_data(), execute=False)
+    data = _restore_dialog_data().assign_coords(x=np.arange(4), hv=21.0, beta=2.0)
+    win = itool(data, execute=False)
     qtbot.addWidget(win)
     dialog = dialog_cls(win.slicer_area)
     qtbot.addWidget(dialog)
 
-    dialog.restore_transform_operation(operation)
+    dialog.restore_transform_operation(
+        type(operation).model_validate_json(operation.model_dump_json())
+    )
 
     assert dialog.source_transform_operation() == expected
 
     dialog.close()
     win.close()
+
+
+def test_interpolation_editor_copies_the_exact_recorded_grid(qtbot):
+    data = _restore_dialog_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = InterpolationDialog(win.slicer_area, provenance_edit_mode=True)
+    qtbot.addWidget(dialog)
+    target = [0.0, np.nextafter(1.0, 2.0), 2.0]
+    operation = InterpolationOperation(dim="x", values=target)
+    dialog.restore_transform_operation(operation)
+    dialog.accept()
+    assert dialog.provenance_edit_operations() == [operation]
+    result = _exec_generated_code(
+        f"result = {dialog.make_code()}", {dialog._copy_data_name(): data}
+    )
+    np.testing.assert_array_equal(result["result"].x, target)
 
 
 def test_assign_coords_restore_scalar_offset_requires_coordinate(qtbot) -> None:
@@ -11969,10 +12063,7 @@ def test_squeeze_dialog_restore_operation_roundtrip(qtbot) -> None:
     qtbot.addWidget(dialog)
 
     dialog.restore_transform_operation(SqueezeOperation(drop=True))
-    assert dialog.source_transform_operation() == SqueezeOperation(
-        dims=("scan", "delay"),
-        drop=True,
-    )
+    assert dialog.source_transform_operation() == SqueezeOperation(drop=True)
 
     operation = SqueezeOperation(dims=("scan",), drop=True)
     dialog.restore_transform_operation(operation)
@@ -12046,9 +12137,9 @@ def test_rotation_dialog_restore_operation_roundtrip_and_rejects_wrong_axes(
     qtbot.addWidget(dialog)
     axes = tuple(win.slicer_area.main_image.axis_dims_uniform)
     operation = RotateOperation(
-        angle=12.5,
+        angle=12.345678,
         axes=axes,
-        center=(1.0, 2.0),
+        center=(1.123456789012345, 2.0123456789012345),
         reshape=False,
         order=2,
     )
@@ -12061,6 +12152,52 @@ def test_rotation_dialog_restore_operation_roundtrip_and_rejects_wrong_axes(
             RotateOperation(angle=0.0, axes=("x", "z"), center=(0.0, 0.0))
         )
 
+    recorded = RotateOperation(
+        angle=23.5,
+        axes=(1, 0),
+        center={"y": 2, "x": 1},
+        mode="nearest",
+        cval=-31,
+        prefilter=False,
+    )
+    dialog.restore_transform_operation(recorded)
+    dialog.angle_spin.setValue(17.0)
+    assert dialog.source_transform_operation() == recorded.model_copy(
+        update={"angle": 17.0}
+    )
+
+    dialog.close()
+    win.close()
+
+
+def test_rotation_dialog_copies_and_records_pending_precision(qtbot):
+    data = _restore_dialog_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = RotationDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    axes = tuple(win.slicer_area.main_image.axis_dims)
+    angle = "-12.345678901234567"
+    centers = ("1.2345678901234567", "2.345678901234567")
+    dialog.angle_spin.lineEdit().setText(angle)
+    for spin, text in zip(dialog.center_spins, centers, strict=True):
+        spin.lineEdit().setText(text)
+
+    code = dialog.make_code()
+    expected = erlab.analysis.transform.rotate(
+        data, float(angle), axes, dict(zip(axes, map(float, centers), strict=True))
+    )
+    copied = _exec_generated_code(f"result = {code}", {dialog._copy_data_name(): data})
+    xr.testing.assert_identical(copied["result"], expected)
+    op = dialog.source_transform_operation()
+    assert op.angle == float(angle)
+    assert dialog.angle_spin.text() == angle + "°"
+    assert [spin.text() for spin in dialog.center_spins] == list(centers)
+    xr.testing.assert_identical(op.apply(data), expected)
+    dialog.restore_transform_operation(
+        RotateOperation.model_validate_json(op.model_dump_json())
+    )
+    assert dialog.source_transform_operation() == op
     dialog.close()
     win.close()
 
@@ -12071,15 +12208,23 @@ def test_symmetrize_nfold_restore_accepts_mapping_center(qtbot) -> None:
     dialog = SymmetrizeNfoldDialog(win.slicer_area)
     qtbot.addWidget(dialog)
 
-    dialog.restore_transform_operation(
-        SymmetrizeNfoldOperation(
-            fold=3,
-            axes=("x", "y"),
-            center={"x": 1.0, "y": 2.0},
-        )
+    recorded = SymmetrizeNfoldOperation(
+        fold=3,
+        axes=("x", "y"),
+        center={"x": 1.123456789012345, "y": 2.0123456789012345},
+        mode="grid-constant",
+        cval=-11,
+        prefilter=False,
     )
+    dialog.restore_transform_operation(recorded)
 
-    assert [spin.value() for spin in dialog.center_spins] == [1.0, 2.0]
+    assert [float(spin.text()) for spin in dialog.center_spins] == list(
+        recorded.center.values()
+    )
+    dialog.fold_spin.setValue(4)
+    assert dialog.source_transform_operation() == recorded.model_copy(
+        update={"fold": 4}
+    )
     with pytest.raises(ValueError, match="not currently visible"):
         dialog.restore_transform_operation(
             SymmetrizeNfoldOperation(fold=3, axes=("x", "z"))
@@ -13156,11 +13301,11 @@ def test_itool_coarsen(qtbot, accept_dialog) -> None:
         data.coarsen(x=2, y=4, boundary="trim", side="right", coord_func="min").sum(),
     )
 
-    assert (
-        pyperclip.paste() == "data.coarsen("
-        'x=2, y=4, boundary="trim", side="right", coord_func="min"'
-        ").sum()"
-    )
+    with xr.set_options(keep_attrs=False):
+        xr.testing.assert_identical(
+            _exec_data_fragment(data, pyperclip.paste()),
+            win.slicer_area._data.rename(None),
+        )
     win.close()
 
 
@@ -15022,12 +15167,9 @@ def test_itool_divide_by_coord(qtbot, accept_dialog) -> None:
     xarray.testing.assert_identical(win.slicer_area._data, expected)
     copied_code = pyperclip.paste()
     assert "data.mesh_current" in copied_code
-    assert ".rename(" not in copied_code
     namespace: dict[str, typing.Any] = {"data": data.copy(deep=True)}
     exec(f"result = {copied_code}", {}, namespace)  # noqa: S102
-    xarray.testing.assert_identical(
-        namespace["result"].rename(None), expected.rename(None)
-    )
+    xarray.testing.assert_identical(namespace["result"], expected)
 
     win.close()
 
@@ -15167,7 +15309,9 @@ def test_itool_divide_by_coord_nonuniform_generated_code(qtbot, accept_dialog) -
     assert "x_idx" not in display_code
     namespace = {"data": data.copy(deep=True)}
     exec(display_code, {}, namespace)  # noqa: S102
-    xarray.testing.assert_identical(namespace["derived"], (data / data.mesh_current))
+    xarray.testing.assert_identical(
+        namespace["derived"], (data / data.mesh_current).rename(data.name)
+    )
 
     win.close()
 
@@ -15348,6 +15492,125 @@ def test_gaussian_filter_restore_skips_unknown_dimensions(qtbot) -> None:
     assert not dialog.dim_checks["y"].isChecked()
     assert dialog.sigma_spins["x"].value() == pytest.approx(2.0)
 
+    dialog.close()
+    win.close()
+
+
+def test_gaussian_filter_editor_keeps_recorded_arguments(qtbot):
+    data = xr.DataArray(
+        np.arange(25.0).reshape(5, 5),
+        dims=("x", "y"),
+        coords={"x": np.arange(5.0), "y": np.arange(5.0)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = GaussianFilterDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    recorded = GaussianFilterOperation(
+        sigma=(1, 2), order=(1, 0), radius=(2, 3), mode="constant", cval=-13
+    )
+    dialog.restore_filter_operation(recorded)
+    assert dialog.filter_operation() == recorded
+    dialog.sigma_spins["x"].setValue(0.5)
+    updated = recorded.model_copy(update={"sigma": {"x": 0.5, "y": 2.0}})
+    assert dialog.filter_operation() == updated
+    xr.testing.assert_identical(dialog.process_data(data), updated.apply(data))
+    dialog.close()
+    win.close()
+
+
+@pytest.mark.parametrize("arguments", ["sequences", "mappings", "mixed"])
+def test_gaussian_filter_editor_deselects_axis(qtbot, arguments):
+    dims = ("y", "z", "x")
+    data = xr.DataArray(
+        np.random.default_rng(4).normal(size=(6, 7, 8)),
+        dims=dims,
+        coords={
+            dim: np.arange(size) for dim, size in zip(dims, (6, 7, 8), strict=True)
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = GaussianFilterDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    order = {"x": 1, "y": 0, "z": 2}
+    mode = {"x": "constant", "y": "wrap", "z": "nearest"}
+    radius = {"x": 3.0, "y": 2.0, "z": 1.0}
+    # The public filter passes positional settings to SciPy in data dimension order.
+    recorded = GaussianFilterOperation(
+        sigma={"x": 1.5, "y": 1.0, "z": 0.7},
+        cval=-13.0,
+        order=tuple(order[d] for d in dims) if arguments == "sequences" else order,
+        mode=mode if arguments == "mappings" else tuple(mode[d] for d in dims),
+        radius=2.0
+        if arguments == "mixed"
+        else (radius if arguments == "mappings" else tuple(radius[d] for d in dims)),
+    )
+    dialog.restore_filter_operation(recorded)
+    dialog.dim_checks["z"].setChecked(False)
+    expected = erlab.analysis.image.gaussian_filter(
+        data,
+        sigma={"x": 1.5, "y": 1.0},
+        cval=-13.0,
+        order={"y": 0, "x": 1},
+        mode={"y": "wrap", "x": "constant"},
+        radius=2.0 if arguments == "mixed" else {"y": 2.0, "x": 3.0},
+    )
+    dialog._preview()
+    xr.testing.assert_identical(win.slicer_area.data, expected)
+    operation = dialog.filter_operation()
+    restored = GaussianFilterOperation.model_validate_json(operation.model_dump_json())
+    xr.testing.assert_identical(restored.apply(data), expected)
+    code = f"result = {dialog.make_code()}"
+    copied = _exec_generated_code(code, {dialog._copy_data_name(): data})
+    xr.testing.assert_identical(copied["result"], expected)
+    dialog.dim_checks["z"].setChecked(True)
+    assert dialog.filter_operation() == recorded
+    dialog.dim_checks["z"].setChecked(False)
+    dialog.accept()
+    xr.testing.assert_identical(win.slicer_area.data, expected)
+    win.close()
+
+
+def test_gaussian_filter_editor_switches_to_a_new_axis(qtbot):
+    data = xr.DataArray(
+        np.random.default_rng(7).normal(size=(7, 9)),
+        dims=("x", "y"),
+        coords={"x": np.arange(7.0), "y": np.arange(9.0) * 2},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = GaussianFilterDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    recorded = GaussianFilterOperation(
+        sigma={"x": 1.0},
+        order=(1,),
+        mode=("constant",),
+        radius=(2.0,),
+        truncate=2.0,
+        cval=13.0,
+    )
+    dialog.restore_filter_operation(recorded)
+    dialog.dim_checks["x"].setChecked(False)
+    assert dialog.filter_operation() is None
+    dialog.dim_checks["y"].setChecked(True)
+    dialog.sigma_spins["y"].setValue(2.5)
+    # The default radius is 2.5 samples before SciPy rounds it to three.
+    expected = erlab.analysis.image.gaussian_filter(
+        data, sigma={"y": 2.5}, truncate=2.0
+    )
+    xr.testing.assert_identical(dialog.process_data(data), expected)
+    dialog.dim_checks["x"].setChecked(True)
+    expected = erlab.analysis.image.gaussian_filter(
+        data,
+        sigma={"x": 1.0, "y": 2.5},
+        order={"x": 1},
+        mode={"x": "constant", "y": "nearest"},
+        radius={"x": 2.0, "y": 6.0},
+        truncate=2.0,
+        cval=13.0,
+    )
+    xr.testing.assert_identical(dialog.process_data(data), expected)
     dialog.close()
     win.close()
 
@@ -15799,8 +16062,6 @@ def test_itool_normalize_filter_copies_code_and_records_display_provenance(
 
     expected = normalize(data, ("x",), 1)
     xarray.testing.assert_identical(win.slicer_area.data, expected)
-    assert ".min(" in pyperclip.paste()
-    assert ".max(" in pyperclip.paste()
     xarray.testing.assert_identical(
         _exec_data_fragment(data, pyperclip.paste()),
         expected,
@@ -15810,8 +16071,6 @@ def test_itool_normalize_filter_copies_code_and_records_display_provenance(
     assert display_code is not None
     code = display_code.display_code()
     assert code is not None
-    assert ".min(" in code
-    assert ".max(" in code
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
     xarray.testing.assert_identical(namespace["derived"], expected)
 

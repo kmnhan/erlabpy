@@ -359,9 +359,9 @@ def test_chain_and_diamond_visit_only_affected_entries(graph, monkeypatch) -> No
     calls.clear()
     plan_input = graph._plan_input
 
-    def visit(binding, *, mode):
+    def visit(binding, **kwargs):
         visits.append(binding)
-        return plan_input(binding, mode=mode)
+        return plan_input(binding, **kwargs)
 
     monkeypatch.setattr(graph, "_plan_input", visit)
     followers_read = []
@@ -774,6 +774,56 @@ def test_auto_coalesces_updates_and_waits_for_auto_off_prerequisites():
         graph.data(graph.entry("E").revision_id), xr.DataArray(280)
     )
     assert not graph.is_stale("E")
+
+
+@pytest.mark.parametrize("drain_while_paused", [False, True])
+def test_auto_pause_retains_latest_input_and_resumes_once(drain_while_paused):
+    callbacks = []
+    graph = ProvenanceGraph(schedule_auto=callbacks.append)
+    graph.add_source("A", xr.DataArray(1))
+    b0 = graph.derive("B", Recipe.bind(Scale(2), Follow("A")), auto=True)
+    graph.replace("A", Recipe.bind(Scale(10), Follow("A")))
+    assert len(callbacks) == 1
+
+    graph.set_auto_paused(True)
+    if drain_while_paused:
+        callbacks.pop()()
+    graph.replace("A", Recipe.bind(Scale(2), Follow("A")))
+    assert len(callbacks) == (0 if drain_while_paused else 1)
+    assert graph.current_revision("B") == b0
+    assert graph.is_stale("B")
+
+    graph.set_auto_paused(False)
+    assert len(callbacks) == 1
+    callbacks.pop()()
+    assert not callbacks
+    assert not graph.is_stale("B")
+    xr.testing.assert_identical(
+        graph.data(graph.current_revision("B")), xr.DataArray(40)
+    )
+    graph.replace("A", Recipe.bind(Scale(3), Follow("A")))
+    assert len(callbacks) == 1
+    callbacks.pop()()
+    xr.testing.assert_identical(
+        graph.data(graph.current_revision("B")), xr.DataArray(120)
+    )
+
+
+def test_checkpoint_reader_owns_sealed_values_after_entry_removal():
+    graph = ProvenanceGraph()
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    revision = graph.prepare_import("A", data, (), live=True)()
+    assert graph.checkpoint_reader(revision) is None
+    graph.derive("B", Recipe.bind(Scale(2), Follow("A")))
+    reader = graph.checkpoint_reader(revision)
+    assert reader is not None
+    graph.remove_entry("B")
+    graph.remove_entry("A")
+    data.values[:] = 99
+    first = reader()
+    xr.testing.assert_identical(first, xr.DataArray([1.0, 2.0], dims="x"))
+    first.values[:] = -1
+    xr.testing.assert_identical(reader(), xr.DataArray([1.0, 2.0], dims="x"))
 
 
 def test_auto_failure_is_isolated_and_retried_on_next_change(graph):
@@ -1354,3 +1404,591 @@ def test_preview_reuses_captured_file_kwargs_without_copying_the_array(tmp_path)
     (_, live), (_, earlier) = graph.revision(c).producer.inputs
     assert live == earlier
     assert graph.data(c).item() == 2
+
+
+def test_edit_shared_ancestor_rebuilds_only_selected_branch(graph):
+    graph.add_source("A", xr.DataArray(2))
+    b = graph.derive("B", Recipe.bind(Scale(3), Follow("A")))
+    c = graph.derive("C", Recipe.bind(Scale(4), Follow("B")))
+    sibling = graph.derive("sibling", Recipe.bind(Scale(5), Follow("B")))
+
+    changed = graph.edit_operation(
+        "C", displayed_revision=c, edited_revision=b, operations=[Scale(7)]
+    )
+    assert graph.data(changed).item() == 56
+    assert graph.entry("B").revision_id == b
+    assert graph.entry("sibling").revision_id == sibling
+    assert graph.follows("C") == {"A"}
+    assert graph.data(b).item() == 6
+    with pytest.raises(RuntimeError, match="changed while editing"):
+        graph.edit_operation(
+            "C", displayed_revision=c, edited_revision=b, operations=[Scale(8)]
+        )
+    graph.replace("A", Recipe.bind(Scale(10), Follow("A")))
+    assert graph.data(graph.refresh("C")).item() == 560
+    assert graph.entry("B").revision_id == b
+
+
+def test_group_edit_replaces_the_chain_and_preserves_other_input_slots(graph):
+    from erlab._provenance import Pin
+
+    graph.add_source("source", xr.DataArray(2))
+    pinned = graph.add_source("offset", xr.DataArray(3))
+    first = graph.derive(
+        "first", Recipe.bind(Add(), Follow("source"), other=Pin(pinned))
+    )
+    last = graph.derive("last", Recipe.bind(Scale(10), Follow("first")))
+    shown = graph.derive(
+        "shown", Recipe.bind(Add(), Follow("last"), other=Follow("first"))
+    )
+
+    class Fail(Scale):
+        def apply(self, data):
+            raise ValueError("invalid edited settings")
+
+    def edit(operations, prefix=(first,)):
+        return graph.edit_operation(
+            "shown",
+            displayed_revision=shown,
+            edited_revision=last,
+            group_prefix=prefix,
+            operations=operations,
+        )
+
+    with pytest.raises(ValueError, match="contiguous"):
+        edit([Add()], prefix=(pinned,))
+    with pytest.raises(ValueError, match="invalid edited settings"):
+        edit([Add(), Fail(1)])
+    assert graph.current_revision("shown") == shown
+
+    # Remove the final scaling operation. The other slot consumes the first
+    # step independently and keeps that binding.
+    changed = edit([Add()])
+    assert graph.data(changed).item() == 10
+    assert graph.current_revision("first") == first
+    assert graph.current_revision("last") == last
+    assert graph.follows("shown") == {"source", "first"}
+    with pytest.raises(RuntimeError, match="changed while editing"):
+        edit([Add(), Scale(4)])
+    graph.replace("offset", Recipe.bind(Scale(2), Follow("offset")))
+    graph.replace("source", Recipe.bind(Scale(2), Follow("source")))
+    assert graph.data(graph.refresh("shown")).item() == 14
+
+
+def test_filter_tracks_displayed_and_unfiltered_consumers(graph):
+    from erlab._provenance import Pin
+
+    original = graph.add_source("A", xr.DataArray(2))
+    shown = graph.derive("shown", Recipe.bind(Scale(3), Follow("A")))
+    raw = graph.derive("raw", Recipe.bind(Scale(3), Follow("A", source=True)))
+    filtered = graph.prepare_import(
+        "A", xr.DataArray(10), (Recipe.bind(Scale(5), Pin(original)),), filtered=True
+    )()
+    assert graph.is_stale("shown")
+    assert not graph.is_stale("raw")
+    assert graph.entry("raw").revision_id == raw
+    assert graph.next_inputs("raw") == (("data", original),)
+    assert graph.next_inputs("shown") == (("data", filtered),)
+    graph.reload_entries(["shown", "raw"])
+    assert graph.data(graph.entry("shown").revision_id).item() == 30
+    assert graph.data(graph.entry("raw").revision_id).item() == 6
+    assert graph.entry("shown").revision_id != shown
+    graph.remove_entry("A")
+    assert graph.data(graph.reload("raw")).item() == 6
+    assert graph.data(graph.reload("shown")).item() == 30
+    graph.remove_entry("shown")
+    graph.remove_entry("raw")
+    assert not graph.revision_ids
+    assert not graph.is_closed("A")
+
+
+def test_transposed_filtered_source_follows_refresh_duplicate_and_close(graph):
+    from erlab._provenance import EarlierStep
+    from erlab.interactive.imagetool._provenance._operations import TransposeOperation
+
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    graph.add_source("input", data)
+    base = graph.derive("view", Recipe.bind(Scale(2), Follow("input")))
+    graph.prepare_import(
+        "view",
+        (data * 10).T,
+        (
+            Recipe(Scale(5), (("data", EarlierStep(base)),), view_role="filter"),
+            Recipe(
+                TransposeOperation(dims=("y", "x")),
+                (("data", Follow("view")),),
+                view_role="layout",
+            ),
+        ),
+    )()
+    source = Follow("view", source=True)
+    graph.derive("consumer", Recipe.bind(Scale(3), source))
+    graph.replace("input", Recipe.bind(Scale(2), Follow("input")))
+    xr.testing.assert_identical(graph.data(graph.refresh("consumer")), (data * 12).T)
+    xr.testing.assert_identical(
+        graph.data(graph.current_revision("view")), (data * 20).T
+    )
+    assert graph.revision(graph.current_revision("consumer")).producer.inputs == (
+        ("data", graph.followed_revision(source)),
+    )
+    graph.duplicate_entries({"view": "copy", "consumer": "copy_consumer"})
+    copied = Follow("copy", source=True)
+    assert graph.followed_revision(copied) != graph.followed_revision(source)
+    graph.remove_entry("copy")
+    xr.testing.assert_identical(
+        graph.data(graph.reload("copy_consumer")), (data * 12).T
+    )
+
+
+def test_installed_conversion_follows_the_pending_recipe():
+    from contextlib import nullcontext
+
+    from erlab._provenance import EarlierStep, Pin
+    from erlab.interactive.imagetool._provenance._operations._coordinates import (
+        ImageToolInputOperation,
+    )
+
+    def convert(_uid, key, data):
+        if data.dtype.kind == "i":
+            return Recipe.bind(
+                ImageToolInputOperation(cast_float64=True), EarlierStep(key)
+            )
+        return None
+
+    graph = ProvenanceGraph(install=lambda *_: nullcontext({}), installed_step=convert)
+    old = graph.add_source("A", xr.DataArray(1))
+    graph.add_source("B", xr.DataArray(11))
+    graph.add_source("result", xr.DataArray(0))
+    displayed = graph.prepare_import(
+        "result",
+        None,
+        (Recipe.bind(Scale(2), Pin(old)),),
+        next_recipe=Recipe.bind(Scale(3), Follow("B")),
+    )()
+    shown = graph.data(displayed)
+    assert shown.dtype == np.float64
+    assert shown.item() == 2
+    assert graph.is_stale("result")
+    refreshed = graph.data(graph.refresh("result"))
+    assert refreshed.dtype == np.float64
+    assert refreshed.item() == 33
+
+
+def test_worker_owns_its_captured_input_and_completed_output(graph):
+    data = xr.DataArray([1.0, 2.0], attrs={"sample": "original"})
+    key = graph.add_source("A", data)
+    recipe = Recipe.bind(Scale(factor=3), Follow("A"))
+    task = graph.capture_worker("B", recipe, lambda op, value: op.apply(value))
+    with pytest.raises(ValueError, match="no completed calculation"):
+        graph.retain_completed(task)
+    task.data.attrs.clear()
+    returned = task.run()
+    returned.data = np.zeros(2)
+    returned.attrs["other"] = True
+    with pytest.raises(RuntimeError, match="already completed"):
+        task.run()
+    result = graph.retain_completed(task)
+    assert graph.revision(result.revision_id).producer.inputs == (("data", key),)
+    xr.testing.assert_identical(result.calculated_data, data * 3)
+
+
+def test_prepared_publication_rejects_changed_input(graph):
+    a = graph.add_source("A", xr.DataArray(1))
+    publish = graph.prepare_import(
+        "C", xr.DataArray(2), [Recipe.bind(Scale(2), Follow("A"))]
+    )
+    graph.replace("A", Recipe.bind(Scale(3), Follow("A")))
+    with pytest.raises(RuntimeError, match="changed during publication"):
+        publish()
+    assert "C" not in graph
+    assert a in graph.revision_ids
+
+
+@pytest.mark.parametrize("action", ["change input", "unrelated", "cancel"])
+def test_publication_rechecks_request_while_host_can_roll_back(action):
+    from concurrent.futures import CancelledError
+    from contextlib import contextmanager
+
+    trigger = cancelled = False
+    windows = {}
+
+    @contextmanager
+    def install(entries, values):
+        nonlocal trigger, cancelled
+        before = windows.copy()
+        windows.update({name: values[key].item() for name, key in entries.items()})
+        try:
+            if trigger:
+                trigger = False
+                if action == "cancel":
+                    cancelled = True
+                else:
+                    target = "A" if action == "change input" else "other"
+                    graph.prepare_import(target, xr.DataArray(3), ())()
+            yield {}
+        except Exception:
+            windows.clear()
+            windows.update(before)
+            raise
+
+    graph = ProvenanceGraph(install=install)
+    graph.add_source("A", xr.DataArray(1))
+    initial = graph.derive("B", Recipe.bind(Scale(2), Follow("A")))
+    graph.prepare_import("A", xr.DataArray(2), ())()
+    trigger = True
+    if action == "unrelated":
+        updated = graph.refresh("B")
+        assert windows["B"] == graph.data(updated).item() == 4
+        assert not graph.is_stale("B")
+    else:
+        with pytest.raises(CancelledError if action == "cancel" else RuntimeError):
+            graph.refresh("B", is_cancelled=lambda: cancelled)
+        assert windows["B"] == 2
+        assert graph.current_revision("B") == initial
+        assert graph.is_stale("B")
+        if action == "change input":
+            assert graph.data(graph.refresh("B")).item() == 6
+
+
+def test_lazy_file_checkpoint_rejects_changed_bytes(tmp_path):
+    import dask.array as da
+    from dask import delayed
+
+    path = tmp_path / "mutable.npy"
+    original = np.arange(8, dtype=np.float64)
+    np.save(path, original)
+    reads = []
+
+    @delayed
+    def read_block(index):
+        reads.append(index)
+        return np.load(path)[index : index + 2]
+
+    values = da.concatenate(
+        [
+            da.from_delayed(read_block(i), shape=(2,), dtype="float64")
+            for i in range(0, 8, 2)
+        ]
+    )
+    data = xr.DataArray(values, dims="x")
+    data.encoding["source"] = path
+    graph = ProvenanceGraph()
+    key = graph.prepare_import("source", data, (), live=True)()
+    assert not reads
+    retained = graph.data(key)
+    assert not reads
+    np.testing.assert_array_equal(retained[:2].values, original[:2])
+    assert reads == [0]
+    np.save(path, original + 20)
+    with pytest.raises(OSError, match=r"Recorded lazy input .* has changed"):
+        _ = retained[:2].values
+
+
+def test_lazy_file_guard_covers_values_when_coordinate_is_already_guarded(tmp_path):
+    import dask.array as da
+
+    from erlab._provenance._records import capture_display_data
+
+    path = tmp_path / "source.bin"
+    path.write_bytes(b"original")
+    coordinate = capture_display_data(
+        xr.DataArray(da.arange(4, chunks=2), dims="x"), source_path=str(path)
+    )
+    data = xr.DataArray(
+        da.ones(4, chunks=2), dims="x", coords={"aux": ("x", coordinate.data)}
+    )
+    recorded = capture_display_data(data, source_path=str(path))
+    np.testing.assert_array_equal(recorded.data.compute(), np.ones(4))
+    path.write_bytes(b"changed")
+    with pytest.raises(OSError, match="unavailable or has changed"):
+        recorded.data.compute()
+
+
+def test_auto_retries_if_installation_error_belongs_to_a_superseded_input():
+    from contextlib import contextmanager
+
+    update = False
+    callbacks = []
+
+    @contextmanager
+    def install(_entries, _values):
+        nonlocal update
+        if update:
+            update = False
+            graph.prepare_import("A", xr.DataArray(3), ())()
+            raise ValueError("Failed to install the superseded result")
+        yield {}
+
+    graph = ProvenanceGraph(install=install, schedule_auto=callbacks.append)
+    graph.add_source("A", xr.DataArray(1))
+    initial = graph.derive("B", Recipe.bind(Scale(2), Follow("A")), auto=True)
+    graph.prepare_import("A", xr.DataArray(2), ())()
+    update = True
+    callbacks.pop()()
+    assert graph.current_revision("B") == initial
+    assert graph.is_stale("B")
+    assert graph.auto_error("B") is None
+    callbacks.pop()()
+    assert not graph.is_stale("B")
+    assert graph.data(graph.current_revision("B")).item() == 6
+
+
+def test_captured_lazy_pin_is_not_loaded_on_publication():
+    import dask.array as da
+    from dask import delayed
+
+    from erlab._provenance import Pin
+    from erlab._provenance._records import capture_display_data
+    from erlab.interactive.imagetool._provenance._operations import IselOperation
+
+    reads = []
+
+    def chunk(index):
+        reads.append(index)
+        return np.array([index], dtype=float)
+
+    source = xr.DataArray(
+        da.concatenate(
+            [
+                da.from_delayed(delayed(chunk)(i), shape=(1,), dtype=float)
+                for i in range(16)
+            ]
+        ),
+        dims="x",
+    )
+    pin = capture_display_data(source)
+    selected = pin.isel(x=3).compute()
+    assert reads == [3]
+    graph = ProvenanceGraph()
+    key = graph.prepare_import(
+        "B",
+        selected,
+        [Recipe.bind(IselOperation(kwargs={"x": 3}), Pin("old"))],
+        checkpoints={"old": ("A", pin)},
+    )()
+    assert reads == [3]
+    del source
+    xr.testing.assert_identical(graph.data(key), selected)
+    xr.testing.assert_equal(
+        graph.data("old").compute(), xr.DataArray(np.arange(16.0), dims="x")
+    )
+
+
+def test_live_frame_copy_is_elided_only_for_immutable_backing():
+    from erlab._provenance import Pin
+    from erlab.interactive.imagetool._provenance._operations import IselOperation
+
+    parent = np.arange(12)
+    mutable_view = parent.view()
+    mutable_view.flags.writeable = False
+    immutable = np.frombuffer(parent.tobytes(), dtype=parent.dtype)
+    graph = ProvenanceGraph()
+    for name, buffer, share in (("A", mutable_view, False), ("B", immutable, True)):
+        data = xr.DataArray(buffer, dims="x")
+        revision = graph.prepare_import(name, data, (), live=True)()
+        graph.derive(
+            f"read-{name}", Recipe.bind(IselOperation(kwargs={"x": 1}), Pin(revision))
+        )
+        assert np.shares_memory(buffer, graph._displayed[revision].data) == share
+    parent[:] = 99
+    xr.testing.assert_equal(
+        graph.data(graph.current_revision("A")), xr.DataArray(np.arange(12), dims="x")
+    )
+
+
+def test_live_input_owns_values_coordinates_and_metadata_at_acceptance():
+    values = np.arange(12.0).reshape(3, 4)[:, ::2]
+    offsets = np.arange(3.0)
+    data = xr.DataArray(
+        values,
+        dims=("x", "y"),
+        coords={"offset": ("x", offsets)},
+        attrs={"nested": {"value": 1}},
+    )
+    expected = data.copy(deep=True)
+    graph = ProvenanceGraph()
+    revision = graph.prepare_import("source", data, (), live=True)()
+    values[:] = -1
+    offsets[:] = -2
+    data.attrs["nested"]["value"] = 3
+    xr.testing.assert_identical(graph.data(revision), expected)
+
+
+def test_recorded_code_substitutes_only_the_branch_with_a_changed_lazy_file(tmp_path):
+    import dask.array as da
+    from dask import delayed
+
+    from erlab._provenance import FileLoad
+    from erlab.interactive.imagetool._provenance._model import (
+        FileDataSelection,
+        FileReplayCall,
+    )
+    from erlab.interactive.imagetool._provenance._operations import (
+        ConcatOperation,
+        IselOperation,
+    )
+    from erlab.interactive.imagetool._provenance._recorded_code import full_code
+
+    path = tmp_path / "source.npy"
+    values = np.arange(12).reshape(3, 4)
+    np.save(path, values)
+    data = xr.DataArray(
+        da.from_delayed(delayed(np.load)(path), shape=values.shape, dtype=values.dtype),
+        dims=("scan", "x"),
+    )
+    graph = ProvenanceGraph()
+    file = FileLoad(
+        graph.file_source(str(path)),
+        FileReplayCall(
+            kind="callable",
+            target="xarray.open_dataarray",
+            selection=FileDataSelection(kind="dataarray"),
+        ),
+    )
+    root = graph.prepare_import("A", data, (file,), live=True)()
+    selection = IselOperation(kwargs={"scan": 0})
+    selected = selection.apply(data).compute()
+    child = graph.prepare_import(
+        "B", selected, (Recipe.bind(selection, Follow("A")),)
+    )()
+    other = graph.add_source("C", selected + 2)
+    result = graph.derive(
+        "D",
+        Recipe.bind(
+            ConcatOperation(input_count=2, dim="side", combine_attrs="drop_conflicts"),
+            Follow("C"),
+            other_0=Follow("B"),
+        ),
+    )
+    assert graph.recorded_code_inputs(result) == set()
+    np.save(path, values + 100)
+    assert graph.recorded_code_inputs(result) == {child}
+    assert root not in [
+        node.revision_id for node in graph.recorded_lineage(result, stop_at={child})
+    ]
+    ns = {"selection": graph.data(child), "other_input": graph.data(other)}
+    code = full_code(
+        graph,
+        result,
+        output_name="combined",
+        source_names={child: "selection", other: "other_input"},
+    )
+    exec(code, ns)  # noqa: S102
+    xr.testing.assert_identical(ns["combined"], graph.data(result))
+
+
+def test_pending_input_owns_only_the_revision_it_used(graph):
+    import gc
+
+    original = graph.add_source("source", xr.DataArray(1))
+    holder = Scale(2)
+    graph.capture_input(Follow("source"), "console input", holder)
+    graph.prepare_import("source", xr.DataArray(3), ())()
+    assert graph.captured_input("console input") == original
+    del holder
+    gc.collect()
+    assert graph.captured_input("console input") is None
+    assert not graph.has_revision(original)
+
+
+def test_prepared_result_rejects_unknown_recorded_input_slot(graph):
+    original = graph.add_source("source", xr.DataArray(1))
+    with pytest.raises(ValueError, match="published operation slot"):
+        graph.prepare_import(
+            "result",
+            xr.DataArray(2),
+            (Recipe.bind(Scale(2), Follow("source")),),
+            recorded_inputs={(0, "unknown"): original},
+        )
+    assert "result" not in graph
+
+
+def test_multiple_history_edits_and_restores_publish_together(graph):
+    graph.add_source("source", xr.DataArray(2))
+    graph.add_source("other", xr.DataArray(3))
+    first = graph.derive("first", Recipe.bind(Scale(2), Follow("source")))
+    second = graph.derive("second", Recipe.bind(Scale(3), Follow("other")))
+    before = graph.generation
+    graph.apply_operation_edits(
+        {
+            "first": (
+                first,
+                Recipe.bind(Add(), Follow("other"), other=Follow("other")),
+            ),
+            "second": (second, Recipe.bind(Scale(4), Follow("first"))),
+        }
+    )
+    assert graph.generation == before + 1
+    a, b = (graph.current_revision(uid) for uid in ("first", "second"))
+    assert graph.data(a).item() == 6
+    assert graph.data(b).item() == 24
+    assert graph.revision(b).producer.inputs == (("data", a),)
+    assert graph.follows("first") == {"other"}
+    assert graph.follows("second") == {"first"}
+    origin = graph.current_revision("other")
+    graph.restore_revisions({"first": (a, origin), "second": (b, a)})
+    assert graph.data(graph.current_revision("first")).item() == 3
+    assert graph.data(graph.current_revision("second")).item() == 6
+    assert graph.follows("first") == set()
+    assert graph.follows("second") == {"other"}
+
+
+def test_failed_batch_edit_preserves_all_results(graph):
+    from erlab.interactive.imagetool._provenance._operations import IselOperation
+
+    graph.add_source("input", xr.DataArray([1, 2], dims="x"))
+    first = graph.derive("first", Recipe.bind(Scale(2), Follow("input")))
+    second = graph.derive("second", Recipe.bind(Scale(3), Follow("input")))
+    with pytest.raises(IndexError):
+        graph.apply_operation_edits(
+            {
+                "first": (first, Recipe.bind(Scale(4), Follow("input"))),
+                "second": (
+                    second,
+                    Recipe.bind(IselOperation(kwargs={"x": 9}), Follow("first")),
+                ),
+            }
+        )
+    assert graph.current_revision("first") == first
+    assert graph.current_revision("second") == second
+    assert graph.follows("second") == {"input"}
+
+
+def test_duplicate_subtree_keeps_stale_inputs_and_follows_copied_entries(graph):
+    graph.add_source("root", xr.DataArray(2))
+    used = graph.derive(
+        "child", Recipe.bind(Scale(3), Follow("root")), parent_id="root"
+    )
+    graph.derive("sum", Recipe.bind(Add(), Follow("child"), other=Follow("child")))
+    graph.prepare_import("root", xr.DataArray(5), ())()
+    copies = graph.duplicate_entries({"root": "R", "child": "C", "sum": "S"})
+    assert graph.is_stale("S")
+    assert graph.entry("C").parent_id == "R"
+    assert graph.follows("S") == {"C"}
+    assert graph.revision(graph.current_revision("S")).producer.inputs == (
+        ("data", copies[used]),
+        ("other", copies[used]),
+    )
+    assert graph.data(graph.current_revision("S")).item() == 12
+    graph.prepare_import("R", xr.DataArray(7), ())()
+    graph.promote_entry("C")
+    assert graph.entry("C").parent_id is None
+    assert graph.data(graph.refresh("S")).item() == 42
+    assert graph.data(graph.current_revision("sum")).item() == 12
+
+
+def test_duplicate_during_publication_updates_auto_from_the_copied_source():
+    def duplicate_on_change(entries):
+        if entries == ("root",) and "child" in graph:
+            graph.duplicate_entries({"child": "C", "root": "R"})
+
+    graph = ProvenanceGraph(published=duplicate_on_change)
+    graph.add_source("root", xr.DataArray(2))
+    graph.derive("child", Recipe.bind(Scale(3), Follow("root")), auto=True)
+    graph.prepare_import("root", xr.DataArray(5), ())()
+    copied = graph.current_revision("C")
+    assert graph.revision(copied).producer.inputs == (
+        ("data", graph.current_revision("R")),
+    )
+    assert graph.data(copied).item() == 15
+    assert not graph.is_stale("C")
