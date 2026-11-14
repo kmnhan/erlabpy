@@ -2,15 +2,19 @@ import json
 import logging
 import pathlib
 
+import h5py
 import numpy as np
 import pydantic
 import pytest
 import xarray as xr
 from qtpy import QtCore, QtWidgets
+from xarray.backends import BackendArray
+from xarray.core import indexing
 
 import erlab
 import erlab.interactive._qt_state as qt_state
 import erlab.interactive.imagetool._serialization as imagetool_serialization
+import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._loading as workspace_loading
 from erlab.extensions._models import _script_name_key
@@ -19,6 +23,154 @@ from erlab.interactive.imagetool._provenance._model import ScriptInput, script
 from tests.interactive.imagetool.manager.workspace._support import (
     _workspace_test_file_spec,
 )
+
+
+@pytest.mark.parametrize("layout", ["multiple", "independent_coordinate"])
+@pytest.mark.parametrize("destination", ["path", "handle"])
+def test_workspace_netcdf_fallback_bounds_numeric_reads_and_writes(
+    tmp_path, monkeypatch, layout, destination
+):
+    budget = 128
+    values = np.arange(17 * 19.0).reshape(17, 19)[:, ::-1]
+    reads = []
+    writes = []
+
+    class BoundedBackend(BackendArray):
+        shape = values.shape
+        dtype = values.dtype
+
+        def __getitem__(self, key):
+            return indexing.explicit_indexing_adapter(
+                key, self.shape, indexing.IndexingSupport.BASIC, self._read
+            )
+
+        def _read(self, key):
+            block = values[key]
+            assert block.nbytes <= budget
+            reads.append(key)
+            return block
+
+    variable = xr.Variable(("x", "y"), indexing.LazilyIndexedArray(BoundedBackend()))
+    dataset = xr.Dataset({"data": variable})
+    if layout == "multiple":
+        dataset["other"] = (("y", "x"), values.T)
+    else:
+        dataset = dataset.assign_coords(lookup=("z", np.arange(23)))
+    assert not workspace_arrays._workspace_dataset_can_write_h5py(dataset)
+    monkeypatch.setattr(workspace_arrays, "_WORKSPACE_H5PY_WRITE_BLOCK_BYTES", budget)
+    original_write = h5py.Dataset.__setitem__
+
+    def _write(target, key, data):
+        if target.name in {"/payload/data", "/payload/other"}:
+            assert np.asarray(data).nbytes <= budget
+            writes.append(key)
+        return original_write(target, key, data)
+
+    monkeypatch.setattr(h5py.Dataset, "__setitem__", _write)
+    path = tmp_path / "fallback.itws"
+    if destination == "handle":
+        with h5py.File(path, "w") as handle:
+            workspace_arrays._write_workspace_dataset_group_to_file(
+                handle, "/payload", dataset, compression_mode="none"
+            )
+    else:
+        workspace_arrays._write_workspace_dataset_group_to_file(
+            path, "/payload", dataset, compression_mode="none"
+        )
+    assert len(reads) > 1
+    assert len(writes) > 1
+    with xr.open_dataset(path, group="/payload", engine="h5netcdf") as restored:
+        np.testing.assert_array_equal(restored["data"], values)
+        if layout == "multiple":
+            np.testing.assert_array_equal(restored["other"], values.T)
+
+
+def test_workspace_array_writer_preserves_regions_scalars_and_empty_arrays():
+    target = np.full((4, 5), -1.0)
+    values = np.arange(6.0).reshape(2, 3)
+    writer = workspace_arrays._WorkspaceArrayWriter()
+    writer.add(values, target, (slice(1, 3), slice(2, 5)))
+    np.testing.assert_array_equal(target[1:3, 2:5], values)
+    assert np.count_nonzero(target == -1.0) == 14
+    scalar = np.array(0.0)
+    writer.add(np.array(2.0), scalar)
+    assert scalar.item() == 2.0
+    empty = np.empty((0, 3))
+    writer.add(empty, empty.copy())
+    assert writer.sync() is None
+
+
+def test_workspace_netcdf_fallback_bounds_target_chunks(tmp_path, monkeypatch):
+    import dask.array as da
+
+    budget = 128
+    values = np.arange(17 * 19.0).reshape(17, 19)
+    dataset = xr.Dataset(
+        {"data": (("x", "y"), da.from_array(values, chunks=values.shape))}
+    )
+    monkeypatch.setattr(workspace_arrays, "_WORKSPACE_H5PY_WRITE_BLOCK_BYTES", budget)
+    path = tmp_path / "chunks.itws"
+    workspace_arrays._write_workspace_dataset_group_to_file(
+        path, "/payload", dataset, compression_mode="none"
+    )
+    with h5py.File(path, "r") as saved:
+        data = saved["/payload/data"]
+        assert np.prod(data.chunks) * data.dtype.itemsize <= budget
+        np.testing.assert_array_equal(data, values)
+
+
+def test_workspace_netcdf_fallback_splits_dask_transfers_without_repeated_work(
+    tmp_path, monkeypatch
+):
+    import dask
+    import dask.array as da
+
+    budget = 128
+    bits = np.arange(17 * 19, dtype=np.uint64).reshape(17, 19)
+    bits[0, :4] = [0, 1 << 63, 0x7FF8000000000001, 0xFFF8000000000002]
+    values = bits.view(np.float64).T[:, ::-1]
+    evaluated = []
+    writes = []
+
+    @dask.delayed
+    def _source():
+        evaluated.append(True)
+        return values
+
+    source = da.from_delayed(_source(), shape=values.shape, dtype=values.dtype)
+    dataset = xr.Dataset({"data": (("x", "y"), source)})
+    monkeypatch.setattr(workspace_arrays, "_WORKSPACE_H5PY_WRITE_BLOCK_BYTES", budget)
+    original_write = h5py.Dataset.__setitem__
+
+    def _write(target, key, data):
+        if target.name == "/payload/data":
+            assert np.asarray(data).nbytes <= budget
+            writes.append(key)
+        return original_write(target, key, data)
+
+    monkeypatch.setattr(h5py.Dataset, "__setitem__", _write)
+    path = tmp_path / "dask-transfers.itws"
+    workspace_arrays._write_workspace_dataset_group_to_file(
+        path, "/payload", dataset, compression_mode="none"
+    )
+    assert evaluated == [True]
+    assert len(writes) > 1
+    with h5py.File(path, "r") as saved:
+        assert saved["/payload/data"][()].tobytes() == values.tobytes()
+
+
+def test_workspace_netcdf_chunk_splits_preserve_existing_boundaries(monkeypatch):
+    import dask.array as da
+
+    source = da.zeros((13, 11), chunks=((5, 8), (3, 7, 1)))
+    small = da.zeros((13, 11), chunks=((2, 3, 2, 2, 2, 2), (1,) * 11))
+    dataset = xr.Dataset({"large": (("x", "y"), source), "small": (("x", "y"), small)})
+    monkeypatch.setattr(workspace_arrays, "_WORKSPACE_H5PY_WRITE_BLOCK_BYTES", 128)
+    bounded = workspace_arrays._workspace_bounded_netcdf_dataset(dataset)
+    assert bounded["small"].data is small
+    for original, split in zip(source.chunks, bounded["large"].chunks, strict=True):
+        assert set(np.cumsum(original)).issubset(np.cumsum(split))
+    assert np.prod([max(axis) for axis in bounded["large"].chunks]) * 8 <= 128
 
 
 def test_tool_data_blob_ignores_stale_backend_encoding() -> None:

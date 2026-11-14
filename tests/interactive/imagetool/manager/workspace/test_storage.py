@@ -190,7 +190,9 @@ def test_workspace_shares_variables_without_sharing_owner_metadata(
             np.testing.assert_array_equal(group[name][()], second[name].values)
 
 
-@pytest.mark.parametrize("difference", ["values", "coords", "attrs", "zero", "nan"])
+@pytest.mark.parametrize(
+    "difference", ["values", "coords", "attrs", "zero", "nan", "shape", "dtype", "dims"]
+)
 def test_workspace_sharing_verifies_data_and_metadata_after_hash_match(
     tmp_path, monkeypatch, difference
 ):
@@ -209,8 +211,14 @@ def test_workspace_sharing_verifies_data_and_metadata_after_hash_match(
         second["x"].attrs["units"] = "mm"
     elif difference == "zero":
         second[name].values[0, 0] = -0.0
-    else:
+    elif difference == "nan":
         second[name].values.view(np.uint64)[0, 1] = 0x7FF8000000000001
+    elif difference == "shape":
+        second = second.isel(x=slice(0, 1))
+    elif difference == "dtype":
+        second[name] = second[name].astype(np.float32)
+    else:
+        second = second.rename({"x": "xx"})
     monkeypatch.setattr(
         workspace_arrays._WorkspaceDatasetSharing,
         "_key",
@@ -236,7 +244,36 @@ def test_workspace_sharing_verifies_data_and_metadata_after_hash_match(
             assert b[name][()].tobytes() == second[name].values.tobytes()
 
 
-def test_workspace_sharing_does_not_materialize_lazy_arrays():
+def test_workspace_sharing_compares_values_in_bounded_blocks(monkeypatch):
+    values = np.arange(300_000, dtype=np.float32).reshape(300, 1000)[:, ::-1]
+    data = xr.DataArray(
+        values,
+        dims=("x", "y"),
+        coords={"x": np.arange(300), "y": np.arange(1000)},
+        attrs={"units": "counts", "offsets": np.array([0.0, np.nan])},
+    )
+    first = data.to_dataset(name=_persistence_constants.ITOOL_DATA_NAME)
+    second = first.copy(deep=True)
+    original = np.nditer
+    block_sizes = []
+
+    def bounded_iterator(*args, **kwargs):
+        for block in original(*args, **kwargs):
+            block_sizes.append(max(a.nbytes for a in block))
+            yield block
+
+    def no_full_comparison(*args, **kwargs):
+        raise AssertionError("Sharing must not compare whole variable arrays")
+
+    monkeypatch.setattr(np, "nditer", bounded_iterator)
+    monkeypatch.setattr(xr.Variable, "identical", no_full_comparison)
+    assert workspace_arrays._WorkspaceDatasetSharing._equal(first, second)
+    assert block_sizes
+    assert max(block_sizes) <= 1 << 20
+    assert len(block_sizes) > len(first.variables)
+
+
+def test_workspace_sharing_does_not_materialize_lazy_arrays(monkeypatch):
     import dask.array as da
     from dask import delayed
 
@@ -247,6 +284,13 @@ def test_workspace_sharing_does_not_materialize_lazy_arrays():
         da.from_delayed(delayed(_read)(), shape=(2, 3), dtype=float),
         dims=("x", "y"),
         coords={"x": [0, 1], "y": [0, 1, 2]},
+    )
+
+    def no_payload_inspection(_dataset):
+        raise AssertionError("Sharing must reject lazy variables before inspection")
+
+    monkeypatch.setattr(
+        workspace_arrays, "_workspace_dataset_can_write_h5py", no_payload_inspection
     )
     assert (
         workspace_arrays._WorkspaceDatasetSharing._key(

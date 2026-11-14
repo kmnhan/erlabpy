@@ -115,6 +115,117 @@ def test_provenance_revision_checkpoints_isolate_data_and_nested_inputs() -> Non
     assert restored.attrs["nested"]["value"] == 1
 
 
+def test_revision_save_snapshot_borrows_values_and_isolates_metadata(monkeypatch):
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"x": [1, 2], "offset": ("y", [3.0, 4.0, 5.0])},
+        attrs={"nested": {"value": 1}},
+    )
+    data.offset.attrs["nested"] = {"value": 2}
+    data.encoding["nested"] = {"value": 3}
+    data.offset.encoding["nested"] = {"value": 4}
+    revision_id = registry.add(data)
+
+    def _no_mutable_copy(_revision_id):
+        raise AssertionError("Saving must borrow the immutable checkpoint")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(registry, "resolve_data", _no_mutable_copy)
+        (write,) = workspace_revisions.revision_object_writes(
+            registry, registry.reachable((revision_id,))
+        )
+    serialized = write.dataset[_persistence_constants.ITOOL_DATA_NAME]
+    saved = registry._checkpoint_data_for_save(revision_id)
+    captured = registry._data[revision_id]
+    assert np.shares_memory(serialized.data, captured.data)
+    assert np.shares_memory(serialized.offset.data, captured.offset.data)
+    assert np.shares_memory(saved.data, captured.data)
+    assert np.shares_memory(saved.offset.data, captured.offset.data)
+    assert not np.shares_memory(saved.data, data.data)
+    saved.attrs["nested"]["value"] = 10
+    saved.offset.attrs["nested"]["value"] = 20
+    saved.encoding["nested"]["value"] = 30
+    saved.offset.encoding["nested"]["value"] = 40
+    assert captured.attrs["nested"]["value"] == 1
+    assert captured.offset.attrs["nested"]["value"] == 2
+    assert captured.encoding["nested"]["value"] == 3
+    assert captured.offset.encoding["nested"]["value"] == 4
+
+    resolved = registry.resolve_data(revision_id)
+    resolved.values[:] = -1
+    resolved.offset.values[:] = -2
+    data.values[:] = -3
+    np.testing.assert_array_equal(saved.values, np.arange(6.0).reshape(2, 3))
+    np.testing.assert_array_equal(saved.offset.values, [3.0, 4.0, 5.0])
+
+
+@pytest.mark.parametrize("release", ["discard", "rebind"])
+def test_revision_save_snapshot_survives_checkpoint_release(tmp_path, release):
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"x": [1, 2], "y": [3, 4, 5]},
+    )
+    revision_id = registry.add(data)
+    writes = workspace_revisions.revision_object_writes(
+        registry, registry.reachable((revision_id,))
+    )
+
+    def _no_read(_path, _group):
+        raise AssertionError("The pending save must retain the captured values")
+
+    if release == "discard":
+        registry.discard_unreachable(())
+    else:
+        registry.bind_checkpoint_source(
+            revision_id,
+            _RevisionCheckpointSource("other.itws", "/checkpoint", _no_read),
+        )
+    assert revision_id not in registry._data
+    gc.collect()
+    path = tmp_path / "captured.itws"
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        workspace_storage._write_workspace_generation(
+            store,
+            workspace_storage._WorkspaceGenerationPlan(_manifest(), writes),
+            compression_mode="none",
+        )
+    with workspace_arrays.open_workspace_dataset(
+        path,
+        workspace_store.WorkspaceStore.object_path(f"revision-{revision_id}"),
+        chunks=None,
+    ) as saved:
+        xr.testing.assert_equal(
+            saved[_persistence_constants.ITOOL_DATA_NAME],
+            data.rename(_persistence_constants.ITOOL_DATA_NAME),
+        )
+
+
+def test_revision_save_copies_file_checkpoint_without_loading():
+    registry = _ProvenanceRevisionStore()
+
+    def _no_read(_path, _group):
+        raise AssertionError("Saving a file checkpoint must not load its values")
+
+    revision_id = registry.add(
+        source=_RevisionCheckpointSource("source.itws", "/checkpoint", _no_read)
+    )
+    (write,) = workspace_revisions.revision_object_writes(
+        registry, registry.reachable((revision_id,))
+    )
+    assert write.dataset is None
+    assert write.source_file == "source.itws"
+    assert write.source_path == "/checkpoint"
+    with pytest.raises(ValueError, match="saved group"):
+        registry._checkpoint_data_for_save(revision_id)
+    metadata_only = registry.add()
+    with pytest.raises(ValueError, match="no data checkpoint"):
+        registry._checkpoint_data_for_save(metadata_only)
+
+
 def test_refresh_retention_preserves_inputs_operation_states_and_temporary_roots():
     registry = _ProvenanceRevisionStore()
     data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))

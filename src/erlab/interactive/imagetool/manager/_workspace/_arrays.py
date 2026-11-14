@@ -6,6 +6,7 @@ import contextlib
 import functools
 import hashlib
 import json
+import math
 import os
 import pathlib
 import threading
@@ -17,7 +18,8 @@ import numpy as np
 import xarray as xr
 from xarray.backends import BackendArray, CachingFileManager, H5NetCDFStore
 from xarray.backends.common import ArrayWriter
-from xarray.core import indexing
+from xarray.core import indexing, utils
+from xarray.namedarray.utils import is_duck_dask_array
 
 import erlab
 from erlab.interactive import _persistence_constants
@@ -46,6 +48,7 @@ from erlab.interactive.imagetool.manager._workspace._format import (
 _WORKSPACE_FILE_LOCKS: dict[str, threading.RLock] = {}
 _WORKSPACE_FILE_LOCKS_LOCK = threading.Lock()
 _WORKSPACE_COMPRESSION_MIN_BYTES = 1 << 20  # 1 MiB
+_WORKSPACE_H5PY_WRITE_BLOCK_BYTES = 16 << 20  # 16 MiB
 
 
 _WORKSPACE_H5PY_DIMENSION_SCALE_ATTRS = frozenset(
@@ -1019,6 +1022,10 @@ def _workspace_h5py_coord_dims_fit(
 def _workspace_h5py_variable_payload(
     variable: xr.Variable, name: typing.Hashable
 ) -> tuple[typing.Any, dict[typing.Hashable, typing.Any], typing.Any] | None:
+    if variable.dtype.kind in "biufcS":
+        return variable, dict(variable.attrs), None
+    if not variable._in_memory:
+        return None
     try:
         if variable.dtype.kind == "M":
             variable = xr.coders.CFDatetimeCoder().encode(variable, name=str(name))
@@ -1344,10 +1351,10 @@ class _WorkspaceDatasetSharing:
 
     @classmethod
     def _key(cls, ds: xr.Dataset) -> bytes | None:
-        if not _workspace_dataset_can_write_h5py(ds) or any(
+        if any(
             not variable._in_memory or variable.dtype.kind not in "biufcSU"
             for variable in ds.variables.values()
-        ):
+        ) or not _workspace_dataset_can_write_h5py(ds):
             return None
         digest = hashlib.sha256()
         for name in sorted(ds.variables, key=str):
@@ -1368,7 +1375,12 @@ class _WorkspaceDatasetSharing:
             return False
         for name, variable in left.variables.items():
             other = right.variables[name]
-            if variable.dtype != other.dtype or not variable.identical(other):
+            if (
+                variable.dims != other.dims
+                or variable.shape != other.shape
+                or variable.dtype != other.dtype
+                or not utils.dict_equiv(variable.attrs, other.attrs)
+            ):
                 return False
             # Iterate together to align blocks even when array strides differ.
             # Compare bytes to preserve signed zero and NaN payloads.
@@ -1399,6 +1411,90 @@ class _WorkspaceDatasetSharing:
         self._datasets.setdefault(key, []).append((path, ds))
 
 
+def _workspace_h5py_bounded_shape(
+    shape: tuple[int, ...], max_elements: int
+) -> tuple[int, ...]:
+    block = [1] * len(shape)
+    for axis in reversed(range(len(shape))):
+        block[axis] = min(shape[axis], max_elements)
+        max_elements //= block[axis]
+    return tuple(block)
+
+
+def _workspace_h5py_create_array(
+    group: typing.Any,
+    name: str,
+    data: np.ndarray | xr.Variable,
+    **kwargs: typing.Any,
+) -> typing.Any:
+    """Write large numeric arrays without a complete contiguous temporary."""
+    if (
+        data.dtype.kind not in "biufc"
+        or data.nbytes <= _WORKSPACE_H5PY_WRITE_BLOCK_BYTES
+    ):
+        values = np.asarray(data.data) if isinstance(data, xr.Variable) else data
+        return group.create_dataset(name, data=values, **kwargs)
+
+    max_elements = max(1, _WORKSPACE_H5PY_WRITE_BLOCK_BYTES // data.dtype.itemsize)
+    requested_chunks = kwargs.get("chunks")
+    if (
+        isinstance(requested_chunks, (tuple, list))
+        and math.prod(requested_chunks) > max_elements
+    ):
+        kwargs["chunks"] = _workspace_h5py_bounded_shape(
+            tuple(requested_chunks), max_elements
+        )
+    dataset = group.create_dataset(name, shape=data.shape, dtype=data.dtype, **kwargs)
+    chunks = dataset.chunks
+    if chunks is not None and math.prod(chunks) > max_elements:
+        # HDF5 also needs a complete chunk buffer. Cap automatic and explicit
+        # chunks before writing any values, including with a small byte budget.
+        chunks = _workspace_h5py_bounded_shape(chunks, max_elements)
+        del group[name]
+        kwargs["chunks"] = chunks
+        dataset = group.create_dataset(
+            name, shape=data.shape, dtype=data.dtype, **kwargs
+        )
+
+    for key in _workspace_h5py_write_slices(data.shape, data.dtype.itemsize, chunks):
+        selected = data[key]
+        values = selected.data if isinstance(selected, xr.Variable) else selected
+        dataset[key] = np.ascontiguousarray(values)
+    return dataset
+
+
+def _workspace_h5py_write_slices(
+    shape: tuple[int, ...], itemsize: int, chunks: tuple[int, ...] | None = None
+) -> Iterator[tuple[slice, ...]]:
+    """Yield bounded tiles, aligned with storage chunks where possible."""
+    if any(size == 0 for size in shape):
+        return
+    max_elements = max(1, _WORKSPACE_H5PY_WRITE_BLOCK_BYTES // itemsize)
+    if chunks is None:
+        block_shape = _workspace_h5py_bounded_shape(shape, max_elements)
+    else:
+        if math.prod(chunks) > max_elements:
+            chunks = _workspace_h5py_bounded_shape(chunks, max_elements)
+        block = list(chunks)
+        remaining = max_elements // math.prod(block)
+        for axis in reversed(range(len(shape))):
+            multiplier = min(
+                (shape[axis] + chunks[axis] - 1) // chunks[axis], remaining
+            )
+            block[axis] *= multiplier
+            remaining //= multiplier
+        block_shape = tuple(block)
+
+    block_counts = tuple(
+        (size + step - 1) // step for size, step in zip(shape, block_shape, strict=True)
+    )
+    for indices in np.ndindex(block_counts):
+        yield tuple(
+            slice(index * step, min((index + 1) * step, size))
+            for index, step, size in zip(indices, block_shape, shape, strict=True)
+        )
+
+
 def _workspace_h5py_create_dataset(
     group: typing.Any,
     name: str,
@@ -1413,7 +1509,7 @@ def _workspace_h5py_create_dataset(
     kwargs = _workspace_h5py_create_kwargs(encoding)
     if dtype is not None:
         kwargs["dtype"] = dtype
-    dataset = group.create_dataset(name, data=data, **kwargs)
+    dataset = _workspace_h5py_create_array(group, name, data, **kwargs)
     for key, value in attrs.items():
         dataset.attrs[key] = value
     return dataset
@@ -1897,9 +1993,10 @@ def _write_workspace_dataset_group_h5py(
                 dim_scales_by_name[dim] = coord_dataset
 
             data_encoding = encoding.get(data_name, {})
-            data_dataset = group.create_dataset(
+            data_dataset = _workspace_h5py_create_array(
+                group,
                 str(data_name),
-                data=np.asarray(data_array.data),
+                data_array.variable,
                 **_workspace_h5py_create_kwargs(data_encoding),
             )
             for dim_index, scale in enumerate(dim_scales):
@@ -1973,8 +2070,72 @@ def _write_workspace_dataset_group_h5py(
                     return False
         except Exception:
             del parent[group_name]
-            return False
+            raise
     return True
+
+
+class _WorkspaceArrayWriter(ArrayWriter):
+    """Bound complete NumPy transfers while retaining xarray's chunked writer."""
+
+    def add(
+        self, source: typing.Any, target: typing.Any, region: typing.Any = None
+    ) -> None:
+        if (
+            region is not None
+            or not isinstance(source, np.ndarray)
+            or source.dtype.kind not in "biufc"
+            or source.nbytes <= _WORKSPACE_H5PY_WRITE_BLOCK_BYTES
+        ):
+            super().add(source, target, region)
+            return
+        for key in _workspace_h5py_write_slices(source.shape, source.dtype.itemsize):
+            target[key] = np.ascontiguousarray(source[key])
+
+
+def _workspace_bounded_netcdf_dataset(ds: xr.Dataset) -> xr.Dataset:
+    """Bound numeric transfers and keep backends lazy through NetCDF preparation."""
+    variables = {}
+    for name, variable in ds.variables.items():
+        if (
+            variable.dtype.kind not in "biufc"
+            or variable.nbytes <= _WORKSPACE_H5PY_WRITE_BLOCK_BYTES
+        ):
+            continue
+        max_elements = max(
+            1, _WORKSPACE_H5PY_WRITE_BLOCK_BYTES // variable.dtype.itemsize
+        )
+        chunks = variable.chunks
+        if chunks is not None:
+            if not is_duck_dask_array(variable.data):
+                continue
+            largest = tuple(max(axis_chunks) for axis_chunks in chunks)
+            if math.prod(largest) <= max_elements:
+                continue
+            limits = _workspace_h5py_bounded_shape(largest, max_elements)
+            # Split each existing chunk separately. This preserves source
+            # boundaries and adds only downstream slices to the source graph.
+            split_chunks = tuple(
+                tuple(
+                    min(limit, size - start)
+                    for size in axis_chunks
+                    for start in range(0, size, limit)
+                )
+                for axis_chunks, limit in zip(chunks, limits, strict=True)
+            )
+            variables[name] = variable.copy(
+                deep=False,
+                data=variable.data.rechunk(split_chunks, method="tasks"),
+            )
+            continue
+        if variable._in_memory:
+            continue
+        # xarray wraps backend indexing before creating the Dask graph. A random
+        # name avoids hashing backend contents during snapshot preparation.
+        variables[name] = variable.chunk(
+            _workspace_h5py_bounded_shape(variable.shape, max_elements),
+            from_array_kwargs={"name": False},
+        )
+    return ds.assign(variables) if variables else ds
 
 
 def _write_workspace_dataset_group_to_file(
@@ -2043,19 +2204,28 @@ def _write_workspace_dataset_group_to_file(
             name: {**encoding.get(name, {}), "_FillValue": None}
             for name in ds.variables
         }
-        if not isinstance(fname, h5py.File):
-            ds.to_netcdf(
-                fname,
-                mode="a",
-                engine="h5netcdf",
-                group=f"/{group_path.strip('/')}",
-                invalid_netcdf=True,
-                encoding=netcdf_encoding,
-            )
-            return
-
+        for name, variable in ds.variables.items():
+            if variable.dtype.kind not in "biufc" or variable.nbytes == 0:
+                continue
+            variable_encoding = netcdf_encoding[name]
+            chunksizes = variable_encoding.get("chunksizes")
+            if chunksizes is None and "compression" in variable_encoding:
+                chunksizes = variable.shape
+            if (
+                chunksizes is not None
+                and math.prod(chunksizes) * variable.dtype.itemsize
+                > _WORKSPACE_H5PY_WRITE_BLOCK_BYTES
+            ):
+                variable_encoding["chunksizes"] = _workspace_h5py_bounded_shape(
+                    chunksizes,
+                    max(
+                        1, _WORKSPACE_H5PY_WRITE_BLOCK_BYTES // variable.dtype.itemsize
+                    ),
+                )
+        ds = _workspace_bounded_netcdf_dataset(ds)
+        source_path = fname.filename if isinstance(fname, h5py.File) else fname
         netcdf_file = h5netcdf.File(fname, mode="a", invalid_netcdf=True)
-        active_store = workspace_store.WorkspaceStore.active(fname.filename)
+        active_store = workspace_store.WorkspaceStore.active(source_path)
         store = H5NetCDFStore(
             netcdf_file,
             group=f"/{group_path.strip('/')}",
@@ -2063,11 +2233,11 @@ def _write_workspace_dataset_group_to_file(
             lock=(
                 active_store.lock
                 if active_store is not None
-                else _workspace_file_lock(fname.filename)
+                else _workspace_file_lock(source_path)
             ),
             autoclose=False,
         )
-        writer = ArrayWriter()
+        writer = _WorkspaceArrayWriter()
         try:
             ds.dump_to_store(
                 store,
