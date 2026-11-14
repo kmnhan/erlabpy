@@ -1,4 +1,4 @@
-## Unreleased
+## v3.30.0 (2026-11-14)
 
 ### ✨ Features
 
@@ -34,6 +34,8 @@
 
 ### 🐞 Bug Fixes
 
+- **io.plugins.ssrl52:** load files with extra axis metadata (#676) ([7f8c212](https://github.com/kmnhan/erlabpy/commit/7f8c212200e7941e0446ffa4b967f8fd73161660))
+
 - **manager:** paint reload progress on Windows (#667) ([12f56d8](https://github.com/kmnhan/erlabpy/commit/12f56d8f1994c912efa9306b1610ead219355294))
 
   Fixes an issue where the progress dialog stays blank when reloading a multi-file scan on Windows.
@@ -45,6 +47,12 @@
 - **manager:** preserve figure names when duplicating (#662) ([edecb97](https://github.com/kmnhan/erlabpy/commit/edecb977fd7dd5d956f9fdb47ca5cfa1c4b839cb))
 
   Duplicating a figure now keeps its name with a lowercase copy suffix, such as `Figure 1 copy`.
+
+### ⚡️ Performance
+
+- **analysis.image.ml:** accelerate denoising inference (#674) ([96811db](https://github.com/kmnhan/erlabpy/commit/96811db259f1fe56dcdab486cf4fb2e709cf9364))
+
+  Automatically uses CoreML on Apple silicon or CUDA when it is installed, improving denoising performance.
 
 ### ♻️ Code Refactor
 
