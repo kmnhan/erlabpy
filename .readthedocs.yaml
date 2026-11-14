@@ -22,6 +22,15 @@ build:
       - uv venv "${READTHEDOCS_VIRTUALENV_PATH}"
     install:
       - UV_PROJECT_ENVIRONMENT="${READTHEDOCS_VIRTUALENV_PATH}" uv sync --all-extras --group docs
+    build:
+      html:
+        # RTD saves command output only when the command returns. Dump thread
+        # stacks at 18 minutes, then stop the process group before RTD's timeout.
+        - >-
+          PYTHONUNBUFFERED=1 timeout --kill-after=30s 19m
+          python scripts/rtd_sphinx.py
+          -T -W --keep-going -b html -d docs/_build/doctrees
+          -D language=en docs/source "${READTHEDOCS_OUTPUT}/html"
 
 # Build documentation in the "docs/" directory with Sphinx
 sphinx:
