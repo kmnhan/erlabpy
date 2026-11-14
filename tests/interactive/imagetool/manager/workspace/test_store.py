@@ -30,6 +30,8 @@ from erlab.interactive.imagetool._provenance._model import (
     selection,
 )
 from erlab.interactive.imagetool._provenance._operations import (
+    AssignAttrsOperation,
+    AssignScalarCoordOperation,
     IselOperation,
     ScriptCodeOperation,
     ShiftFromInputOperation,
@@ -113,6 +115,79 @@ def test_provenance_revision_checkpoints_isolate_data_and_nested_inputs() -> Non
     restored = rollback.resolve_data(first)
     np.testing.assert_array_equal(restored.values, np.arange(4.0))
     assert restored.attrs["nested"]["value"] == 1
+
+
+@pytest.mark.parametrize("file_backed", [False, True])
+def test_metadata_revision_shares_protected_values(file_backed) -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 4),
+        dims=("x", "y", "z"),
+        coords={"x": [1, 2], "offset": ("y", [1.0, 2.0, 3.0]), "temperature": 10.0},
+        attrs={"nested": {"value": 1}},
+    )
+    data.x.attrs["nested"] = {"value": 2}
+    data.encoding["nested"] = {"value": 3}
+    original = data.copy(deep=True)
+    source_revision = (
+        registry.add(
+            source=_RevisionCheckpointSource(
+                "saved.itws", "checkpoint", lambda *_args: data
+            )
+        )
+        if file_backed
+        else registry.add(data)
+    )
+    operations = (
+        AssignAttrsOperation(attrs={"sample": "test"}),
+        AssignScalarCoordOperation(coord_name="temperature", value=20.0),
+    )
+    expected = data.assign_attrs(sample="test").assign_coords(temperature=20.0)
+    expected = expected.transpose("z", "x", "y").copy(deep=True)
+    revision = registry.add_metadata_edit(
+        source_revision,
+        expected,
+        operations,
+        full_data(*operations),
+        source_owner_uid="test",
+    )
+    source_checkpoint = registry._data[source_revision]
+    checkpoint = registry._data[revision]
+    xr.testing.assert_identical(checkpoint, expected)
+    assert np.shares_memory(checkpoint.data, source_checkpoint.data)
+    assert np.shares_memory(checkpoint.offset.data, source_checkpoint.offset.data)
+    assert not np.shares_memory(checkpoint.data, data.data)
+    checkpoint.attrs["nested"]["value"] = 4
+    checkpoint.x.attrs["nested"]["value"] = 5
+    checkpoint.encoding["nested"]["value"] = 6
+    xr.testing.assert_identical(source_checkpoint, original)
+    assert source_checkpoint.x.attrs["nested"]["value"] == 2
+    assert source_checkpoint.encoding["nested"]["value"] == 3
+    resolved = registry.resolve_data(revision)
+    resolved.values[...] = -1.0
+    data.values[...] = -2.0
+    np.testing.assert_array_equal(checkpoint.values, expected.values)
+
+
+@pytest.mark.parametrize("invalid", ["empty", "value_operation", "shape", "dtype"])
+def test_metadata_revision_rejects_invalid_checkpoint(invalid) -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    source_revision = registry.add(data)
+    operations = (AssignAttrsOperation(attrs={"sample": "test"}),)
+    if invalid == "empty":
+        operations = ()
+    elif invalid == "value_operation":
+        operations = (IselOperation(),)
+    elif invalid == "shape":
+        data = data.isel(x=slice(1))
+    else:
+        data = data.astype(np.float32)
+    with pytest.raises(ValueError, match="Metadata"):
+        registry.add_metadata_edit(
+            source_revision, data, operations, full_data(), source_owner_uid="test"
+        )
+    assert registry.revision_ids == {source_revision}
 
 
 def test_revision_save_snapshot_borrows_values_and_isolates_metadata(monkeypatch):

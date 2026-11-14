@@ -388,6 +388,84 @@ class _ManagedUnaryTool(erlab.interactive.utils.ToolWindow[_ManagedInputTestStat
         self._data = inputs["data"]
 
 
+@pytest.mark.parametrize("action", ["metadata", "restore"])
+def test_automatic_named_input_refresh_uses_published_checkpoint(
+    qtbot, manager_context, action
+) -> None:
+    from erlab.interactive.imagetool.manager._metadata_editor import (
+        MetadataCellEdit,
+        MetadataField,
+    )
+    from erlab.interactive.imagetool.manager._provenance_edit._controller import (
+        _ValidatedProvenanceEdit,
+    )
+
+    original = xr.DataArray(np.arange(24.0).reshape(2, 3, 4), dims=("x", "y", "z"))
+    with manager_context() as manager:
+        root = erlab.interactive.imagetool.ImageTool(original, _in_manager=True)
+        qtbot.addWidget(root)
+        manager.add_imagetool(root, show=False)
+        parent = manager._node_for_target(0)
+        store = manager._provenance_revisions
+        original_revision = parent.revision_id_for_role("source")
+        edits = {
+            0: (
+                MetadataCellEdit(
+                    MetadataField(kind="attribute", name="sample"), value="test"
+                ),
+            )
+        }
+        if action == "restore":
+            assert manager._metadata_editor.apply_edits(edits)
+        tool = _ManagedUnaryTool(parent.current_source_data())
+        qtbot.addWidget(tool)
+        tool._set_source_auto_update(True)
+        manager.add_childtool(tool, script_inputs={"data": 0}, show=False)
+        parent_revisions = {
+            revision_id
+            for revision_id in store.revision_ids
+            if store.get(revision_id).source_owner_uid == parent.uid
+        }
+        if action == "metadata":
+            assert manager._metadata_editor.apply_edits(edits)
+            expected = original.assign_attrs(sample="test")
+        else:
+            manager._provenance_edit_controller._apply_validated_edit(
+                _ValidatedProvenanceEdit(
+                    node=parent,
+                    scope="display",
+                    data=store.resolve_data(original_revision),
+                    spec=full_data(),
+                    filter_operation=None,
+                    recorded_revision=store.bind(original_revision, None),
+                )
+            )
+            expected = original
+        qtbot.wait_until(lambda: tool.update_calls > 0, timeout=5000)
+        qtbot.wait_until(
+            lambda: not manager._interaction_gate.pending_keys, timeout=5000
+        )
+        assert tool.script_inputs[0].revision_id == parent.current_revision_id
+        xr.testing.assert_identical(tool.tool_data, expected)
+        current_parent_revisions = {
+            revision_id
+            for revision_id in store.revision_ids
+            if store.get(revision_id).source_owner_uid == parent.uid
+        }
+        if action == "metadata":
+            assert current_parent_revisions == {
+                *parent_revisions,
+                parent.current_revision_id,
+            }
+            assert np.shares_memory(
+                store._data[parent.current_revision_id].data,
+                store._data[original_revision].data,
+            )
+        else:
+            assert parent.current_revision_id == original_revision
+            assert current_parent_revisions == parent_revisions
+
+
 class _DeferredManagedSumTool(_ManagedSumTool):
     def __init__(self, data: xr.DataArray) -> None:
         super().__init__(data)

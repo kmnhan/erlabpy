@@ -6,6 +6,7 @@ import builtins
 import importlib
 import pathlib
 import typing
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -31,6 +32,7 @@ from erlab.interactive.imagetool._provenance._graph import (
     LiveInputResolver,
     ReplayGraph,
     ReplayGraphError,
+    ReplayNode,
     _memoized_by_identity,
     _memoized_input_provenance_resolver,
     _reserved_names_from_spec,
@@ -327,14 +329,26 @@ def _execute_replay_graph(
     authorization: object | None = None,
     on_value: Callable[[str, xr.DataArray], None] | None = None,
 ) -> xr.DataArray:
-    replay_cache = {} if cache is None else cache
     values: dict[str, xr.DataArray] = {}
+    live_values: list[xr.DataArray] = []
+    remaining_uses = Counter(parent for node in graph.nodes for parent in node.parents)
+
+    def record_value(node: ReplayNode, data: xr.DataArray) -> None:
+        values[node.key] = data
+        if node.kind == "live_input":
+            live_values.append(data)
+        if on_value is not None:
+            on_value(node.key, data)
+        for parent in node.parents:
+            remaining_uses[parent] -= 1
+            if remaining_uses[parent] == 0 and parent != graph.output_key:
+                values.pop(parent, None)
+        if remaining_uses[node.key] == 0 and node.key != graph.output_key:
+            values.pop(node.key, None)
 
     for node_index, node in enumerate(graph.nodes):
-        if node.cacheable and node.key in replay_cache:
-            values[node.key] = replay_cache[node.key].copy(deep=False)
-            if on_value is not None:
-                on_value(node.key, values[node.key])
+        if cache is not None and node.cacheable and node.key in cache:
+            record_value(node, cache[node.key].copy(deep=False))
             continue
 
         if node.kind == "file_load":
@@ -346,11 +360,8 @@ def _execute_replay_graph(
             continue
         elif node.kind == "live_input":
             data = typing.cast("xr.DataArray", node.payload["data"]).copy(deep=False)
-        elif node.kind == "relay":
+        elif node.kind == "relay" or node.kind == "source_view":
             data = values[node.parents[0]].copy(deep=False)
-        elif node.kind == "source_view":
-            parent_data = values[node.parents[0]]
-            data = parent_data.copy(deep=False)
         elif node.kind == "operation":
             operation = node.payload["operation"]
             if extension_executor is not None and operation.op == "extension_routine":
@@ -448,22 +459,19 @@ def _execute_replay_graph(
                     f"{active_name!r}"
                 )
             data = result
+            del result, namespace
         else:
             raise ReplayGraphError(f"Unknown replay graph node kind {node.kind!r}")
 
-        if node.cacheable:
-            replay_cache[node.key] = data.copy(deep=False)
-        values[node.key] = data
-        if on_value is not None:
-            on_value(node.key, data)
+        if cache is not None and node.cacheable:
+            cache[node.key] = data.copy(deep=False)
+        record_value(node, data)
+        del data
 
     if graph.output_key is None:
         raise ReplayGraphError("Replay graph has no output")
     output = values[graph.output_key]
-    if any(
-        node.kind == "live_input" and _shares_array_memory(output, values[node.key])
-        for node in graph.nodes
-    ):
+    if any(_shares_array_memory(output, live) for live in live_values):
         return output.copy(deep=True)
     return output
 
@@ -816,6 +824,7 @@ def _execute_rebuilt_graph(
     extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None,
     authorize: ExecutionAuthorizer | None,
     capture: Callable[[xr.DataArray, ScriptInput], ScriptInput] | None,
+    collect_resolved: bool,
 ) -> tuple[xr.DataArray, ToolProvenanceSpec, dict[int, xr.DataArray]]:
     boundaries = {
         id(boundary.original): boundary for boundary in graph.input_boundaries
@@ -897,7 +906,8 @@ def _execute_rebuilt_graph(
                             update={"resolved_revision_id": selected.revision_id}
                         )
                     refreshed[identity] = item
-                    resolved_data[identity] = data.copy(deep=True)
+                    if collect_resolved:
+                        resolved_data[identity] = data.copy(deep=True)
                     continue
                 item = item.model_copy(update={"resolved_revision_id": None})
                 if boundary.capture_raw and capture is not None:
@@ -906,7 +916,8 @@ def _execute_rebuilt_graph(
                     item = item.model_copy(
                         update={"resolved_revision_id": item.revision_id}
                     )
-                    resolved_data[identity] = data.copy(deep=True)
+                    if collect_resolved:
+                        resolved_data[identity] = data.copy(deep=True)
                 refreshed[identity] = item
             else:
                 item = refreshed[identity]
@@ -935,7 +946,8 @@ def _execute_rebuilt_graph(
                         else None
                     }
                 )
-                resolved_data[identity] = data.copy(deep=True)
+                if collect_resolved:
+                    resolved_data[identity] = data.copy(deep=True)
 
     output = execute_replay_graph(
         graph,
@@ -978,6 +990,7 @@ def rebuild_script_provenance(
         extension_loader_executor=extension_loader_executor,
         authorize=authorize,
         capture=_capture_input_revision,
+        collect_resolved=False,
     )
     return data, rebuilt
 
@@ -1028,6 +1041,7 @@ def rebuild_script_inputs(
         extension_loader_executor=extension_loader_executor,
         authorize=authorize,
         capture=_capture_input_revision,
+        collect_resolved=True,
     )
     return (
         {item.name: resolved[id(item)] for item in script_inputs},

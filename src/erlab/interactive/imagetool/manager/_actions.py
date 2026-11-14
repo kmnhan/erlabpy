@@ -4,10 +4,13 @@ import contextlib
 import html
 import logging
 import pathlib
+import tempfile
 import traceback
 import typing
 import uuid
 
+import numpy as np
+import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
@@ -54,8 +57,6 @@ from erlab.interactive.imagetool.manager._wrapper import (
 if typing.TYPE_CHECKING:
     import datetime
     from collections.abc import Iterable, Mapping
-
-    import xarray as xr
 
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
@@ -923,48 +924,111 @@ class _ActionsController:
             self._show_batch_error("Batch filter could not be started.", error=exc)
             return False
 
-        for target in targets:
-            try:
-                slicer_area = self._manager.get_imagetool(target).slicer_area
-                if operation is not None:
-                    slicer_area._filter_operation_result_for_data(
+        error_text = "Batch filter failed before changing data."
+        target: int | str | None = None
+        try:
+            with tempfile.TemporaryDirectory(prefix="erlab-filter-") as directory:
+                plan: list[
+                    tuple[
+                        int | str,
+                        xr.DataArray | None,
+                        pathlib.Path | None,
+                        dict[str, typing.Any],
+                        str,
+                    ]
+                ] = []
+                for index, target in enumerate(targets):
+                    slicer_area = self._manager.get_imagetool(target).slicer_area
+                    source_token = self._manager._node_for_target(
+                        target
+                    ).source_snapshot_token
+                    if operation is None:
+                        plan.append((target, None, None, {}, source_token))
+                        continue
+                    filtered = slicer_area._filter_operation_result_for_data(
                         slicer_area._data,
                         operation,
                         tuple(slicer_area.data.dims),
                     )
-            except Exception as exc:
-                self._show_batch_error(
-                    "Batch filter failed before changing data.",
-                    target=target,
-                    error=exc,
-                )
-                return False
+                    if filtered.chunks is not None:
+                        plan.append((target, filtered, None, {}, source_token))
+                        del filtered
+                        continue
 
-        try:
-            for target in targets:
-                slicer_area = self._manager.get_imagetool(target).slicer_area
-                emit_edited = (
-                    operation is not None
-                    or slicer_area._accepted_filter_provenance_operation is not None
-                    or slicer_area._applied_func is not None
-                    or slicer_area.has_active_filter
-                )
+                    path = pathlib.Path(directory) / f"{index}.npy"
+                    np.save(path, filtered.data, allow_pickle=False)
+                    metadata: dict[str, typing.Any] = {
+                        "dims": filtered.dims,
+                        "coords": {
+                            name: coord.variable
+                            for name, coord in filtered.coords.items()
+                        },
+                        "name": filtered.name,
+                        "attrs": filtered.attrs,
+                        "encoding": dict(filtered.encoding),
+                    }
+                    plan.append((target, None, path, metadata, source_token))
+                    del filtered
+                    # Validate the staged header and file size without reading all
+                    # values. Close the mapping before cleanup, including on Windows.
+                    staged_values = np.load(path, mmap_mode="r", allow_pickle=False)
+                    staged_values._mmap.close()
+                    del staged_values
 
-                def _apply_filter(
-                    *,
-                    area: ImageSlicerArea = slicer_area,
-                    op: ToolProvenanceOperation | None = operation,
-                    edited: bool = emit_edited,
-                ) -> None:
-                    area.apply_filter_operation(op, emit_edited=edited)
+                error_text = "An error occurred while applying batch filter."
+                for target, filtered, path, metadata, source_token in plan:
+                    slicer_area = self._manager.get_imagetool(target).slicer_area
+                    if (
+                        operation is not None
+                        and self._manager._node_for_target(target).source_snapshot_token
+                        != source_token
+                    ):
+                        # An earlier parent publication can refresh a selected
+                        # child. Its staged result belongs to a different source.
+                        filtered = slicer_area._filter_operation_result_for_data(
+                            slicer_area._data,
+                            operation,
+                            tuple(slicer_area.data.dims),
+                        )
+                    elif path is not None:
+                        filtered = xr.DataArray(
+                            np.load(path, allow_pickle=False),
+                            dims=metadata["dims"],
+                            coords=metadata["coords"],
+                            name=metadata["name"],
+                            attrs=metadata["attrs"],
+                        )
+                        filtered.encoding = metadata["encoding"]
+                    emit_edited = (
+                        operation is not None
+                        or slicer_area._accepted_filter_provenance_operation is not None
+                        or slicer_area._applied_func is not None
+                        or slicer_area.has_active_filter
+                    )
 
-                slicer_area.record_history_mutation(
-                    None,
-                    _apply_filter,
-                )
+                    def _apply_filter(
+                        *,
+                        area: ImageSlicerArea = slicer_area,
+                        op: ToolProvenanceOperation | None = operation,
+                        result: xr.DataArray | None = filtered,
+                        edited: bool = emit_edited,
+                    ) -> None:
+                        if op is None:
+                            area.apply_filter_operation(None, emit_edited=edited)
+                            return
+                        area._apply_filter_result(
+                            typing.cast("xr.DataArray", result),
+                            area._filter_func_from_operation(op),
+                            operation=op,
+                            accept=True,
+                            emit_edited=edited,
+                        )
+
+                    slicer_area.record_history_mutation(None, _apply_filter)
         except Exception as exc:
             self._show_batch_error(
-                "An error occurred while applying batch filter.",
+                error_text,
+                target=target,
                 error=exc,
             )
             return False

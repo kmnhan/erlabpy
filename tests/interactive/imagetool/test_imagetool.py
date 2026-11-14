@@ -16145,6 +16145,245 @@ def test_gaussian_filter_restore_skips_unknown_dimensions(qtbot) -> None:
     win.close()
 
 
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_filter_result_shares_committed_buffer(qtbot, monkeypatch, dtype) -> None:
+    data = xr.DataArray(np.arange(20, dtype=dtype).reshape(4, 5), dims=("x", "y"))
+    operation = NormalizeOperation(dims=("x",), mode="min")
+    expected = operation.apply(data)
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    monkeypatch.setattr(
+        area,
+        "_owned_values_copy",
+        lambda _data: pytest.fail("Filtering must not clone the old source buffer"),
+    )
+
+    area.apply_filter_operation(operation)
+    assert area._accepted_filter_data is not None
+    assert np.shares_memory(area.data.data, area._accepted_filter_data.data)
+    assert not np.shares_memory(area.data.data, data.data)
+    xarray.testing.assert_identical(area._data, data)
+
+    replacement = np.full(data.shape, 3.0, dtype=dtype)
+    area.update_values(replacement)
+    replacement[:] = -1.0
+    np.testing.assert_array_equal(area.data.data, 3.0)
+    xarray.testing.assert_identical(area.displayed_data, expected)
+    assert not np.shares_memory(area.data.data, area._accepted_filter_data.data)
+    win.close()
+
+
+def test_filter_result_preserves_renderer_dtype(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(20, dtype=np.float32).reshape(4, 5),
+        dims=("x", "y"),
+        coords={"x": np.arange(4), "y": np.arange(5)},
+    )
+    expected = data.astype(np.float64) + 0.123456789
+    monkeypatch.setattr(GaussianFilterOperation, "apply", lambda _op, _data: expected)
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+
+    area.apply_filter_operation(GaussianFilterOperation(sigma={"x": 1.0}))
+
+    assert area.data.dtype == np.float32
+    assert area.displayed_data.dtype == np.float64
+    xarray.testing.assert_identical(area.data, expected.astype(np.float32))
+    xarray.testing.assert_identical(area.displayed_data, expected)
+    win.close()
+
+
+@pytest.mark.parametrize("preview", [False, True])
+def test_update_values_reuses_private_renderer_buffer(qtbot, preview) -> None:
+    data = xr.DataArray(np.arange(20.0).reshape(4, 5), dims=("x", "y"))
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    if preview:
+        area.apply_func(lambda source: source + 1.0, update=False)
+    else:
+        area.update_values(np.full(data.shape, 1.0), update=False)
+    renderer = area.data.data
+
+    for value in (2.0, 3.0):
+        replacement = np.full(data.shape, value)
+        area.update_values(replacement, update=False)
+        replacement[:] = -1.0
+        assert area.data.data is renderer
+        np.testing.assert_array_equal(area.data.data, value)
+        xarray.testing.assert_identical(area.displayed_data, data)
+        assert area._applied_filter_data is None
+    win.close()
+
+
+def test_filter_result_detaches_source_alias(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(20.0).reshape(4, 5),
+        dims=("x", "y"),
+        coords={"x": np.arange(4), "y": np.arange(5)},
+    )
+    expected = data.copy(deep=True)
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+
+    win.slicer_area.apply_filter_operation(NormalizeOperation())
+    data.values[:] = -1.0
+
+    xarray.testing.assert_identical(win.slicer_area.data, expected)
+    xarray.testing.assert_identical(win.slicer_area.displayed_data, expected)
+    win.close()
+
+
+def test_update_values_detaches_readonly_preview(qtbot) -> None:
+    data = xr.DataArray(np.arange(20.0).reshape(4, 5), dims=("x", "y"))
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    area.apply_func(
+        lambda source: source.copy(data=np.broadcast_to(1.0, source.shape)),
+        update=False,
+    )
+
+    area.update_values(np.full(data.shape, 2.0), update=False)
+
+    assert area.data.data.flags.writeable
+    np.testing.assert_array_equal(area.data.data, 2.0)
+    xarray.testing.assert_identical(area.displayed_data, data)
+    win.close()
+
+
+@pytest.mark.parametrize("invalidate", [None, "source", "values"])
+def test_filter_preview_accept_reuses_result(
+    qtbot, monkeypatch, accept_dialog, invalidate
+) -> None:
+    data = xr.DataArray(np.arange(20.0).reshape(4, 5), dims=("x", "y"))
+    operation = GaussianFilterOperation(sigma={"x": 1.0})
+    apply = GaussianFilterOperation.apply
+    calls: list[None] = []
+
+    def _apply(op, source):
+        calls.append(None)
+        return apply(op, source)
+
+    monkeypatch.setattr(GaussianFilterOperation, "apply", _apply)
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    preview_renderers: list[np.ndarray] = []
+
+    def _preview(dialog: GaussianFilterDialog) -> None:
+        dialog.dim_checks["x"].setChecked(True)
+        dialog.sigma_spins["x"].setValue(1.0)
+        dialog._preview()
+        preview_renderers.append(area.data.data)
+        if invalidate == "source":
+            area.replace_source_data(data + 10.0)
+        elif invalidate == "values":
+            area.update_values(np.zeros(data.shape))
+
+    accept_dialog(win.mnb._gaussian_filter, pre_call=_preview)
+
+    assert len(calls) == (1 if invalidate is None else 2)
+    if invalidate is None:
+        assert area.data.data is preview_renderers[0]
+    expected = apply(operation, data + 10.0 if invalidate == "source" else data)
+    xarray.testing.assert_identical(area.displayed_data, expected)
+    assert area._accepted_filter_data is not None
+    assert np.shares_memory(area.data.data, area._accepted_filter_data.data)
+    win.close()
+
+
+def test_filter_preview_accept_does_not_recast_renderer(
+    qtbot, monkeypatch, accept_dialog
+) -> None:
+    data = xr.DataArray(np.arange(20, dtype=np.float32).reshape(4, 5), dims=("x", "y"))
+    expected = data.astype(np.float64) + 0.123456789
+    monkeypatch.setattr(GaussianFilterOperation, "apply", lambda _op, _data: expected)
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    casts: list[None] = []
+    astype = xr.DataArray.astype
+
+    def _astype(array, dtype, *args, **kwargs):
+        if array.shape == data.shape and np.dtype(dtype) == np.float32:
+            casts.append(None)
+        return astype(array, dtype, *args, **kwargs)
+
+    monkeypatch.setattr(xr.DataArray, "astype", _astype)
+
+    def _preview(dialog: GaussianFilterDialog) -> None:
+        dialog.dim_checks["x"].setChecked(True)
+        dialog._preview()
+
+    accept_dialog(win.mnb._gaussian_filter, pre_call=_preview)
+
+    assert len(casts) == 1
+    assert win.slicer_area.data.dtype == np.float32
+    xarray.testing.assert_identical(win.slicer_area.displayed_data, expected)
+    win.close()
+
+
+@pytest.mark.parametrize("replace_source", [False, True])
+def test_filter_preview_cancel_reuses_committed_result(
+    qtbot, monkeypatch, accept_dialog, replace_source
+) -> None:
+    data = xr.DataArray(
+        np.arange(20.0).reshape(4, 5),
+        dims=("x", "y"),
+        coords={"x": np.arange(4), "y": np.arange(5)},
+    )
+    first = GaussianFilterOperation(sigma={"x": 1.0})
+    apply = GaussianFilterOperation.apply
+    expected = apply(first, data)
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitExposed(win)
+    area = win.slicer_area
+    area.add_cursor()
+    area.apply_filter_operation(first)
+    calls: list[None] = []
+    preview_values: list[weakref.ReferenceType] = []
+
+    def _apply(op, source):
+        calls.append(None)
+        result = apply(op, source)
+        preview_values.append(weakref.ref(result.data))
+        return result
+
+    monkeypatch.setattr(GaussianFilterOperation, "apply", _apply)
+
+    def _preview(dialog: GaussianFilterDialog) -> None:
+        dialog.sigma_spins["x"].setValue(2.0)
+        dialog._preview()
+        xarray.testing.assert_identical(area.displayed_data, expected)
+        if replace_source:
+            area.replace_source_data(data + 10.0)
+
+    accept_dialog(
+        win.mnb._gaussian_filter,
+        pre_call=_preview,
+        accept_call=lambda dialog: dialog.reject(),
+    )
+
+    gc.collect()
+    assert len(calls) == (2 if replace_source else 1)
+    assert preview_values[0]() is None
+    if replace_source:
+        expected = apply(first, data + 10.0)
+    xarray.testing.assert_identical(area.data, expected)
+    if replace_source:
+        xarray.testing.assert_identical(area.displayed_data, data + 10.0)
+        assert area._accepted_filter_data is None
+    else:
+        xarray.testing.assert_identical(area.displayed_data, expected)
+        assert area._accepted_filter_data is not None
+        assert np.shares_memory(area.data.data, area._accepted_filter_data.data)
+    win.close()
+
+
 def test_itool_filter_preview_reject_restores_active_filter(qtbot) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),

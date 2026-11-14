@@ -505,6 +505,45 @@ def test_shift(use_dask) -> None:
     assert np.allclose(shifted, expected, equal_nan=True)
 
 
+@pytest.mark.parametrize("order", ["ascending", "descending", "unsorted"])
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_shift_skips_unnecessary_input_copy(order, dtype, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(24, dtype=dtype).reshape(2, 3, 4),
+        dims=("x", "y", "z"),
+        coords={"y": [0.0, 1.0, 2.0]},
+        name="intensity",
+        attrs={"units": "counts"},
+    )
+    data.values[0, 0, 0] = np.nan
+    expected = shift(data, 0.5, along="y", assume_sorted=True)
+    if order == "descending":
+        data = data.isel(y=slice(None, None, -1))
+    elif order == "unsorted":
+        data = data.isel(y=[1, 0, 2])
+    before = data.copy(deep=True)
+    original_apply = xr.apply_ufunc
+    inputs: list[xr.DataArray] = []
+
+    def _check_apply(func, array, *args, **kwargs):
+        inputs.append(array)
+        if order != "unsorted":
+            assert np.shares_memory(array.data, data.data)
+        return original_apply(func, array, *args, **kwargs)
+
+    def _unexpected_sort(*args, **kwargs):
+        pytest.fail("Shift must not use the copying xarray sort path")
+
+    monkeypatch.setattr(xr, "apply_ufunc", _check_apply)
+    monkeypatch.setattr(xr.DataArray, "sortby", _unexpected_sort)
+
+    actual = shift(data, 0.5, along="y")
+
+    assert len(inputs) == 1
+    xr.testing.assert_identical(actual, expected)
+    xr.testing.assert_identical(data, before)
+
+
 def test_shift_coords_ignores_nan_shifts_for_rigid_coordinate_shift() -> None:
     data = xr.DataArray(
         np.arange(6, dtype=float).reshape(2, 3),
@@ -1327,6 +1366,53 @@ def test_symmetrize_average(mode, subtract, expected):
     )
     np.testing.assert_allclose(sym_da.values, expected, rtol=1e-5)
     assert sym_da.name == da.name
+
+
+@pytest.mark.parametrize("descending", [False, True])
+def test_symmetrize_reuses_input_and_reflected_views(descending, monkeypatch) -> None:
+    values = np.array([1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1, 0], dtype=float)
+    data = xr.DataArray(
+        np.broadcast_to(values[None, :, None], (2, 12, 3)).copy(),
+        dims=("batch", "x", "z"),
+        coords={"x": np.arange(-6.0, 6.0)},
+        name="intensity",
+        attrs={"units": "counts"},
+    )
+    if descending:
+        data = data.isel(x=slice(None, None, -1))
+    before = data.copy(deep=True)
+    original_interp = xr.DataArray.interp
+    original_where = xr.DataArray.where
+    interpolated_inputs: list[xr.DataArray] = []
+
+    def _check_interp(array, *args, **kwargs):
+        interpolated_inputs.append(array)
+        assert np.shares_memory(array.data, data.data)
+        return original_interp(array, *args, **kwargs)
+
+    def _unexpected_copy(*args, **kwargs):
+        pytest.fail("Symmetrization must use slices instead of sorting or masking")
+
+    def _check_where(array, *args, **kwargs):
+        assert array.ndim != data.ndim
+        return original_where(array, *args, **kwargs)
+
+    monkeypatch.setattr(xr.DataArray, "interp", _check_interp)
+    monkeypatch.setattr(xr.DataArray, "sortby", _unexpected_copy)
+    monkeypatch.setattr(xr.DataArray, "where", _check_where)
+
+    result = symmetrize(data, "x", mode="valid")
+
+    expected = np.broadcast_to(
+        np.array([3, 5, 7, 9, 10, 10, 9, 7, 5, 3])[None, :, None], (2, 10, 3)
+    )
+    assert len(interpolated_inputs) == 1
+    np.testing.assert_array_equal(result.values, expected)
+    np.testing.assert_array_equal(
+        result.x, np.arange(-4.5, 5.0)[::-1] if descending else np.arange(-4.5, 5.0)
+    )
+    assert result.attrs == data.attrs
+    xr.testing.assert_identical(data, before)
 
 
 def test_symmetrize_non_uniform() -> None:

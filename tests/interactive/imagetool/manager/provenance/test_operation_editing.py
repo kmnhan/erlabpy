@@ -30,6 +30,7 @@ from erlab.interactive.imagetool._provenance._model import (
     _ProvenanceStepRef,
     compose_display_provenance,
     full_data,
+    public_data,
     recipe,
     script,
     selection,
@@ -67,6 +68,10 @@ from erlab.interactive.imagetool._provenance._operations import (
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 from erlab.interactive.imagetool.dialogs import SelectionDialog
 from erlab.interactive.imagetool.manager import fetch, replace_data
+from erlab.interactive.imagetool.manager._metadata_editor import (
+    MetadataCellEdit,
+    MetadataField,
+)
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _controller as provenance_edit_controller,
 )
@@ -88,6 +93,124 @@ from ._common import (
     _manager_replay_file_spec,
     _set_aggregate,
 )
+
+
+@pytest.mark.parametrize("watched", [False, True])
+def test_manager_metadata_history_shares_protected_values(
+    qtbot, monkeypatch, manager_context, watched
+) -> None:
+    source = xr.DataArray(
+        np.arange(120.0).reshape(2, 3, 4, 5),
+        dims=("x", "y", "z", "w"),
+        coords={"temperature": 10.0},
+        attrs={"nested": {"value": 1}},
+        name="scan",
+    )
+    original = source.copy(deep=True)
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda *_args: pytest.fail("Metadata edit failed"),
+    )
+    with manager_context() as manager:
+        if watched:
+            manager._data_watched_update("scan", "watched-uid", source)
+            tool = manager.get_imagetool(0)
+        else:
+            tool = erlab.interactive.imagetool.ImageTool(source, _in_manager=True)
+            manager.add_imagetool(tool, show=False)
+        qtbot.addWidget(tool)
+        node = manager._node_for_target(0)
+        store = manager._provenance_revisions
+        revisions = []
+        expected = original
+        for value in (20.0, 30.0):
+            assert manager._metadata_editor.apply_edits(
+                {
+                    0: (
+                        MetadataCellEdit(
+                            MetadataField(kind="coordinate", name="temperature"),
+                            value=value,
+                        ),
+                        MetadataCellEdit(
+                            MetadataField(kind="attribute", name="sample"),
+                            value=str(value),
+                        ),
+                    )
+                }
+            )
+            expected = expected.assign_coords(temperature=value).assign_attrs(
+                sample=str(value)
+            )
+            xr.testing.assert_identical(node.current_public_data(), expected)
+            checkpoint = store._data[node.current_revision_id]
+            xr.testing.assert_identical(checkpoint, expected)
+            revisions.append((node.current_revision_id, expected))
+        assert len(store.revision_ids) == 3
+        source_revision_id = node.provenance_spec.replay_inputs[0].revision_id
+        captured = store._data[source_revision_id]
+        for revision_id, _expected in revisions:
+            checkpoint = store._data[revision_id]
+            assert np.shares_memory(checkpoint.data, captured.data)
+            assert not np.shares_memory(checkpoint.data, tool.slicer_area._data.data)
+            checkpoint.attrs["nested"]["value"] = 2
+            assert captured.attrs["nested"]["value"] == 1
+            checkpoint.attrs["nested"]["value"] = 1
+        tool.slicer_area._data.values[...] = -1.0
+        xr.testing.assert_identical(store.resolve_data(source_revision_id), original)
+        for revision_id, expected in revisions:
+            record = store.get(revision_id)
+            replayed = manager._provenance_edit_controller._replay_candidate_result(
+                node, "display", record.provenance_spec
+            ).data
+            xr.testing.assert_identical(replayed, expected)
+
+
+def test_recorded_restore_reuses_checkpoint_without_orphan(
+    qtbot, manager_context
+) -> None:
+    original = xr.DataArray(np.arange(24.0).reshape(2, 3, 4), dims=("x", "y", "z"))
+    with manager_context() as manager:
+        tool = erlab.interactive.imagetool.ImageTool(original, _in_manager=True)
+        qtbot.addWidget(tool)
+        manager.add_imagetool(tool, show=False)
+        node = manager._node_for_target(0)
+        store = manager._provenance_revisions
+        original_revision = node.revision_id_for_role("source")
+        operation = AssignAttrsOperation(attrs={"sample": "test"})
+        node.replace_with_detached_data(
+            operation.apply(original),
+            full_data(operation),
+            replay_source_data=original,
+            metadata_operations=(operation,),
+        )
+        source_spec = public_data(QSelAggregationOperation(dims=("x",)))
+        child_tool = erlab.interactive.imagetool.ImageTool(
+            source_spec.apply(node.current_source_data()), _in_manager=True
+        )
+        qtbot.addWidget(child_tool)
+        child_uid = manager.add_imagetool_child(
+            child_tool, 0, show=False, source_spec=source_spec
+        )
+        revision_ids = store.revision_ids
+        edit = provenance_edit_controller._ValidatedProvenanceEdit(
+            node=node,
+            scope="display",
+            data=store.resolve_data(original_revision),
+            spec=full_data(),
+            filter_operation=None,
+            recorded_revision=store.bind(original_revision, None),
+        )
+        manager._provenance_edit_controller._apply_validated_edit(edit)
+        assert store.revision_ids == revision_ids
+        assert node.current_revision_id == original_revision
+        xr.testing.assert_identical(node.current_public_data(), original)
+        child = manager._node_for_target(child_uid)
+        assert child.source_state == "stale"
+        assert child._update_from_parent_source()
+        xr.testing.assert_identical(
+            child.current_public_data(), original.qsel.mean("x")
+        )
 
 
 def test_manager_provenance_native_transform_edit_mode_uses_dialog_operations(

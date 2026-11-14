@@ -18,14 +18,31 @@ from erlab.interactive.imagetool._provenance._model import (
     _normalize_legacy_script_input,
     parse_tool_provenance_spec,
 )
-from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
+from erlab.interactive.imagetool._provenance._operations import (
+    AssignAttrsOperation,
+    AssignScalarCoordOperation,
+    ScriptCodeOperation,
+)
 from erlab.interactive.imagetool._provenance._trust import (
     remap_script_input_provenance,
     script_replay_source_input_names,
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator, Mapping
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+
+    from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
+
+
+def _copy_checkpoint_metadata(data: xr.DataArray) -> xr.DataArray:
+    copied = data.copy(deep=False)
+    for variable in (
+        copied.variable,
+        *(coord.variable for coord in copied.coords.values()),
+    ):
+        variable.attrs = copy.deepcopy(variable.attrs)
+        variable.encoding = copy.deepcopy(variable.encoding)
+    return copied
 
 
 @dataclass(frozen=True)
@@ -211,6 +228,39 @@ class _ProvenanceRevisionStore:
             self._data[revision_id] = protected
         return revision_id
 
+    def add_metadata_edit(
+        self,
+        source_revision_id: str,
+        data: xr.DataArray,
+        operations: Sequence[ToolProvenanceOperation],
+        spec: ToolProvenanceSpec | None,
+        *,
+        source_owner_uid: str,
+    ) -> str:
+        """Capture scalar metadata changes over already protected array values."""
+        if not operations or any(
+            not isinstance(operation, AssignAttrsOperation | AssignScalarCoordOperation)
+            for operation in operations
+        ):
+            raise ValueError("Metadata checkpoints need scalar metadata operations")
+        source = self._captured_data(source_revision_id)
+        if source.sizes != data.sizes or source.dtype != data.dtype:
+            raise ValueError("Metadata edits must preserve array shape and dtype")
+        protected = _copy_checkpoint_metadata(source).transpose(*data.dims)
+        for operation in operations:
+            protected = operation.apply(protected)
+        protected = _copy_checkpoint_metadata(protected.rename(data.name))
+        revision_id = self.add(
+            spec=spec,
+            primary_revision_id=source_revision_id,
+            source_owner_uid=source_owner_uid,
+        )
+        self._records[revision_id] = replace(
+            self._records[revision_id], checkpoint=_RevisionCheckpoint()
+        )
+        self._data[revision_id] = protected
+        return revision_id
+
     @property
     def revision_ids(self) -> frozenset[str]:
         return frozenset(self._records)
@@ -334,7 +384,7 @@ class _ProvenanceRevisionStore:
         record = self._records.get(revision_id)
         return record is not None and record.checkpoint is not None
 
-    def resolve_data(self, revision_id: str) -> xr.DataArray:
+    def _captured_data(self, revision_id: str) -> xr.DataArray:
         record = self._records[revision_id]
         if record.checkpoint is None:
             raise ValueError(f"Revision {revision_id!r} has no data checkpoint")
@@ -342,7 +392,10 @@ class _ProvenanceRevisionStore:
             source = typing.cast("_RevisionCheckpointSource", record.checkpoint.source)
             data = source.read_data()
             self._data[revision_id] = data.copy(deep=True)
-        return self._data[revision_id].copy(deep=True)
+        return self._data[revision_id]
+
+    def resolve_data(self, revision_id: str) -> xr.DataArray:
+        return self._captured_data(revision_id).copy(deep=True)
 
     def _checkpoint_data_for_save(self, revision_id: str) -> xr.DataArray:
         """Borrow captured values with private metadata for immutable serialization.
@@ -357,14 +410,7 @@ class _ProvenanceRevisionStore:
             raise ValueError(f"Revision {revision_id!r} has no data checkpoint")
         if record.checkpoint.source is not None:
             raise ValueError("File-backed checkpoints must use their saved group")
-        data = self._data[revision_id].copy(deep=False)
-        for variable in (
-            data.variable,
-            *(coord.variable for coord in data.coords.values()),
-        ):
-            variable.attrs = copy.deepcopy(variable.attrs)
-            variable.encoding = copy.deepcopy(variable.encoding)
-        return data
+        return _copy_checkpoint_metadata(self._data[revision_id])
 
     def reachable(self, revision_ids: Iterable[str]) -> tuple[_ProvenanceRevision, ...]:
         pending = list(revision_ids)

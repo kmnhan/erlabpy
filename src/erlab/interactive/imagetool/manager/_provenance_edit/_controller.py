@@ -3718,11 +3718,10 @@ class _ProvenanceEditController:
                 edit.data,
                 original_spec if unchanged_recipe else edit.spec,
                 replay_source_data=None,
+                restored_revision_id=(
+                    edit.recorded_revision.revision_id if unchanged_recipe else None
+                ),
             )
-            if unchanged_recipe:
-                edit.node.restore_current_revision_id(
-                    edit.recorded_revision.revision_id
-                )
             self._manager._update_info(uid=edit.node.uid)
             return
         self._replace_node_data(
@@ -3995,6 +3994,7 @@ class _ProvenanceEditController:
         filter_operation: ToolProvenanceOperation | None,
         *,
         on_commit: Callable[[], None] | None = None,
+        metadata_operations: Sequence[ToolProvenanceOperation] = (),
     ) -> None:
         if not node.materialize_pending_workspace_payload():
             raise RuntimeError(
@@ -4027,6 +4027,7 @@ class _ProvenanceEditController:
                 displayed,
                 propagate_descendants=True,
                 preserve_filter=preserve_filter,
+                metadata_operations=metadata_operations,
             )
             return
         replay_source_data = node.resolved_replay_source_data()
@@ -4036,6 +4037,7 @@ class _ProvenanceEditController:
             preserve_filter=preserve_filter,
             replay_source_data=replay_source_data,
             on_commit=on_commit,
+            metadata_operations=metadata_operations,
         )
 
     def _active_filter_ref(

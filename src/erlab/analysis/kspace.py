@@ -269,8 +269,12 @@ def change_configuration(
 ) -> xarray.DataArray:
     """Apply a new axis configuration to the ARPES data.
 
-    Returns a copy of the input data with the coordinates renamed to match the given
+    Returns a new array with the coordinates renamed to match the given
     configuration. The original data is not modified.
+
+    .. versionchanged:: 3.31.0
+        Intensity values share storage with the input. Use ``result.copy(deep=True)``
+        before changing those values independently.
 
     This function is useful for setups that can acquire data in more than one physical
     configuration. It translates the standard coordinate names by their physical
@@ -301,7 +305,7 @@ def change_configuration(
     )
 
     if current == new:
-        return darr.copy()
+        return darr.copy(deep=False)
 
     # Coord names for each configuration in order of (polar, tilt, deflector)
     coord_order = {
@@ -314,7 +318,7 @@ def change_configuration(
     coord_mapping = dict(zip(coord_order[current], coord_order[new], strict=True))
 
     return (
-        darr.copy()
+        darr.copy(deep=False)
         .rename({k: v for k, v in coord_mapping.items() if k in darr.coords})
         .assign_attrs(configuration=int(new))
     )
