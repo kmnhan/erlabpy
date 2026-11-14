@@ -518,6 +518,76 @@ def test_qsel_reducer_helpers_hashable_tuple_dim(method: str) -> None:
     xr.testing.assert_identical(result, expected)
 
 
+@pytest.mark.parametrize("method", ["mean", "min", "max", "sum"])
+@pytest.mark.parametrize("order", ["ascending", "descending", "unsorted"])
+def test_qsel_reducer_uses_original_data(method: str, order: str, monkeypatch) -> None:
+    tuple_dim = ("beta", 0)
+    values = np.arange(48.0).reshape(3, 2, 4, 2)
+    values[0, 0, 0, 0] = np.nan
+    values[1, 1, 2, 1] = np.nan
+    associated = xr.DataArray(
+        np.arange(24.0).reshape(3, 2, 4),
+        dims=("x", "y", tuple_dim),
+        attrs={"units": "eV"},
+    )
+    associated[0, 0, 0] = np.nan
+    data = xr.DataArray(
+        values,
+        dims=("x", "y", tuple_dim, "z"),
+        coords={
+            "associated": associated,
+            "x": xr.DataArray([1.0, 2.0, 3.0], dims="x", attrs={"units": "K"}),
+            "beta": xr.DataArray([1.0, 2.0, 4.0, 8.0], dims=[tuple_dim]),
+            "y": [10.0, 20.0],
+            "z": [0.0, 1.0],
+            "label": ("x", ["a", "b", "c"]),
+            "sample": "test",
+        },
+        attrs={"description": "intensity"},
+        name="data",
+    )
+    expected = xr.DataArray(
+        getattr(np, f"nan{method}")(values, axis=(0, 2)),
+        dims=("y", "z"),
+        coords={
+            "y": data.y,
+            "z": data.z,
+            "associated": xr.DataArray(
+                np.nanmean(associated.values, axis=(0, 2)),
+                dims="y",
+                attrs=associated.attrs,
+            ),
+            "x": xr.DataArray(2.0, attrs={"units": "K"}),
+            "beta": xr.DataArray(3.75),
+            "sample": "test",
+        },
+        attrs=data.attrs,
+        name=data.name,
+    )
+    if order == "descending":
+        data = data.isel({"x": [2, 1, 0], tuple_dim: [3, 2, 1, 0]})
+    elif order == "unsorted":
+        data = data.isel({"x": [1, 0, 2], tuple_dim: [2, 0, 3, 1]})
+    before = data.copy(deep=True)
+    original_reduce = xr.DataArray.reduce
+    reduced_inputs: list[xr.DataArray] = []
+
+    def _check_reduce(array: xr.DataArray, *args, **kwargs):
+        if array.ndim == data.ndim:
+            reduced_inputs.append(array)
+            assert np.shares_memory(array.data, data.data)
+        return original_reduce(array, *args, **kwargs)
+
+    monkeypatch.setattr(xr.DataArray, "reduce", _check_reduce)
+
+    result = getattr(data.qsel, method)(("x", tuple_dim))
+
+    assert len(reduced_inputs) == 1
+    xr.testing.assert_identical(result, expected)
+    assert list(result.coords) == list(expected.coords)
+    xr.testing.assert_identical(data, before)
+
+
 def test_qsel_mean_invalid_dim() -> None:
     # Create a simple 1D DataArray
 

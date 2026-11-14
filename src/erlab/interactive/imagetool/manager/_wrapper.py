@@ -2679,6 +2679,24 @@ class _ManagedWindowNode(QtCore.QObject):
             provenance_spec, replay_source_revision_id=seed_id
         )
 
+    def normalize_detached_transform_provenance(
+        self, provenance_spec: ToolProvenanceSpec
+    ) -> ToolProvenanceSpec:
+        """Reuse an exact raw-source checkpoint for a detached transform."""
+        if (
+            self.provenance_spec is not None
+            or self.has_source_binding
+            or not requires_legacy_replay_source(provenance_spec)
+        ):
+            return provenance_spec
+        return typing.cast(
+            "ToolProvenanceSpec",
+            self.manager._provenance_revisions.normalize_provenance(
+                provenance_spec,
+                replay_source_revision_id=self.revision_id_for_role("source"),
+            ),
+        )
+
     def _materialized_source_spec(
         self, parent_data: xr.DataArray
     ) -> ToolProvenanceSpec:

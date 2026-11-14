@@ -1,6 +1,7 @@
 import collections.abc
 import copy
 import dataclasses
+import gc
 import json
 import logging
 import pathlib
@@ -3438,6 +3439,73 @@ def test_lazy_secondary_plots_reset_after_dimensionality_change(qtbot) -> None:
         (1,),
         (2,),
     }
+    win.close()
+
+
+@pytest.mark.parametrize("remaining_ndim", [2, 3, 4])
+@pytest.mark.parametrize("n_cursors", [1, 2])
+def test_set_data_releases_previous_image_buffers(
+    qtbot, remaining_ndim: int, n_cursors: int
+) -> None:
+    values = np.arange(3 * 4 * 5 * 6, dtype=float).reshape(3, 4, 5, 6).copy()
+    previous_values = weakref.ref(values)
+    source = xr.DataArray(values, dims=("x", "y", "z", "t"))
+    win = ImageTool(source)
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitExposed(win)
+    area = win.slicer_area
+    if n_cursors == 2:
+        area.add_cursor(color="cyan")
+    assert all(image.image is not None for image in area._materialized_imageitems())
+
+    replacement = (
+        source.mean(source.dims[remaining_ndim:])
+        if remaining_ndim < source.ndim
+        else source + 1.0
+    )
+    del source, values
+    area.replace_source_data(replacement)
+    gc.collect()
+
+    assert previous_values() is None
+    assert area.n_cursors == n_cursors
+    win.close()
+
+
+def test_set_data_restores_cleared_plots_after_dimensionality_change(qtbot) -> None:
+    source = xr.DataArray(
+        np.arange(3 * 4 * 5 * 6, dtype=float).reshape(3, 4, 5, 6),
+        dims=("x", "y", "z", "t"),
+    )
+    win = ImageTool(source)
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitExposed(win)
+    area = win.slicer_area
+    area.add_cursor(color="cyan")
+    area.lock_levels(True)
+    plots = tuple(area._plots)
+    cursor_colors = [color.name() for color in area.cursor_colors]
+
+    area.replace_source_data(source.mean(("z", "t")))
+    for index in (4, 5, 7):
+        plot = area._plots[index]
+        assert plot is not None
+        assert all(image.image is None for image in plot.plotItem.slicer_data_items)
+
+    replacement = source + 10.0
+    area.replace_source_data(replacement)
+    assert tuple(area._plots) == plots
+    assert area._axes_signal_connected_indices == set(range(8))
+    assert area.levels_locked
+    assert area._colorbar.isVisible()
+    assert [color.name() for color in area.cursor_colors] == cursor_colors
+    for cursor in range(area.n_cursors):
+        area.set_current_cursor(cursor)
+        for plot in area._materialized_images():
+            image = plot.slicer_data_items[cursor]
+            np.testing.assert_array_equal(image.image, image.fetch_new_data()[1])
     win.close()
 
 

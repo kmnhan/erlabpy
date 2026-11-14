@@ -4671,6 +4671,107 @@ def test_batch_action_updates_when_tool_child_subtree_removes_imagetool(
 
 
 @pytest.mark.parametrize("launch_mode", ["replace", "nest", "detach"])
+@pytest.mark.parametrize("filtered", [False, True])
+def test_aggregate_placements_retain_one_raw_source_checkpoint(
+    qtbot,
+    launch_mode: str,
+    filtered: bool,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = xr.DataArray(
+        np.arange(120.0).reshape(2, 3, 4, 5) + 1.0,
+        dims=("x", "y", "z", "w"),
+        coords={
+            dim: np.arange(size) for dim, size in zip("xyzw", (2, 3, 4, 5), strict=True)
+        },
+        name="scan",
+    )
+    original = source.copy(deep=True)
+
+    with manager_context() as manager:
+        tool = typing.cast(
+            "erlab.interactive.imagetool.ImageTool",
+            itool(source, manager=False, execute=False),
+        )
+        qtbot.addWidget(tool)
+        manager.add_imagetool(tool, show=False)
+        parent = manager._node_for_target(0)
+        if filtered:
+            tool.slicer_area.apply_filter_operation(NormalizeOperation(dims=("x",)))
+        expected = tool.slicer_area.displayed_data.qsel.mean(("x", "y"))
+
+        dialog = imagetool_dialogs.AggregateDialog(tool.slicer_area)
+        qtbot.addWidget(dialog)
+        for dim in ("x", "y"):
+            dialog.dim_checks[dim].setChecked(True)
+        dialog.launch_mode_combo.setCurrentIndex(
+            dialog.launch_mode_combo.findData(launch_mode)
+        )
+        dialog.accept()
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+
+        store = manager._provenance_revisions
+        source_checkpoints = {
+            revision_id: data
+            for revision_id, data in store._data.items()
+            if data.shape == original.shape
+        }
+        assert len(source_checkpoints) == (0 if launch_mode == "nest" else 1)
+        target = (
+            parent
+            if launch_mode == "replace"
+            else manager._node_for_target(
+                parent._childtool_indices[0] if launch_mode == "nest" else 1
+            )
+        )
+        xr.testing.assert_identical(target.current_public_data(), expected)
+
+        if launch_mode == "nest":
+            assert parent.current_revision_id is None
+            updated = original + 100.0
+            tool.slicer_area.replace_source_data(updated)
+            assert target._update_from_parent_source()
+            xr.testing.assert_identical(
+                target.current_public_data(), updated.qsel.mean(("x", "y"))
+            )
+            return
+
+        source_revision_id, checkpoint = next(iter(source_checkpoints.items()))
+        xr.testing.assert_identical(checkpoint, original)
+        assert not np.shares_memory(checkpoint.data, source.data)
+        provenance = target.provenance_spec
+        assert provenance is not None
+        assert provenance.replay_inputs[0].revision_id == source_revision_id
+        if launch_mode == "replace":
+            current_revision = store.get(parent.current_revision_id)
+            assert current_revision is not None
+            assert current_revision.primary_revision_id == source_revision_id
+        else:
+            assert parent.current_revision_id == source_revision_id
+            dialog.accept()
+            assert (
+                len(
+                    [
+                        data
+                        for data in store._data.values()
+                        if data.shape == original.shape
+                    ]
+                )
+                == 1
+            )
+            assert manager._node_for_target(2).provenance_spec == provenance
+
+        source.values[...] = -100.0
+        xr.testing.assert_identical(store.resolve_data(source_revision_id), original)
+        replayed = manager._provenance_edit_controller._replay_candidate_result(
+            target, "display", provenance
+        ).data
+        xr.testing.assert_identical(replayed, expected)
+
+
+@pytest.mark.parametrize("launch_mode", ["replace", "nest", "detach"])
 def test_batch_transform_placements(
     qtbot,
     launch_mode: str,
@@ -4722,6 +4823,14 @@ def test_batch_transform_placements(
                     manager.get_imagetool(index).slicer_area._data.rename(None),
                     expected_data.rename(None),
                 )
+
+        assert len(
+            [
+                data
+                for data in manager._provenance_revisions._data.values()
+                if data.shape == data0.shape
+            ]
+        ) == (0 if launch_mode == "nest" else 2)
 
 
 def test_batch_sortby_transform_replace(

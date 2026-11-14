@@ -2586,6 +2586,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._data_resource_closer = None
             del self._data
             self.disconnect_axes_signals()
+            # Hidden plots and inactive cursors do not refresh. Their old slices
+            # can keep the entire previous values buffer alive through a NumPy view.
+            for plot in self._plots:
+                if plot is not None:
+                    for item in (
+                        *plot.plotItem.slicer_data_items,
+                        *plot.plotItem.other_data_items,
+                    ):
+                        item.clear()
         else:
             n_cursors_old = 1
 

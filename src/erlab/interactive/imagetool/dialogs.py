@@ -830,13 +830,15 @@ class DataTransformDialog(_DataManipulationDialog):
         replay_source_data = node.resolved_replay_source_data()
         if displayed_provenance is not None:
             node.set_detached_provenance(
-                self._compose_replace_source_spec(displayed_provenance),
+                node.normalize_detached_transform_provenance(
+                    self._compose_replace_source_spec(displayed_provenance)
+                ),
                 replay_source_data=replay_source_data,
             )
             return True
         if fallback_spec is not None:
             node.set_detached_provenance(
-                fallback_spec,
+                node.normalize_detached_transform_provenance(fallback_spec),
                 replay_source_data=replay_source_data,
             )
             return True
@@ -1054,6 +1056,12 @@ class DataTransformDialog(_DataManipulationDialog):
                             erlab.interactive.itool(manager=False, **itool_kw),
                         )
                         if tool is not None:  # pragma: no branch
+                            if target is not None:
+                                detached_provenance_spec = manager._node_for_target(
+                                    target
+                                ).normalize_detached_transform_provenance(
+                                    detached_provenance_spec
+                                )
                             tool.set_provenance_spec(detached_provenance_spec)
                             replay_source_data = self.data
                             if target is not None:

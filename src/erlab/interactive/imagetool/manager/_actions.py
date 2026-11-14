@@ -864,7 +864,9 @@ class _ActionsController:
                             )
                         else:
                             node.set_detached_provenance(
-                                replace_provenance,
+                                node.normalize_detached_transform_provenance(
+                                    replace_provenance
+                                ),
                                 replay_source_data=replay_source_data,
                             )
                     slicer_area.replace_source_data(processed, emit_edited=True)
@@ -891,6 +893,9 @@ class _ActionsController:
                         source_spec=source_spec,
                     )
                 else:
+                    detached_provenance = node.normalize_detached_transform_provenance(
+                        detached_provenance
+                    )
                     tool.set_provenance_spec(detached_provenance)
                     self._manager.add_imagetool(
                         tool,
