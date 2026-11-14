@@ -24,12 +24,19 @@ build:
       - UV_PROJECT_ENVIRONMENT="${READTHEDOCS_VIRTUALENV_PATH}" uv sync --all-extras --group docs
     build:
       html:
-        # Capture worker output in a file so detached kernels cannot keep RTD's
-        # output pipe open after the diagnostic deadline.
+        # Each checkpoint returns a small log snapshot that RTD can save while
+        # the background Sphinx build continues.
+        - python -V
         - >-
-          PYTHONUNBUFFERED=1 python scripts/rtd_sphinx.py
+          PYTHONUNBUFFERED=1 python scripts/rtd_sphinx.py --start
           -T -W --keep-going -b html -d docs/_build/doctrees
           -D language=en docs/source "${READTHEDOCS_OUTPUT}/html"
+        - PYTHONUNBUFFERED=1 python scripts/rtd_sphinx.py --poll
+        - PYTHONUNBUFFERED=1 python scripts/rtd_sphinx.py --poll
+        - PYTHONUNBUFFERED=1 python scripts/rtd_sphinx.py --poll
+        - PYTHONUNBUFFERED=1 python scripts/rtd_sphinx.py --poll
+        - PYTHONUNBUFFERED=1 python scripts/rtd_sphinx.py --poll
+        - PYTHONUNBUFFERED=1 python scripts/rtd_sphinx.py --poll --final
 
 # Build documentation in the "docs/" directory with Sphinx
 sphinx:
