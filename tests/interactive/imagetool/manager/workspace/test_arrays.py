@@ -1,5 +1,6 @@
 import contextlib
 import gc
+import itertools
 import json
 import logging
 import os
@@ -32,6 +33,176 @@ from tests.interactive.imagetool.manager.workspace._support import (
     _rich_workspace_attr_value,
     _write_transaction_test_workspace,
 )
+
+
+@pytest.mark.parametrize("layout", ["contiguous", "transposed", "strided", "reversed"])
+@pytest.mark.parametrize("dtype", ["f4", ">f8", "c8"])
+@pytest.mark.parametrize("storage", ["contiguous", "auto", "oversized"])
+def test_workspace_numeric_writes_bound_transfer_buffers(
+    monkeypatch, tmp_path, layout, dtype, storage
+):
+    budget = 256
+    monkeypatch.setattr(workspace_arrays, "_WORKSPACE_H5PY_WRITE_BLOCK_BYTES", budget)
+    values = np.arange(4 * 5 * 6 * 14).reshape(4, 5, 6, 14).astype(dtype)
+    if layout == "contiguous":
+        values = np.ascontiguousarray(values[..., ::2])
+    elif layout == "transposed":
+        values = values[..., ::2].transpose(3, 1, 0, 2)
+    elif layout == "strided":
+        values = values[..., ::2]
+    else:
+        values = values[..., ::-2]
+    values.flat[:3] = [0.0, -0.0, np.nan]
+    dims = tuple(f"d{i}" for i in range(values.ndim))
+    dataset = xr.Dataset(
+        {"data": (dims, values, {"units": "counts"})},
+        coords={
+            dim: np.arange(size) for dim, size in zip(dims, values.shape, strict=True)
+        },
+        attrs={"owner": "window"},
+    )
+    encoding = {}
+    if storage != "contiguous":
+        encoding["compression"] = "gzip"
+        if storage == "oversized":
+            encoding["chunksizes"] = values.shape
+
+    create = h5py.Group.create_dataset
+    write = h5py.Dataset.__setitem__
+    transfers = []
+
+    def create_dataset(group, name, *args, **kwargs):
+        data = kwargs.get("data")
+        if data is not None:
+            assert np.asarray(data).nbytes <= budget
+        chunks = kwargs.get("chunks")
+        if isinstance(chunks, (tuple, list)):
+            assert np.prod(chunks) * np.dtype(kwargs["dtype"]).itemsize <= budget
+        return create(group, name, *args, **kwargs)
+
+    def write_values(target, key, data):
+        assert data.nbytes <= budget
+        assert data.flags.c_contiguous
+        if target.chunks is not None:
+            assert all(
+                item.start % chunk == 0
+                for item, chunk in zip(key, target.chunks, strict=True)
+            )
+        transfers.append(data.nbytes)
+        return write(target, key, data)
+
+    monkeypatch.setattr(h5py.Group, "create_dataset", create_dataset)
+    monkeypatch.setattr(h5py.Dataset, "__setitem__", write_values)
+    path = tmp_path / "bounded-numeric.itws"
+    with h5py.File(path, "w") as h5_file:
+        assert workspace_arrays._write_workspace_dataset_group_h5py(
+            h5_file, "payload", dataset, encoding={"data": encoding}
+        )
+        saved = h5_file["payload/data"]
+        actual = saved[()]
+        assert actual.dtype == values.dtype
+        assert actual.tobytes() == values.tobytes()
+        assert saved.attrs["units"] == "counts"
+        assert h5_file["payload"].attrs["owner"] == "window"
+        assert (saved.chunks is None) == (storage == "contiguous")
+    assert len(transfers) > 1
+    assert sum(transfers) == values.nbytes
+
+
+def test_workspace_numeric_write_slices_bound_iteration(monkeypatch):
+    monkeypatch.setattr(workspace_arrays, "_WORKSPACE_H5PY_WRITE_BLOCK_BYTES", 16)
+    slices = workspace_arrays._workspace_h5py_write_slices((10**12,), 8)
+    assert list(itertools.islice(slices, 3)) == [
+        (slice(0, 2),),
+        (slice(2, 4),),
+        (slice(4, 6),),
+    ]
+    assert list(workspace_arrays._workspace_h5py_write_slices((), 8)) == [()]
+    assert list(workspace_arrays._workspace_h5py_write_slices((3, 0), 8)) == []
+
+
+def test_workspace_lazy_numeric_writes_bound_reads(monkeypatch, tmp_path):
+    budget = 256
+    monkeypatch.setattr(workspace_arrays, "_WORKSPACE_H5PY_WRITE_BLOCK_BYTES", budget)
+    name = _persistence_constants.ITOOL_DATA_NAME
+    values = np.arange(4 * 80, dtype=np.float32).reshape(4, 80)
+    dataset = xr.Dataset(
+        {name: (("x", "y"), values)},
+        coords={
+            "x": np.arange(4),
+            "y": np.arange(80.0),
+            "Motor Position": (("x", "y"), values + 0.5),
+        },
+    )
+    source = tmp_path / "source.itws"
+    target = tmp_path / "target.itws"
+    workspace_arrays._write_workspace_dataset_group_to_file(
+        source, "payload", dataset, compression_mode="none"
+    )
+    read = h5py.Dataset.__getitem__
+    reads = []
+
+    def read_values(variable, key, *args, **kwargs):
+        result = read(variable, key, *args, **kwargs)
+        if variable.file.filename == str(source):
+            assert result.nbytes <= budget
+            reads.append((variable.name, result.nbytes))
+        return result
+
+    with xr.open_dataset(
+        source,
+        group="payload",
+        engine="h5netcdf",
+        chunks=None,
+        cache=False,
+        create_default_indexes=False,
+    ) as opened:
+        monkeypatch.setattr(h5py.Dataset, "__getitem__", read_values)
+        private_names = imagetool_serialization.private_coord_variable_names(
+            opened, name
+        )
+        restored = imagetool_serialization.restore_private_coords(opened, name)
+        assert not reads
+        assert not restored[name].variable._in_memory
+        assert not restored["Motor Position"].variable._in_memory
+        assert workspace_arrays._workspace_dataset_can_write_h5py(opened)
+        assert not reads
+        workspace_arrays._write_workspace_dataset_group_to_file(
+            target, "payload", restored, compression_mode="none"
+        )
+        assert reads
+        assert not restored[name].variable._in_memory
+        assert not restored["Motor Position"].variable._in_memory
+    saved = workspace_arrays._read_workspace_dataset_group_h5py(
+        target, "payload", preferred_data_name=name
+    )
+    xr.testing.assert_identical(saved, dataset)
+    assert any(path.endswith("/y") for path, _size in reads)
+    assert any(path.rsplit("/", 1)[-1] in private_names for path, _size in reads)
+
+
+def test_workspace_numeric_write_failure_does_not_retry_fallback(monkeypatch, tmp_path):
+    monkeypatch.setattr(workspace_arrays, "_WORKSPACE_H5PY_WRITE_BLOCK_BYTES", 16)
+    dataset = xr.Dataset(
+        {"data": (("x", "y"), np.arange(12.0).reshape(3, 4))},
+        coords={"x": np.arange(3), "y": np.arange(4)},
+    )
+
+    def fail_write(_target, _key, _values):
+        raise OSError("test write failure")
+
+    def forbid_fallback(*_args, **_kwargs):
+        raise AssertionError("A failed bounded transfer must not retry the fallback")
+
+    monkeypatch.setattr(h5py.Dataset, "__setitem__", fail_write)
+    monkeypatch.setattr(xr.Dataset, "dump_to_store", forbid_fallback)
+    path = tmp_path / "failure.itws"
+    with pytest.raises(OSError, match="test write failure"):
+        workspace_arrays._write_workspace_dataset_group_to_file(
+            path, "payload", dataset, compression_mode="none"
+        )
+    with h5py.File(path, "r") as h5_file:
+        assert "payload" not in h5_file
 
 
 @contextlib.contextmanager

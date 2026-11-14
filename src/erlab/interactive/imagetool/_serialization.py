@@ -338,7 +338,7 @@ def encode_private_coords(
         # Keep the public coordinate name out of NetCDF's whitespace-delimited
         # coordinate list; the private variable name is safe and restored on load.
         private_coord = xr.DataArray(
-            coord.data,
+            coord.variable,
             dims=coord.dims,
             attrs=dict(coord.attrs),
             name=variable_name,
@@ -408,7 +408,7 @@ def restore_private_coords(
             restored = restored.set_coords(variable_name)
         else:
             coord = xr.DataArray(
-                variable.data,
+                variable.variable,
                 dims=dims,
                 attrs=dict(variable.attrs),
                 name=coord_name,

@@ -344,6 +344,28 @@ class _ProvenanceRevisionStore:
             self._data[revision_id] = data.copy(deep=True)
         return self._data[revision_id].copy(deep=True)
 
+    def _checkpoint_data_for_save(self, revision_id: str) -> xr.DataArray:
+        """Borrow captured values with private metadata for immutable serialization.
+
+        The returned wrapper owns a reference to the captured arrays, so removing
+        or rebinding the revision cannot invalidate a pending save. The save path
+        must only read array values. Mutable replay consumers use ``resolve_data``.
+        File-backed checkpoints are copied from their saved group instead.
+        """
+        record = self._records[revision_id]
+        if record.checkpoint is None:
+            raise ValueError(f"Revision {revision_id!r} has no data checkpoint")
+        if record.checkpoint.source is not None:
+            raise ValueError("File-backed checkpoints must use their saved group")
+        data = self._data[revision_id].copy(deep=False)
+        for variable in (
+            data.variable,
+            *(coord.variable for coord in data.coords.values()),
+        ):
+            variable.attrs = copy.deepcopy(variable.attrs)
+            variable.encoding = copy.deepcopy(variable.encoding)
+        return data
+
     def reachable(self, revision_ids: Iterable[str]) -> tuple[_ProvenanceRevision, ...]:
         pending = list(revision_ids)
         visited: set[str] = set()

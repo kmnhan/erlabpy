@@ -87,7 +87,7 @@ def revision_object_writes(
                 )
             )
             continue
-        data = store.resolve_data(record.revision_id)
+        data = store._checkpoint_data_for_save(record.revision_id)
         dataset = data.to_dataset(name=_persistence_constants.ITOOL_DATA_NAME)
         dataset.attrs["revision_data_name"] = json.dumps(
             _serialization.encode_attr_value(data.name)
