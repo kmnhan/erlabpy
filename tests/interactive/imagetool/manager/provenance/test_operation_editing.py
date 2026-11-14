@@ -4260,7 +4260,13 @@ def test_manager_provenance_validation_reports_active_filter_validation_failure(
     assert calls == 1
 
 
-def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
+@pytest.mark.parametrize(
+    "metadata_operations",
+    [(), (AssignAttrsOperation(attrs={"sample": "edited"}),)],
+)
+def test_manager_provenance_edit_controller_live_replay_and_replace(
+    metadata_operations: tuple[ToolProvenanceOperation, ...],
+) -> None:
     parent_data = xr.DataArray(
         np.arange(6, dtype=float).reshape((2, 3)), dims=("x", "y")
     )
@@ -4273,7 +4279,15 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
         parent_uid="parent",
         source_display_spec=selection(),
     )
-    replaced: list[tuple[xr.DataArray, ToolProvenanceSpec, bool, bool]] = []
+    replaced: list[
+        tuple[
+            xr.DataArray,
+            ToolProvenanceSpec,
+            bool,
+            bool,
+            tuple[ToolProvenanceOperation, ...],
+        ]
+    ] = []
     source_bindings: list[
         tuple[
             ToolProvenanceSpec,
@@ -4289,6 +4303,7 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
         *,
         propagate_descendants,
         preserve_filter,
+        metadata_operations,
     ) -> None:
         replaced.append(
             (
@@ -4296,6 +4311,7 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
                 spec,
                 propagate_descendants,
                 preserve_filter,
+                tuple(metadata_operations),
             )
         )
 
@@ -4321,6 +4337,7 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
         data,
         spec,
         NormalizeOperation(dims=("y",), mode="area"),
+        metadata_operations=metadata_operations,
     )
 
     assert source_bindings
@@ -4334,7 +4351,7 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
             parent_data=parent_data,
         ),
     )
-    assert replaced[-1][2:] == (True, True)
+    assert replaced[-1][2:] == (True, True, metadata_operations)
 
     with pytest.raises(RuntimeError, match="Live provenance"):
         controller._replay_candidate_result(
