@@ -24,11 +24,10 @@ build:
       - UV_PROJECT_ENVIRONMENT="${READTHEDOCS_VIRTUALENV_PATH}" uv sync --all-extras --group docs
     build:
       html:
-        # RTD saves command output only when the command returns. Dump thread
-        # stacks at 18 minutes, then stop the process group before RTD's timeout.
+        # Capture worker output in a file so detached kernels cannot keep RTD's
+        # output pipe open after the diagnostic deadline.
         - >-
-          PYTHONUNBUFFERED=1 timeout --kill-after=30s 19m
-          python scripts/rtd_sphinx.py
+          PYTHONUNBUFFERED=1 python scripts/rtd_sphinx.py
           -T -W --keep-going -b html -d docs/_build/doctrees
           -D language=en docs/source "${READTHEDOCS_OUTPUT}/html"
 
