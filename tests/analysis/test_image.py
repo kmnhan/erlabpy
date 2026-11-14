@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+import scipy.ndimage
 import xarray as xr
 
 import erlab.analysis as era
@@ -168,6 +169,33 @@ def test_boxcar_filter() -> None:
     result = era.image.boxcar_filter(darr, size={"x": 3, "y": 3})
 
     xr.testing.assert_identical(result, expected_output)
+
+
+def test_boxcar_filter_reuses_float64_input(monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 4),
+        dims=("x", "y", "z"),
+        attrs={"units": "counts"},
+    )
+    before = data.copy(deep=True)
+    original_filter = scipy.ndimage.uniform_filter
+    expected = original_filter(data.values, size=(1, 3, 1), mode="nearest")
+    inputs: list[np.ndarray] = []
+
+    def _check_filter(values, *args, **kwargs):
+        inputs.append(values)
+        assert np.shares_memory(values, data.data)
+        return original_filter(values, *args, **kwargs)
+
+    monkeypatch.setattr(scipy.ndimage, "uniform_filter", _check_filter)
+
+    actual = era.image.boxcar_filter(data, size={"y": 3})
+
+    assert len(inputs) == 1
+    np.testing.assert_array_equal(actual.values, expected)
+    assert actual.dtype == data.dtype
+    assert actual.attrs == data.attrs
+    xr.testing.assert_identical(data, before)
 
 
 def test_boxcar_filter_dask() -> None:

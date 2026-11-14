@@ -986,13 +986,19 @@ def shift(
     shift = shift.reset_coords(drop=True)
     shift = _align_shift_indexes(darr, shift)
 
-    # Sort along the target dimension
-    out = darr if assume_sorted else darr.sortby(along)
+    # Reorder only when needed. Basic reversal preserves the values buffer.
+    out = darr
+    if not assume_sorted:
+        coord = np.asarray(darr[along].values)
+        if np.all(coord[1:] < coord[:-1]):
+            out = darr.isel({along: slice(None, None, -1)})
+        elif not np.all(coord[1:] > coord[:-1]):
+            out = darr.isel({along: np.argsort(coord, kind="stable")})
 
     along_step = float(out[along].values[1] - out[along].values[0])
 
     # Normalize shift values to "index units"
-    shift = shift.copy() / along_step
+    shift = shift / along_step
 
     if shift_coords:
         # We first apply the integer part of the average shift to the coords
@@ -1150,10 +1156,7 @@ def symmetrize(
     # Ensure coord is increasing
 
     is_increasing = darr[dim].values[1] > darr[dim].values[0]
-    out = darr.copy()
-
-    if not is_increasing:
-        out = out.sortby(dim)
+    out = darr if is_increasing else darr.isel({dim: slice(None, None, -1)})
 
     with xr.set_options(keep_attrs=True):
         coord: xr.DataArray = out[dim]
@@ -1177,8 +1180,21 @@ def symmetrize(
         out_shifted = out.interp({dim: shifted_coords}, **interp_kw)
 
         # Split into parts below and above center
-        below = out_shifted.where(out_shifted[dim] < center, drop=True)
-        above = out_shifted.where(out_shifted[dim] > center, drop=True)
+        shifted_values = out_shifted[dim].values
+        below = out_shifted.isel(
+            {
+                dim: slice(
+                    None, int(np.searchsorted(shifted_values, center, side="left"))
+                )
+            }
+        )
+        above = out_shifted.isel(
+            {
+                dim: slice(
+                    int(np.searchsorted(shifted_values, center, side="right")), None
+                )
+            }
+        )
 
         n_below, n_above = len(below[dim]), len(above[dim])
         if n_below == 0 or n_above == 0:
@@ -1190,7 +1206,9 @@ def symmetrize(
             above = above.isel({dim: slice(0, len_valid)})
 
         # Reflect above
-        above = above.assign_coords({dim: center - (above[dim] - center)}).sortby(dim)
+        above = above.assign_coords({dim: center - (above[dim] - center)}).isel(
+            {dim: slice(None, None, -1)}
+        )
 
         # Ensure flipped coord matches exactly with original
         match mode:
@@ -1216,6 +1234,7 @@ def symmetrize(
 
         # Symmetrize
         sym_below = (below - above) if subtract else (below + above)
+        del out_shifted, below, above
         if average:
             overlap_size = min(n_below, n_above)
             overlap_divisor = np.ones(sym_below.sizes[dim], dtype=float)
@@ -1240,11 +1259,9 @@ def symmetrize(
             )
 
         # Flip symmetrized data
-        sym_above = (
-            sym_below.copy()
-            .assign_coords({dim: center - (sym_below[dim] - center)})
-            .sortby(dim)
-        )
+        sym_above = sym_below.assign_coords(
+            {dim: center - (sym_below[dim] - center)}
+        ).isel({dim: slice(None, None, -1)})
         if subtract:
             sym_above = -sym_above
 

@@ -830,13 +830,15 @@ class DataTransformDialog(_DataManipulationDialog):
         replay_source_data = node.resolved_replay_source_data()
         if displayed_provenance is not None:
             node.set_detached_provenance(
-                self._compose_replace_source_spec(displayed_provenance),
+                node.normalize_detached_transform_provenance(
+                    self._compose_replace_source_spec(displayed_provenance)
+                ),
                 replay_source_data=replay_source_data,
             )
             return True
         if fallback_spec is not None:
             node.set_detached_provenance(
-                fallback_spec,
+                node.normalize_detached_transform_provenance(fallback_spec),
                 replay_source_data=replay_source_data,
             )
             return True
@@ -1054,6 +1056,12 @@ class DataTransformDialog(_DataManipulationDialog):
                             erlab.interactive.itool(manager=False, **itool_kw),
                         )
                         if tool is not None:  # pragma: no branch
+                            if target is not None:
+                                detached_provenance_spec = manager._node_for_target(
+                                    target
+                                ).normalize_detached_transform_provenance(
+                                    detached_provenance_spec
+                                )
                             tool.set_provenance_spec(detached_provenance_spec)
                             replay_source_data = self.data
                             if target is not None:
@@ -1175,6 +1183,22 @@ class DataFilterDialog(_DataManipulationDialog):
     ) -> None:
         operation = self.filter_operation()
         if operation is not None:
+            filtered = self.slicer_area._applied_filter_data
+            if (
+                not preview
+                and self._previewed
+                and operation == self.slicer_area._applied_provenance_operation
+                and filtered is not None
+            ):
+                self.slicer_area._apply_filter_result(
+                    filtered,
+                    self.slicer_area._filter_func_from_operation(operation),
+                    update=update,
+                    operation=operation,
+                    accept=True,
+                    emit_edited=emit_edited,
+                )
+                return
             self.slicer_area.apply_filter_operation(
                 operation,
                 update=update,
@@ -1203,10 +1227,24 @@ class DataFilterDialog(_DataManipulationDialog):
     def reject(self) -> None:
         if self._previewed:
             if self._starting_filter_operation is not None:
-                self.slicer_area.apply_filter_operation(
-                    self._starting_filter_operation,
-                    preview=True,
-                )
+                accepted = self.slicer_area._accepted_filter_data
+                if (
+                    self._starting_filter_operation
+                    == self.slicer_area._accepted_filter_provenance_operation
+                    and accepted is not None
+                ):
+                    self.slicer_area._apply_filter_result(
+                        accepted,
+                        self.slicer_area._filter_func_from_operation(
+                            self._starting_filter_operation
+                        ),
+                        operation=self._starting_filter_operation,
+                    )
+                else:
+                    self.slicer_area.apply_filter_operation(
+                        self._starting_filter_operation,
+                        preview=True,
+                    )
             else:
                 self.slicer_area.apply_func(
                     self._starting_applied_func,

@@ -816,11 +816,14 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         if isinstance(dim, str):
             dim = [dim]
         dims = list(dim)
+        for dimension in dims:
+            if dimension not in self._obj.dims and dimension not in self._obj.coords:
+                # Preserve the missing-coordinate error without sorting the data.
+                raise KeyError(f"No variable named {dimension!r}")
         coord_order = list(self._obj.coords)
-        sorted_obj = self._obj.sortby(dims)
         lost_dims = [
             name
-            for name, coord in sorted_obj.coords.items()
+            for name, coord in self._obj.coords.items()
             if any(dimension in coord.dims for dimension in dims)
         ]
 
@@ -831,11 +834,11 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         lost_coords: dict[Hashable, xr.DataArray] = {}
         for name in lost_dims:
             with contextlib.suppress(TypeError):
-                lost_coords[name] = sorted_obj[name].mean(
-                    dim=set(dims).intersection(sorted_obj[name].dims),
+                lost_coords[name] = self._obj[name].mean(
+                    dim=set(dims).intersection(self._obj[name].dims),
                     keep_attrs=True,
                 )
-        out = getattr(sorted_obj, func)(dim=dims, keep_attrs=True).assign_coords(
+        out = getattr(self._obj, func)(dim=dims, keep_attrs=True).assign_coords(
             lost_coords
         )
         return erlab.utils.array.sort_coord_order(

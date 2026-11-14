@@ -65,6 +65,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     AssignAttrsOperation,
     AssignScalarCoordOperation,
     DropScalarCoordsOperation,
+    GaussianFilterOperation,
     ImageDerivativeOperation,
     ImageToolSelectionSourceBinding,
     InterpolationFromInputOperation,
@@ -4671,6 +4672,107 @@ def test_batch_action_updates_when_tool_child_subtree_removes_imagetool(
 
 
 @pytest.mark.parametrize("launch_mode", ["replace", "nest", "detach"])
+@pytest.mark.parametrize("filtered", [False, True])
+def test_aggregate_placements_retain_one_raw_source_checkpoint(
+    qtbot,
+    launch_mode: str,
+    filtered: bool,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = xr.DataArray(
+        np.arange(120.0).reshape(2, 3, 4, 5) + 1.0,
+        dims=("x", "y", "z", "w"),
+        coords={
+            dim: np.arange(size) for dim, size in zip("xyzw", (2, 3, 4, 5), strict=True)
+        },
+        name="scan",
+    )
+    original = source.copy(deep=True)
+
+    with manager_context() as manager:
+        tool = typing.cast(
+            "erlab.interactive.imagetool.ImageTool",
+            itool(source, manager=False, execute=False),
+        )
+        qtbot.addWidget(tool)
+        manager.add_imagetool(tool, show=False)
+        parent = manager._node_for_target(0)
+        if filtered:
+            tool.slicer_area.apply_filter_operation(NormalizeOperation(dims=("x",)))
+        expected = tool.slicer_area.displayed_data.qsel.mean(("x", "y"))
+
+        dialog = imagetool_dialogs.AggregateDialog(tool.slicer_area)
+        qtbot.addWidget(dialog)
+        for dim in ("x", "y"):
+            dialog.dim_checks[dim].setChecked(True)
+        dialog.launch_mode_combo.setCurrentIndex(
+            dialog.launch_mode_combo.findData(launch_mode)
+        )
+        dialog.accept()
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+
+        store = manager._provenance_revisions
+        source_checkpoints = {
+            revision_id: data
+            for revision_id, data in store._data.items()
+            if data.shape == original.shape
+        }
+        assert len(source_checkpoints) == (0 if launch_mode == "nest" else 1)
+        target = (
+            parent
+            if launch_mode == "replace"
+            else manager._node_for_target(
+                parent._childtool_indices[0] if launch_mode == "nest" else 1
+            )
+        )
+        xr.testing.assert_identical(target.current_public_data(), expected)
+
+        if launch_mode == "nest":
+            assert parent.current_revision_id is None
+            updated = original + 100.0
+            tool.slicer_area.replace_source_data(updated)
+            assert target._update_from_parent_source()
+            xr.testing.assert_identical(
+                target.current_public_data(), updated.qsel.mean(("x", "y"))
+            )
+            return
+
+        source_revision_id, checkpoint = next(iter(source_checkpoints.items()))
+        xr.testing.assert_identical(checkpoint, original)
+        assert not np.shares_memory(checkpoint.data, source.data)
+        provenance = target.provenance_spec
+        assert provenance is not None
+        assert provenance.replay_inputs[0].revision_id == source_revision_id
+        if launch_mode == "replace":
+            current_revision = store.get(parent.current_revision_id)
+            assert current_revision is not None
+            assert current_revision.primary_revision_id == source_revision_id
+        else:
+            assert parent.current_revision_id == source_revision_id
+            dialog.accept()
+            assert (
+                len(
+                    [
+                        data
+                        for data in store._data.values()
+                        if data.shape == original.shape
+                    ]
+                )
+                == 1
+            )
+            assert manager._node_for_target(2).provenance_spec == provenance
+
+        source.values[...] = -100.0
+        xr.testing.assert_identical(store.resolve_data(source_revision_id), original)
+        replayed = manager._provenance_edit_controller._replay_candidate_result(
+            target, "display", provenance
+        ).data
+        xr.testing.assert_identical(replayed, expected)
+
+
+@pytest.mark.parametrize("launch_mode", ["replace", "nest", "detach"])
 def test_batch_transform_placements(
     qtbot,
     launch_mode: str,
@@ -4722,6 +4824,14 @@ def test_batch_transform_placements(
                     manager.get_imagetool(index).slicer_area._data.rename(None),
                     expected_data.rename(None),
                 )
+
+        assert len(
+            [
+                data
+                for data in manager._provenance_revisions._data.values()
+                if data.shape == data0.shape
+            ]
+        ) == (0 if launch_mode == "nest" else 2)
 
 
 def test_batch_sortby_transform_replace(
@@ -4937,11 +5047,165 @@ def test_batch_kspace_conversion_replaces_scalar_input_coordinates(
             )
 
 
+def test_batch_filter_recomputes_child_after_parent_publication(
+    qtbot, manager_context
+) -> None:
+    source = _batch_data("scan")
+    operation = GaussianFilterOperation(sigma={"x": 1.0})
+    parent_expected = operation.apply(source)
+    child_expected = operation.apply(parent_expected)
+
+    with manager_context() as manager:
+        parent = itool(source, manager=False, execute=False)
+        child = itool(source.copy(deep=False), manager=False, execute=False)
+        qtbot.addWidget(parent)
+        qtbot.addWidget(child)
+        manager.add_imagetool(parent, show=False)
+        child_uid = manager.add_imagetool_child(
+            child,
+            0,
+            show=False,
+            source_spec=full_data(),
+            source_auto_update=True,
+        )
+        select_tools(manager, [0])
+        select_child_tool(manager, child_uid)
+        dialog = imagetool_dialogs.GaussianFilterDialog(
+            parent.slicer_area, batch_manager=manager
+        )
+        qtbot.addWidget(dialog)
+        dialog.dim_checks["x"].setChecked(True)
+        dialog.sigma_spins["x"].setValue(1.0)
+
+        assert manager.apply_batch_filter_dialog(dialog)
+
+        xarray.testing.assert_identical(
+            parent.slicer_area.displayed_data, parent_expected
+        )
+        xarray.testing.assert_identical(child.slicer_area._data, parent_expected)
+        xarray.testing.assert_identical(
+            child.slicer_area.displayed_data, child_expected
+        )
+        spec = manager._node_for_target(child_uid).displayed_provenance_spec
+        assert spec is not None
+        code = spec.display_code()
+        assert code is not None
+        namespace = _exec_generated_code(code, {"data": source.copy(deep=True)})
+        xarray.testing.assert_identical(namespace["derived"], child_expected)
+
+        parent.slicer_area.apply_filter_operation(None, emit_edited=True)
+        xarray.testing.assert_identical(child.slicer_area._data, source)
+        xarray.testing.assert_identical(
+            child.slicer_area.displayed_data, parent_expected
+        )
+        assert manager._node_for_target(child_uid).source_state == "fresh"
+
+
+def test_batch_filter_computes_once_and_stages_results(
+    qtbot, monkeypatch, manager_context
+) -> None:
+    sources = [_batch_data("scan0"), _batch_data("scan1", offset=100.0)]
+    operation = NormalizeOperation(dims=("x",), mode="min")
+    apply = NormalizeOperation.apply
+    expected = [apply(operation, source) for source in sources]
+    calls: list[None] = []
+    computed_values: list[weakref.ReferenceType] = []
+    paths: list[pathlib.Path] = []
+    save = np.save
+
+    def _apply(op, source):
+        if computed_values:
+            gc.collect()
+            assert computed_values[-1]() is None
+        calls.append(None)
+        result = apply(op, source)
+        computed_values.append(weakref.ref(result.data))
+        return result
+
+    def _save(path, values, **kwargs):
+        paths.append(pathlib.Path(path))
+        return save(path, values, **kwargs)
+
+    with manager_context() as manager:
+        _add_batch_tools(qtbot, manager, *sources)
+        select_tools(manager, [0, 1])
+        monkeypatch.setattr(NormalizeOperation, "apply", _apply)
+        monkeypatch.setattr(manager_actions.np, "save", _save)
+
+        assert manager.apply_batch_filter_dialog(_BatchFilterStub(operation))
+
+        assert len(calls) == 2
+        assert len(paths) == 2
+        assert all(not path.exists() for path in paths)
+        assert all(reference() is None for reference in computed_values)
+        for index, filtered in enumerate(expected):
+            area = manager.get_imagetool(index).slicer_area
+            xarray.testing.assert_identical(area._data, sources[index])
+            xarray.testing.assert_identical(area.displayed_data, filtered)
+            assert area._accepted_filter_data is not None
+            assert np.shares_memory(area.data.data, area._accepted_filter_data.data)
+
+
+@pytest.mark.parametrize("failure", ["compute", "save", "load"])
+def test_batch_filter_staging_failure_leaves_targets_unchanged(
+    qtbot, monkeypatch, manager_context, failure
+) -> None:
+    messages = _block_message_dialog(monkeypatch)
+    sources = [_batch_data("scan0"), _batch_data("scan1", offset=100.0)]
+    operation = NormalizeOperation(dims=("x",), mode="min")
+    apply = NormalizeOperation.apply
+    save = np.save
+    load = np.load
+    calls = 0
+    paths: list[pathlib.Path] = []
+
+    def _fail_on_second_call():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("Cannot stage filter result")
+
+    def _apply(op, source):
+        if failure == "compute":
+            _fail_on_second_call()
+        return apply(op, source)
+
+    def _save(path, values, **kwargs):
+        paths.append(pathlib.Path(path))
+        if failure == "save":
+            _fail_on_second_call()
+        return save(path, values, **kwargs)
+
+    def _load(path, **kwargs):
+        if failure == "load":
+            _fail_on_second_call()
+        return load(path, **kwargs)
+
+    with manager_context() as manager:
+        _add_batch_tools(qtbot, manager, *sources)
+        select_tools(manager, [0, 1])
+        monkeypatch.setattr(NormalizeOperation, "apply", _apply)
+        monkeypatch.setattr(manager_actions.np, "save", _save)
+        monkeypatch.setattr(manager_actions.np, "load", _load)
+
+        assert not manager.apply_batch_filter_dialog(_BatchFilterStub(operation))
+
+        assert messages
+        assert all(not path.exists() for path in paths)
+        for index, source in enumerate(sources):
+            area = manager.get_imagetool(index).slicer_area
+            xarray.testing.assert_identical(area._data, source)
+            xarray.testing.assert_identical(area.displayed_data, source)
+            assert area._accepted_filter_provenance_operation is None
+
+
+@pytest.mark.parametrize("use_dask", [False, True], ids=["eager", "dask"])
 def test_batch_filter_applies_in_place_only(
     qtbot,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
+    use_dask: bool,
 ) -> None:
     with manager_context() as manager:
         manager.show()
@@ -4951,6 +5215,11 @@ def test_batch_filter_applies_in_place_only(
             _batch_data("scan0"),
             _batch_data("scan1", offset=100.0),
         )
+        if use_dask:
+            pytest.importorskip("dask.array")
+            for index in (0, 1):
+                area = manager.get_imagetool(index).slicer_area
+                area.set_data(area._data.chunk({"x": 2}), auto_compute=False)
         select_tools(manager, [0, 1])
 
         dialog = imagetool_dialogs.NormalizeDialog(
@@ -4966,6 +5235,14 @@ def test_batch_filter_applies_in_place_only(
                 index
             ).slicer_area._accepted_filter_provenance_operation
             assert isinstance(operation, NormalizeOperation)
+            area = manager.get_imagetool(index).slicer_area
+            assert (area.displayed_data.chunks is not None) == use_dask
+
+        assert manager.apply_batch_filter_dialog(_BatchFilterStub(None))
+        for index in (0, 1):
+            area = manager.get_imagetool(index).slicer_area
+            assert area._accepted_filter_provenance_operation is None
+            xarray.testing.assert_identical(area.displayed_data, area._data)
 
 
 def test_batch_transform_preflight_failure_leaves_all_targets_unchanged(

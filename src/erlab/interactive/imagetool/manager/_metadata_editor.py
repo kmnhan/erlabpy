@@ -222,6 +222,7 @@ class _MetadataTargetEdit:
     spec: ToolProvenanceSpec | None = None
     replay_source_data: xr.DataArray | None = None
     validated: _ValidatedProvenanceEdit | None = None
+    metadata_operations: tuple[ToolProvenanceOperation, ...] = ()
 
 
 def _field_value(data: xr.DataArray, field: MetadataField) -> typing.Any:
@@ -2028,6 +2029,7 @@ class _MetadataEditorController(QtCore.QObject):
                 data=processed,
                 spec=candidate,
                 replay_source_data=replay_source_data,
+                metadata_operations=(*patch_operations, *added_operations),
             )
 
         validated = self.manager._provenance_edit_controller._validated_edit(
@@ -2065,13 +2067,19 @@ class _MetadataEditorController(QtCore.QObject):
                     spec = typing.cast("ToolProvenanceSpec", plan.spec)
                     if plan.scope == "source":
                         self.manager._provenance_edit_controller._replace_node_data(
-                            plan.node, plan.scope, data, spec, None
+                            plan.node,
+                            plan.scope,
+                            data,
+                            spec,
+                            None,
+                            metadata_operations=plan.metadata_operations,
                         )
                     else:
                         plan.node.replace_with_detached_data(
                             data,
                             spec,
                             replay_source_data=plan.replay_source_data,
+                            metadata_operations=plan.metadata_operations,
                         )
                     self.manager._update_info(uid=plan.node.uid)
                     data_changed = True

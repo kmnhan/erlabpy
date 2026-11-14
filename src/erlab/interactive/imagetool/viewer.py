@@ -381,6 +381,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         # Current plot filter. Accepted filters are represented by the operation below.
         self._applied_func: Callable[[xr.DataArray], xr.DataArray] | None = None
         self._applied_provenance_operation: ToolProvenanceOperation | None = None
+        self._applied_filter_data: xr.DataArray | None = None
         self._accepted_filter_provenance_operation: ToolProvenanceOperation | None = (
             None
         )
@@ -1527,6 +1528,17 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """Swap a DataArray onto a new values buffer without changing coords/dims."""
         darr._variable = darr.variable.copy(deep=False, data=values)
 
+    def _clear_plot_data(self) -> None:
+        # Hidden plots and inactive cursors do not refresh. Their old slices can
+        # keep an entire previous values buffer alive through a NumPy view.
+        for plot in self._plots:
+            if plot is not None:
+                for item in (
+                    *plot.plotItem.slicer_data_items,
+                    *plot.plotItem.other_data_items,
+                ):
+                    item.clear()
+
     def _restore_obj_from_source(self, update: bool = True) -> None:
         """Rebuild the internal slicer array so it shares the current source values."""
         preserve_dims = (
@@ -1534,6 +1546,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if hasattr(self, "_array_slicer")
             else None
         )
+        self._clear_plot_data()
+        self._applied_filter_data = None
         self.array_slicer.set_array(
             self._data,
             reset=False,
@@ -1552,6 +1566,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
         self._applied_func = None
         self._applied_provenance_operation = None
+        self._applied_filter_data = None
         self._set_accepted_filter(None, None)
         restored_obj = False
 
@@ -2586,6 +2601,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._data_resource_closer = None
             del self._data
             self.disconnect_axes_signals()
+            self._clear_plot_data()
         else:
             n_cursors_old = 1
 
@@ -2631,6 +2647,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._obj_shares_data_values = True
         self._applied_func = None
         self._applied_provenance_operation = None
+        self._applied_filter_data = None
         self._set_accepted_filter(None, None)
 
         # Save color limits so we may restore them later
@@ -3372,16 +3389,29 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 "Data shape does not match. Array is "
                 f"{self.data.shape} but {values.shape} given"
             )
-        if self._obj_shares_data_values:
-            # Temporary view updates must detach the slicer buffer so previews and
-            # derived views never mutate the public source array.
-            self._replace_data_values(
-                self.array_slicer._obj,
-                self._owned_values_copy(self.array_slicer._obj),
-            )
-            self._obj_shares_data_values = False
-            self.array_slicer.clear_val_cache()
-        self.array_slicer._obj[:] = values
+        accepted = self._accepted_filter_data
+        shares_accepted = (
+            accepted is not None
+            and accepted.chunks is None
+            and self.data.chunks is None
+            and np.may_share_memory(self.data.data, accepted.data)
+        )
+        self._applied_filter_data = None
+        if (
+            not self._obj_shares_data_values
+            and self.data.chunks is None
+            and not shares_accepted
+            and self.data.data.flags.writeable
+        ):
+            self.array_slicer._obj[:] = values
+        else:
+            # Copy replacement values once when the old renderer shares source or
+            # committed filter data. Do not copy old values only to overwrite them.
+            replacement = np.array(values, dtype=self.data.dtype, copy=True)
+            self._clear_plot_data()
+            self._replace_data_values(self.array_slicer._obj, replacement)
+        self._obj_shares_data_values = False
+        self.array_slicer.clear_val_cache()
 
         if update:  # pragma: no branch
             self.array_slicer.clear_val_cache()
@@ -3492,32 +3522,33 @@ class ImageSlicerArea(QtWidgets.QWidget):
         accept: bool = False,
         emit_edited: bool = False,
     ) -> None:
-        if filtered.chunks is None:
-            self.update_values(filtered, update=update)
-            self._applied_func = func
-            self._applied_provenance_operation = operation
-            if accept:
-                self._set_accepted_filter(operation, filtered.copy(deep=True))
-            if emit_edited:
-                self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
-                self.sigDataEdited.emit()
-            return
-
-        self.array_slicer.set_array(
-            self._restore_public_source_layout(filtered),
-            reset=False,
-            copy_values=False,
-            preserve_dims=tuple(filtered.dims),
-        )
-        self._obj_shares_data_values = False
-        if update:
-            self.array_slicer.clear_val_cache()
-            self.refresh_all(only_plots=True)
-            self.lock_levels(self.levels_locked)
+        if filtered is not self._applied_filter_data:
+            if (
+                filtered.chunks is None
+                and self._data.chunks is None
+                and np.may_share_memory(filtered.data, self._data.data)
+            ):
+                filtered = filtered.copy(deep=False, data=filtered.data.copy())
+            display_data = filtered
+            if filtered.chunks is None and filtered.dtype != self.data.dtype:
+                display_data = filtered.astype(self.data.dtype)
+            self._clear_plot_data()
+            self.array_slicer.set_array(
+                self._restore_public_source_layout(display_data),
+                reset=False,
+                copy_values=False,
+                preserve_dims=tuple(filtered.dims),
+            )
+            self._obj_shares_data_values = False
+            if update:
+                self.array_slicer.clear_val_cache()
+                self.refresh_all(only_plots=True)
+                self.lock_levels(self.levels_locked)
         self._applied_func = func
         self._applied_provenance_operation = operation
+        self._applied_filter_data = filtered.copy(deep=False)
         if accept:
-            self._set_accepted_filter(operation, filtered.copy(deep=True))
+            self._set_accepted_filter(operation, filtered.copy(deep=False))
         if emit_edited:
             self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
             self.sigDataEdited.emit()

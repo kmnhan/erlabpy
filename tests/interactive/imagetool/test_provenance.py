@@ -13,6 +13,7 @@ import typing
 import numpy as np
 import pytest
 import xarray as xr
+from pandas.errors import InvalidIndexError
 from pydantic import ValidationError
 
 import erlab
@@ -1862,6 +1863,106 @@ def test_normalize_operation_expression_modes(
     assert operation.expression_code("data") == expected
 
 
+@pytest.mark.parametrize("mode", ["area", "minmax", "min", "min_area"])
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize("use_dask", [False, True])
+def test_normalize_avoids_full_size_temporaries(
+    mode, dtype, use_dask, monkeypatch
+) -> None:
+    values = np.arange(36, dtype=dtype).reshape(3, 6, 2) + 1
+    values[:, 1, :] = 0.0
+    values[:, 2, :] = [[1.0, -1.0], [2.0, -2.0], [3.0, -3.0]]
+    values[0, 3, 0] = np.nan
+    values[:, 4, :] = np.inf
+    values[:, 5, :] = 1e15
+    data = xr.DataArray(
+        values,
+        dims=("x", "y", "z"),
+        coords={"y": np.arange(6), "sample": "test"},
+        name="intensity",
+        attrs={"units": "counts"},
+    )
+    if use_dask:
+        data = data.chunk({"x": 2, "y": 3})
+    before = data.copy(deep=True)
+    operation = NormalizeOperation(dims=("x", "z"), mode=mode)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        minimum = data.min(operation.dims)
+        if mode == "min":
+            expected = data - minimum
+        else:
+            if mode == "minmax":
+                maximum = data.max(operation.dims)
+                denominator = maximum - minimum
+                scale = xr.where(
+                    abs(minimum) > abs(maximum), abs(minimum), abs(maximum)
+                )
+            else:
+                denominator = data.mean(operation.dims)
+                scale = (
+                    abs(data).where(np.isfinite(data)).max(operation.dims, skipna=True)
+                )
+            denominator = operation._safe_denominator(
+                denominator, scale, operation.denominator_rtol
+            )
+            expected = (data if mode == "area" else data - minimum) / denominator
+        expected = expected.compute()
+
+    original_abs = xr.DataArray.__abs__
+    original_divide = xr.DataArray.__truediv__
+
+    def _check_abs(array):
+        if not use_dask:
+            assert array.shape != data.shape
+        return original_abs(array)
+
+    def _check_divide(array, other):
+        if not use_dask and mode in {"minmax", "min_area"}:
+            assert array.shape != data.shape
+        return original_divide(array, other)
+
+    monkeypatch.setattr(xr.DataArray, "__abs__", _check_abs)
+    monkeypatch.setattr(xr.DataArray, "__truediv__", _check_divide)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        actual = operation.apply(data).compute()
+
+    xr.testing.assert_identical(actual, expected)
+    assert actual.dtype == expected.dtype
+    xr.testing.assert_identical(data.compute(), before.compute())
+
+
+@pytest.mark.parametrize("mode", ["area", "minmax", "min", "min_area"])
+@pytest.mark.parametrize("dtype", [np.int16, np.complex128])
+def test_normalize_preserves_other_dtypes(mode, dtype) -> None:
+    data = xr.DataArray(
+        np.array([[-32768, 1, 0], [32767, 4, 0]], dtype=dtype),
+        dims=("x", "y"),
+    )
+    before = data.copy(deep=True)
+    operation = NormalizeOperation(dims=("x",), mode=mode)
+    minimum = data.min("x")
+    if mode == "min":
+        expected = data - minimum
+    else:
+        maximum = data.max("x")
+        scale = (
+            xr.where(abs(minimum) > abs(maximum), abs(minimum), abs(maximum))
+            if mode == "minmax"
+            else abs(data).where(np.isfinite(data)).max("x", skipna=True)
+        )
+        denominator = operation._safe_denominator(
+            maximum - minimum if mode == "minmax" else data.mean("x"),
+            scale,
+            operation.denominator_rtol,
+        )
+        expected = (data if mode == "area" else data - minimum) / denominator
+
+    actual = operation.apply(data)
+
+    xr.testing.assert_identical(actual, expected)
+    xr.testing.assert_identical(data, before)
+
+
 def test_roi_operation_derivation_labels() -> None:
     vertices = np.array([[0.0, 0.0], [1.0, 1.0]])
 
@@ -2254,6 +2355,89 @@ def test_tool_provenance_rename_dims_coords_round_trip_and_code() -> None:
         {"data": data.copy(deep=True), "np": np},
     )
     xr.testing.assert_identical(namespace["derived"], expected)
+
+
+@pytest.mark.parametrize("kind", ["custom", "uniform", "target", "target_all"])
+@pytest.mark.parametrize("order", ["ascending", "descending", "unsorted", "mixed"])
+@pytest.mark.parametrize("method", ["linear", "nearest"])
+def test_interpolation_operations_skip_sorted_input_copy(
+    kind, order, method, monkeypatch
+) -> None:
+    data = _base_data().astype(float)
+    data.values[0, 0, 0] = np.nan
+    if order == "descending":
+        data = data.isel(x=slice(None, None, -1), y=slice(None, None, -1))
+    elif order == "unsorted":
+        data = data.isel(x=[1, 0, 2], y=[2, 0, 3, 1])
+    elif order == "mixed":
+        data = data.isel(x=slice(None, None, -1), y=[2, 0, 3, 1])
+    before = data.copy(deep=True)
+    coords = {"x": [0.25, 1.75], "y": [10.5, 12.5]}
+    target = xr.DataArray(np.zeros((2, 2)), coords=coords, dims=("x", "y"))
+    if kind == "custom":
+        operation = InterpolationOperation(coords=coords, method=method)
+    elif kind == "uniform":
+        operation = UniformInterpolationOperation(sizes={"x": 5, "y": 6}, method=method)
+        coords = {
+            dim: np.linspace(data[dim].values[0], data[dim].values[-1], size)
+            for dim, size in operation.sizes.items()
+        }
+    else:
+        operation = InterpolationFromInputOperation(
+            dimensions=("x", "y") if kind == "target" else None,
+            method=method,
+        )
+    expected = data.interp(coords, method=method)
+    original_interp = xr.Dataset.interp
+    interpolated_inputs: list[xr.Dataset] = []
+
+    def _check_interp(dataset, *args, **kwargs):
+        interpolated_inputs.append(dataset)
+        assert kwargs["assume_sorted"]
+        if order not in {"unsorted", "mixed"}:
+            assert any(
+                np.shares_memory(variable.data, data.data)
+                for variable in dataset.data_vars.values()
+            )
+        return original_interp(dataset, *args, **kwargs)
+
+    def _unexpected_sort(*args, **kwargs):
+        pytest.fail("Interpolation must not use the copying xarray sort path")
+
+    monkeypatch.setattr(xr.Dataset, "interp", _check_interp)
+    monkeypatch.setattr(xr.Dataset, "sortby", _unexpected_sort)
+
+    actual = (
+        operation.apply_with_inputs(data, {"target": target})
+        if isinstance(operation, InterpolationFromInputOperation)
+        else operation.apply(data)
+    )
+
+    assert len(interpolated_inputs) == 1
+    xr.testing.assert_identical(actual, expected)
+    xr.testing.assert_identical(data, before)
+
+
+@pytest.mark.parametrize(
+    ("source_coord", "error"),
+    [
+        ([0.0, 0.0, 1.0], InvalidIndexError),
+        ([0.0, np.nan, 1.0], ValueError),
+        (["a", "b", "c"], TypeError),
+    ],
+)
+def test_interpolation_preserves_invalid_source_errors(source_coord, error) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("x", "y"),
+        coords={"x": source_coord},
+    )
+    coords = {"x": [0.25, 0.75]}
+    with pytest.raises(error) as native_error:
+        data.interp(coords)
+
+    with pytest.raises(type(native_error.value)):
+        InterpolationOperation(coords=coords).apply(data)
 
 
 def test_tool_provenance_interpolation_operation_round_trip_and_code() -> None:

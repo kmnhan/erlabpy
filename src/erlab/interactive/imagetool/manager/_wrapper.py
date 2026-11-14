@@ -64,6 +64,7 @@ if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
 
     from erlab.interactive.imagetool._provenance._graph import ReplayGraph
+    from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.manager._widgets import _WorkspaceDocumentAccess
     from erlab.interactive.imagetool.slicer import ArraySlicer
@@ -2679,6 +2680,24 @@ class _ManagedWindowNode(QtCore.QObject):
             provenance_spec, replay_source_revision_id=seed_id
         )
 
+    def normalize_detached_transform_provenance(
+        self, provenance_spec: ToolProvenanceSpec
+    ) -> ToolProvenanceSpec:
+        """Reuse an exact raw-source checkpoint for a detached transform."""
+        if (
+            self.provenance_spec is not None
+            or self.has_source_binding
+            or not requires_legacy_replay_source(provenance_spec)
+        ):
+            return provenance_spec
+        return typing.cast(
+            "ToolProvenanceSpec",
+            self.manager._provenance_revisions.normalize_provenance(
+                provenance_spec,
+                replay_source_revision_id=self.revision_id_for_role("source"),
+            ),
+        )
+
     def _materialized_source_spec(
         self, parent_data: xr.DataArray
     ) -> ToolProvenanceSpec:
@@ -2741,9 +2760,11 @@ class _ManagedWindowNode(QtCore.QObject):
         detach_source_binding: bool = False,
         primary_checkpoint_required: bool = True,
         on_commit: Callable[[], None] | None = None,
+        metadata_operations: Sequence[ToolProvenanceOperation] = (),
+        restored_revision_id: str | None = None,
     ) -> None:
         data = data.compute()
-        self.revision_id_for_role("source")
+        previous_revision_id = self.revision_id_for_role("source")
         accepted_filter_operation = None
         filtered = None
         if preserve_filter and self.imagetool is not None:
@@ -2775,13 +2796,34 @@ class _ManagedWindowNode(QtCore.QObject):
             self._output_id = None
         self.set_displayed_provenance(provenance_spec, advance_snapshot=False)
         self._replay_source_data = None
-        self._advance_snapshot_token(defer_refresh=not propagate_descendants)
-        self.revision_id_for_role(
-            "source", primary_checkpoint_required=primary_checkpoint_required
+        bind_revision_before_refresh = restored_revision_id is not None or bool(
+            metadata_operations
         )
+        self._advance_snapshot_token(
+            defer_refresh=not propagate_descendants or bind_revision_before_refresh
+        )
+        if restored_revision_id is not None:
+            self.restore_current_revision_id(restored_revision_id)
+        elif metadata_operations:
+            revision_id = self.manager._provenance_revisions.add_metadata_edit(
+                previous_revision_id,
+                self.data_for_role("source"),
+                metadata_operations,
+                self.provenance_for_role("source"),
+                source_owner_uid=self.uid,
+            )
+            self.restore_current_revision_id(revision_id)
+        else:
+            self.revision_id_for_role(
+                "source", primary_checkpoint_required=primary_checkpoint_required
+            )
         self._set_source_state(state)
         self.manager._mark_node_data_dirty(self.uid)
         if propagate_descendants:
+            if bind_revision_before_refresh:
+                self.manager._flush_idle_work(
+                    key_prefix=("snapshot-token-refresh", self.uid), force=True
+                )
             if state == "fresh":
                 self.manager._lineage_controller._propagate_source_change_from_uid(
                     self.uid
@@ -2801,8 +2843,21 @@ class _ManagedWindowNode(QtCore.QObject):
         replay_source_data: xr.DataArray | None,
         primary_checkpoint_required: bool = True,
         on_commit: Callable[[], None] | None = None,
+        metadata_operations: Sequence[ToolProvenanceOperation] = (),
+        restored_revision_id: str | None = None,
     ) -> None:
         """Replace displayed ImageTool data with detached provenance."""
+        if (
+            metadata_operations
+            and provenance_spec is not None
+            and self._provenance_spec is None
+            and not self.has_source_binding
+            and requires_legacy_replay_source(provenance_spec)
+        ):
+            provenance_spec = self.manager._provenance_revisions.normalize_provenance(
+                provenance_spec,
+                replay_source_revision_id=self.revision_id_for_role("source"),
+            )
         provenance_spec = self._normalize_provenance(
             provenance_spec, replay_source_data
         )
@@ -2819,6 +2874,8 @@ class _ManagedWindowNode(QtCore.QObject):
             detach_source_binding=True,
             primary_checkpoint_required=primary_checkpoint_required,
             on_commit=on_commit,
+            metadata_operations=metadata_operations,
+            restored_revision_id=restored_revision_id,
         )
 
     def _handle_tool_data_changed(self) -> None:

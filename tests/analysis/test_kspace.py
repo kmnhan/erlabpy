@@ -13,6 +13,27 @@ kinetic = np.array([1.0, 2.0, 3.0])
 
 
 @pytest.mark.parametrize("configuration", list(AxesConfiguration))
+def test_change_configuration_shares_intensity(configuration) -> None:
+    data = xr.DataArray(
+        np.arange(24.0).reshape(3, 4, 2),
+        dims=("alpha", "beta", "eV"),
+        coords={"alpha": [-1.0, 0.0, 1.0], "beta": [-2.0, -1.0, 0.0, 1.0], "xi": 0.0},
+        attrs={"configuration": 1, "sample": "original"},
+        name="intensity",
+    )
+    before = data.copy(deep=True)
+
+    result = erlab.analysis.kspace.change_configuration(data, configuration)
+
+    assert np.shares_memory(result.data, data.data)
+    np.testing.assert_array_equal(result.values, data.values)
+    assert result.attrs["configuration"] == int(configuration)
+    assert result.name == data.name
+    result.attrs["sample"] = "changed"
+    xr.testing.assert_identical(data, before)
+
+
+@pytest.mark.parametrize("configuration", list(AxesConfiguration))
 @pytest.mark.parametrize("energy", [1.0, 20.0, 120.0])
 def test_forward_jacobian_matches_analytic_map(configuration, energy):
     params = {"delta": 23.0, "xi": 17.0, "xi0": 2.0}

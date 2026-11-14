@@ -1,4 +1,5 @@
 import ast
+import gc
 import hashlib
 import pathlib
 import re
@@ -6,6 +7,7 @@ import symtable
 import sys
 import textwrap
 import typing
+import weakref
 from collections.abc import Collection, Mapping
 
 import numpy as np
@@ -1524,6 +1526,182 @@ def test_replay_graph_manual_error_and_cache_paths() -> None:
         emit_replay_code(empty_graph, output_name="derived")
     with pytest.raises(ReplayGraphError, match="no output"):
         execute_replay_graph(empty_graph)
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_replay_releases_consumed_intermediates(cached: bool) -> None:
+    source = xr.DataArray(np.arange(24.0).reshape(4, 6), dims=("x", "y"))
+    operation = GaussianFilterOperation(sigma={"x": 1.0})
+    graph = ReplayGraph()
+    parent = graph.add_node("source", "live_input", payload={"data": source})
+    for index in range(4):
+        parent = graph.add_node(
+            f"filter-{index}",
+            "operation",
+            parents=(parent,),
+            payload={"operation": operation},
+        )
+    graph.output_key = parent
+    intermediates: list[weakref.ReferenceType] = []
+
+    def observe(key: str, data: xr.DataArray) -> None:
+        if key.startswith("filter-"):
+            intermediates.append(weakref.ref(data.data))
+            if len(intermediates) > 2:
+                gc.collect()
+                assert (intermediates[-3]() is not None) == cached
+
+    cache = {} if cached else None
+    result = execute_replay_graph(graph, cache=cache, _on_value=observe)
+    expected = source
+    for _ in range(4):
+        expected = operation.apply(expected)
+    xr.testing.assert_identical(result, expected)
+    if cache is not None:
+        assert set(cache) == {node.key for node in graph.nodes}
+
+
+def test_replay_keeps_shared_parent_until_last_consumer() -> None:
+    source = xr.DataArray(np.arange(24.0).reshape(4, 6), dims=("x", "y"))
+    operation = GaussianFilterOperation(sigma={"x": 1.0})
+    graph = ReplayGraph()
+    source_key = graph.add_node("source", "live_input", payload={"data": source})
+    first = graph.add_node(
+        "first", "operation", parents=(source_key,), payload={"operation": operation}
+    )
+    graph.add_node("first-reader", "relay", parents=(first,))
+    graph.output_key = graph.add_node(
+        "second-reader", "operation", parents=(first,), payload={"operation": operation}
+    )
+    shared: weakref.ReferenceType | None = None
+
+    def observe(key: str, data: xr.DataArray) -> None:
+        nonlocal shared
+        if key == "first":
+            shared = weakref.ref(data.data)
+        elif key == "first-reader":
+            assert shared is not None
+            assert shared() is not None
+
+    result = execute_replay_graph(graph, _on_value=observe)
+    xr.testing.assert_identical(result, operation.apply(operation.apply(source)))
+    gc.collect()
+    assert shared is not None
+    assert shared() is None
+
+
+def test_replay_releases_script_namespace_after_consumption() -> None:
+    source = xr.DataArray(np.arange(24.0).reshape(4, 6), dims=("x", "y"))
+    operation = GaussianFilterOperation(sigma={"x": 1.0})
+    graph = ReplayGraph(trusted_user_code=True)
+    source_key = graph.add_node("source", "live_input", payload={"data": source})
+    parent = graph.add_node(
+        "calculation",
+        "script",
+        parents=(source_key,),
+        cacheable=False,
+        payload={
+            "bindings": (("data", source_key),),
+            "codes": ("derived = data + 1.0",),
+            "active_name": "derived",
+            "external_names": ((),),
+            "hoist_imports": (False,),
+            "uses_implicit_framework_imports": (False,),
+        },
+    )
+    script_key = parent
+    for index in range(2):
+        parent = graph.add_node(
+            f"filter-{index}",
+            "operation",
+            parents=(parent,),
+            payload={"operation": operation},
+        )
+    graph.output_key = parent
+    script_values: weakref.ReferenceType | None = None
+
+    def observe(key: str, data: xr.DataArray) -> None:
+        nonlocal script_values
+        if key == script_key:
+            script_values = weakref.ref(data.data)
+        elif key == "filter-1":
+            gc.collect()
+            assert script_values is not None
+            assert script_values() is None
+
+    result = execute_replay_graph(
+        graph, authorize=_authorize_execution, _on_value=observe
+    )
+    xr.testing.assert_identical(result, operation.apply(operation.apply(source + 1.0)))
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_replay_identity_output_isolates_live_and_cached_values(cached: bool) -> None:
+    source = xr.DataArray(np.arange(6.0), dims="x")
+    original = source.copy(deep=True)
+    graph = ReplayGraph()
+    source_key = graph.add_node("source", "live_input", payload={"data": source})
+    graph.output_key = graph.add_node("output", "relay", parents=(source_key,))
+    cache = {source_key: source + 1.0} if cached else None
+    expected = source + 1.0 if cached else source
+    result = execute_replay_graph(graph, cache=cache)
+    xr.testing.assert_identical(result, expected)
+    result.values[:] = -1.0
+    xr.testing.assert_identical(source, original)
+    if cache is not None:
+        xr.testing.assert_identical(cache[source_key], original + 1.0)
+
+
+@pytest.mark.parametrize("input_role", ["raw", "selected", "resolved"])
+def test_rebuild_recipe_does_not_copy_unused_resolved_inputs(
+    monkeypatch, input_role: str
+) -> None:
+    source = xr.DataArray(np.arange(24.0).reshape(4, 6), dims=("x", "y"))
+    source_spec = selection(IselOperation(kwargs={"x": slice(1, None)}))
+    owner = ScriptInput(
+        name="data",
+        node_uid="owner",
+        source_spec=None if input_role == "raw" else source_spec,
+    )
+    live = source_spec.apply(source) if input_role == "resolved" else source
+    expected = source if input_role == "raw" else source_spec.apply(source)
+    spec = recipe(
+        ReplayStep(operation=AverageOperation(dims=("x",))),
+        start_label="Average input",
+        active_name="averaged",
+        script_inputs=(owner,),
+        primary_input="data",
+    )
+    copy = xr.DataArray.copy
+    source_copies: list[xr.DataArray] = []
+
+    def record_copy(data: xr.DataArray, deep: bool = True, **kwargs):
+        if deep and np.shares_memory(data.data, source.data):
+            source_copies.append(data)
+        return copy(data, deep=deep, **kwargs)
+
+    monkeypatch.setattr(xr.DataArray, "copy", record_copy)
+    result, _rebuilt = rebuild_script_provenance(
+        spec,
+        live_input_resolver=lambda item: ResolvedReplayInput(
+            live, item, "resolved" if input_role == "resolved" else "raw"
+        ),
+    )
+    xr.testing.assert_identical(result, expected.mean("x"))
+    assert not source_copies
+
+
+def test_rebuild_named_inputs_keep_independent_values() -> None:
+    source = xr.DataArray(np.arange(6.0), dims="x")
+    owners = tuple(ScriptInput(name=name, node_uid=name) for name in ("left", "right"))
+    resolved, _rebuilt = rebuild_script_inputs(
+        owners,
+        live_input_resolver=lambda item: ResolvedReplayInput(source, item),
+    )
+    assert not np.shares_memory(resolved["left"].data, source.data)
+    assert not np.shares_memory(resolved["left"].data, resolved["right"].data)
+    resolved["left"].values[:] = -1.0
+    xr.testing.assert_identical(resolved["right"], source)
 
 
 def test_canonical_replay_keys_stay_bounded_for_long_chains() -> None:

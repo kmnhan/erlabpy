@@ -327,7 +327,7 @@ def boxcar_filter(
 
     if darr.chunks is None:
         filtered = scipy.ndimage.uniform_filter(
-            darr.values.astype(np.float64),
+            darr.values.astype(np.float64, copy=False),
             size=size_tuple,
             mode=mode,
             cval=cval,

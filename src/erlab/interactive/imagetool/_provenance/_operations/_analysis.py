@@ -518,6 +518,23 @@ class QSelAggregationOperation(ToolProvenanceOperation):
         return f"{input_name}.qsel.{self.func}({arg})"
 
 
+def _prepare_interpolation_source(
+    data: xr.DataArray, dimensions: Collection[Hashable]
+) -> xr.DataArray:
+    indexers: dict[Hashable, slice | np.ndarray] = {}
+    for dim in dimensions:
+        values = np.asarray(data[dim].values)
+        if values.ndim != 1:
+            raise ValueError("Input DataArray is not 1-D.")
+        if np.all(values[1:] > values[:-1]):
+            continue
+        if np.all(values[1:] < values[:-1]):
+            indexers[dim] = slice(None, None, -1)
+        else:
+            indexers[dim] = np.argsort(values, kind="stable")
+    return data.isel(indexers) if indexers else data
+
+
 def _interpolation_expression_code(
     input_name: str,
     coords: Mapping[Hashable, str],
@@ -642,7 +659,12 @@ class InterpolationOperation(ToolProvenanceOperation):
         return np.asarray(self._decode_stored_field(self.values))
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
-        return data.interp(self.decoded_coords, method=self.method)
+        coords = self.decoded_coords
+        return _prepare_interpolation_source(data, coords).interp(
+            coords,
+            method=self.method,
+            assume_sorted=True,
+        )
 
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
@@ -744,10 +766,13 @@ class InterpolationFromInputOperation(ToolProvenanceOperation):
         del authorization
         target = inputs["target"]
         self.validate_inputs(data, target)
+        data = _prepare_interpolation_source(data, self.target_dimensions(data, target))
         if self.dimensions is None:
-            return data.interp_like(target, method=self.method)
+            return data.interp_like(target, method=self.method, assume_sorted=True)
         return data.interp(
-            {dim: target.coords[dim] for dim in self.dimensions}, method=self.method
+            {dim: target.coords[dim] for dim in self.dimensions},
+            method=self.method,
+            assume_sorted=True,
         )
 
     def expression_code_with_inputs(
@@ -825,12 +850,13 @@ class UniformInterpolationOperation(ToolProvenanceOperation):
         return np.linspace(float(endpoints[0]), float(endpoints[1]), size)
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
-        return data.interp(
+        return _prepare_interpolation_source(data, self.sizes).interp(
             {
                 dim: self._target_values(data, dim, size)
                 for dim, size in self.sizes.items()
             },
             method=self.method,
+            assume_sorted=True,
         )
 
     def expression_code(
@@ -1313,14 +1339,33 @@ class NormalizeOperation(ToolProvenanceOperation):
     def _dims_code(dims: tuple[Hashable, ...]) -> str:
         return _format_qsel_dims_arg(dims)
 
+    def _finite_abs_scale(self, data: xr.DataArray) -> xr.DataArray:
+        if data.chunks is not None or data.dtype.kind != "f":
+            return abs(data).where(np.isfinite(data)).max(self.dims, skipna=True)
+        finite = np.isfinite(data.data)
+        minimum = data.reduce(np.min, self.dims, where=finite, initial=np.inf)
+        maximum = data.reduce(np.max, self.dims, where=finite, initial=-np.inf)
+        return typing.cast("xr.DataArray", np.maximum(abs(minimum), abs(maximum)))
+
+    @staticmethod
+    def _subtract_and_divide(
+        data: xr.DataArray, minimum: xr.DataArray, denominator: xr.DataArray
+    ) -> xr.DataArray:
+        shifted = data - minimum
+        if (
+            shifted.dtype.kind in "fc"
+            and np.result_type(shifted.dtype, denominator.dtype) == shifted.dtype
+        ):
+            shifted /= denominator
+            return shifted
+        return shifted / denominator
+
     def apply(self, data: xr.DataArray) -> xr.DataArray:
         if not self.dims:
             return data
 
         if self.mode == "area":
-            finite_abs_scale = (
-                abs(data).where(np.isfinite(data)).max(self.dims, skipna=True)
-            )
+            finite_abs_scale = self._finite_abs_scale(data)
             area = self._safe_denominator(
                 data.mean(self.dims),
                 finite_abs_scale,
@@ -1341,22 +1386,20 @@ class NormalizeOperation(ToolProvenanceOperation):
                 finite_abs_scale,
                 self.denominator_rtol,
             )
-            return (data - minimum) / denominator
+            return self._subtract_and_divide(data, minimum, denominator)
 
         if self.mode == "min":
             minimum = data.min(self.dims)
             return data - minimum
 
         minimum = data.min(self.dims)
-        finite_abs_scale = (
-            abs(data).where(np.isfinite(data)).max(self.dims, skipna=True)
-        )
+        finite_abs_scale = self._finite_abs_scale(data)
         area = self._safe_denominator(
             data.mean(self.dims),
             finite_abs_scale,
             self.denominator_rtol,
         )
-        return (data - minimum) / area
+        return self._subtract_and_divide(data, minimum, area)
 
     def derivation_label(self) -> str:
         label_kwargs = {
