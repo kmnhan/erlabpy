@@ -125,6 +125,7 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
         "tests/test_constants.py",
         "tests/test_lattice.py",
         "tests/test_extensions.py",
+        "tests/test_rtd_sphinx.py",
     ),
     "cov-io": ("tests/io",),
     "cov-qt-imagetool": (
