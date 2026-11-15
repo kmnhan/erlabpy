@@ -1210,7 +1210,7 @@ wheels = [
 
 [[package]]
 name = "erlab"
-version = "3.30.0"
+version = "3.30.1"
 source = { editable = "." }
 dependencies = [
     { name = "dask", extra = ["distributed"] },

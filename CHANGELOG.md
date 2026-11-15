@@ -1,3 +1,15 @@
+## v3.30.1 (2026-11-15)
+
+### 🐞 Bug Fixes
+
+- **imagetool:** various memory optimizations (#679) ([e33b806](https://github.com/kmnhan/erlabpy/commit/e33b8066f7c21915e89f9d9f1107c98c6a84cf4f))
+
+  Reduce full-array copies in filtering, interpolation, shifts, symmetrization, normalization, and axis configuration changes.
+
+- **manager:** limit memory spikes when saving workspaces (#680) ([ecb853a](https://github.com/kmnhan/erlabpy/commit/ecb853a396a98a170cf2106014c8695a7e22206a))
+
+  Fixes an issue where the first save of a large workspace can become very slow because saving makes full-array copies.
+
 ## v3.30.0 (2026-11-14)
 
 ### ✨ Features
