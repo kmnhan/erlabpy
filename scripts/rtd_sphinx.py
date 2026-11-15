@@ -1,4 +1,4 @@
-"""Capture Sphinx diagnostics before the Read the Docs build deadline."""
+"""Run background Sphinx builds with bounded Read the Docs polling."""
 
 import contextlib
 import faulthandler
@@ -8,7 +8,6 @@ import pathlib
 import runpy
 import subprocess
 import sys
-import tempfile
 import time
 import traceback
 
@@ -101,7 +100,7 @@ def _run_worker(
     return returncode
 
 
-def _relay_logs(directory: pathlib.Path, *, limit: int | None = None) -> None:
+def _relay_logs(directory: pathlib.Path, *, limit: int = 8192) -> None:
     paths = [directory / "supervisor.log", directory / "sphinx.log"]
     paths.extend(sorted(directory.glob("sphinx_llm_output_*.log"))[-2:])
     for path in paths:
@@ -109,29 +108,9 @@ def _relay_logs(directory: pathlib.Path, *, limit: int | None = None) -> None:
             continue
         print(f"--- {path.name} ---", flush=True)
         with path.open("rb") as log:
-            size = path.stat().st_size
-            start = max(0, size - limit) if limit is not None else 0
-            log.seek(start)
-            remaining = size - start
-            while remaining:
-                chunk = log.read(min(remaining, 65536))
-                if not chunk:
-                    break
-                sys.stdout.write(chunk.decode("utf-8", errors="replace"))
-                remaining -= len(chunk)
+            log.seek(max(0, path.stat().st_size - limit))
+            sys.stdout.write(log.read(limit).decode("utf-8", errors="replace"))
         print(flush=True)
-
-
-def _run_sphinx(
-    argv: list[str], *, timeout: float = 17 * 60, grace_period: float = 5
-) -> int:
-    with tempfile.TemporaryDirectory(prefix="erlab-rtd-") as directory:
-        temp_dir = pathlib.Path(directory)
-        returncode = _run_worker(
-            argv, temp_dir, timeout=timeout, grace_period=grace_period
-        )
-        _relay_logs(temp_dir)
-        return returncode
 
 
 def _start_sphinx(argv: list[str], *, state_dir: pathlib.Path) -> None:
@@ -188,7 +167,7 @@ def _poll_sphinx(
     print(f"RTD Sphinx checkpoint: {(state_dir / 'stage').read_text()}")
     print(f"Recorded result: {returncode}")
     # Keep each exec response small and save it before the outer RTD deadline.
-    _relay_logs(state_dir, limit=8192)
+    _relay_logs(state_dir)
     if final:
         import shutil
 
@@ -221,4 +200,4 @@ if __name__ == "__main__":
         raise SystemExit(_poll_sphinx(state_dir=state, final="--final" in sys.argv))
     else:
         faulthandler.cancel_dump_traceback_later()
-        raise SystemExit(_run_sphinx(sys.argv[1:]))
+        raise SystemExit("Expected --start, --poll, --background, or --worker.")

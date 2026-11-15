@@ -48,7 +48,10 @@ def _stop_child(pid: int) -> None:
         process.wait(timeout=2)
 
 
-def test_rtd_sphinx_forwards_arguments_and_output(tmp_path, monkeypatch, capfd) -> None:
+def test_rtd_sphinx_successful_poll_forwards_arguments_and_output(
+    tmp_path, monkeypatch, capfd
+) -> None:
+    state_dir = tmp_path / "output with spaces" / ".rtd-sphinx"
     _install_fake_sphinx(
         tmp_path,
         monkeypatch,
@@ -63,81 +66,37 @@ def test_rtd_sphinx_forwards_arguments_and_output(tmp_path, monkeypatch, capfd) 
     )
     arguments = ["-T", "-b", "html", "source with spaces", "output with 'quotes'"]
 
-    assert rtd_sphinx._run_sphinx(arguments, timeout=5, grace_period=0.2) == 0
-
-    captured = capfd.readouterr()
-    output = captured.out + captured.err
-    argument_line = next(
-        line for line in output.splitlines() if line.startswith("sphinx-args:")
-    )
-    assert json.loads(argument_line.removeprefix("sphinx-args:")) == arguments
-    assert "sphinx-standard-output" in output
-    assert "sphinx-standard-error" in output
-
-
-def test_rtd_sphinx_preserves_failure_and_markdown_log(
-    tmp_path, monkeypatch, capfd
-) -> None:
-    _install_fake_sphinx(
-        tmp_path,
-        monkeypatch,
-        """
-        import os
-        import pathlib
-        import sys
-
-        log = pathlib.Path(os.environ["TMPDIR"]) / "sphinx_llm_output_probe.log"
-        log.write_text("markdown-subprocess-diagnostic\\n")
-        print("sphinx-parent-diagnostic", flush=True)
-        sys.exit(7)
-        """,
-    )
-
-    assert rtd_sphinx._run_sphinx([], timeout=5, grace_period=0.2) == 7
-
-    captured = capfd.readouterr()
-    output = captured.out + captured.err
-    assert "sphinx-parent-diagnostic" in output
-    assert "markdown-subprocess-diagnostic" in output
-
-
-def test_rtd_sphinx_returns_without_detached_child_output_eof(
-    tmp_path, monkeypatch
-) -> None:
-    if os.name == "nt":
-        pytest.skip("This RTD regression needs POSIX process sessions.")
-    pid_file = tmp_path / "child.pid"
-    _install_fake_sphinx(
-        tmp_path,
-        monkeypatch,
-        f"""
-        import pathlib
-        import subprocess
-        import sys
-
-        child = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(10)"],
-            start_new_session=True,
-        )
-        pathlib.Path({str(pid_file)!r}).write_text(str(child.pid))
-        print("sphinx-parent-completed", flush=True)
-        """,
-    )
-
+    controller: psutil.Process | None = None
     try:
-        # Docker also captures an actual pipe. A file-backed pytest capture
-        # would not expose a detached child that inherits the supervisor pipe.
-        result = subprocess.run(
-            [sys.executable, rtd_sphinx.__file__],
-            capture_output=True,
-            text=True,
-            timeout=6,
+        _start_background_cli(state_dir, *arguments)
+        record = json.loads((state_dir / "controller.json").read_text())
+        with contextlib.suppress(psutil.NoSuchProcess):
+            process = psutil.Process(record["pid"])
+            if process.create_time() == record["created_at"]:
+                controller = process
+
+        assert (
+            rtd_sphinx._poll_sphinx(
+                state_dir=state_dir, wait_seconds=5, final=True, grace_period=0.2
+            )
+            == 0
         )
-        assert result.returncode == 0
-        assert "sphinx-parent-completed" in result.stdout + result.stderr
+
+        captured = capfd.readouterr()
+        output = captured.out + captured.err
+        argument_line = next(
+            line for line in output.splitlines() if line.startswith("sphinx-args:")
+        )
+        assert json.loads(argument_line.removeprefix("sphinx-args:")) == arguments
+        assert "sphinx-standard-output" in output
+        assert "sphinx-standard-error" in output
+        assert not state_dir.exists()
     finally:
-        if pid_file.exists():
-            _stop_child(int(pid_file.read_text()))
+        _stop_state_processes(state_dir)
+        if controller is not None:
+            with contextlib.suppress(psutil.NoSuchProcess, psutil.TimeoutExpired):
+                controller.kill()
+                controller.wait(timeout=2)
 
 
 def test_rtd_sphinx_timeout_stops_detached_child_and_replays_traceback(
@@ -179,8 +138,9 @@ def test_rtd_sphinx_timeout_stops_detached_child_and_replays_traceback(
 
     started = time.monotonic()
     try:
-        assert rtd_sphinx._run_sphinx([], timeout=2, grace_period=0.2) == 124
+        assert rtd_sphinx._run_worker([], tmp_path, timeout=2, grace_period=0.2) == 124
         assert time.monotonic() - started < 8
+        rtd_sphinx._relay_logs(tmp_path)
         captured = capfd.readouterr()
         output = captured.out + captured.err
         assert "sphinx-parent-blocked" in output
@@ -221,9 +181,9 @@ def _stop_state_processes(state_dir: pathlib.Path) -> None:
     psutil.wait_procs(list(processes.values()), timeout=2)
 
 
-def _start_background_cli(state_dir: pathlib.Path) -> None:
+def _start_background_cli(state_dir: pathlib.Path, *arguments: str) -> None:
     result = subprocess.run(
-        [sys.executable, rtd_sphinx.__file__, "--start"],
+        [sys.executable, rtd_sphinx.__file__, "--start", *arguments],
         env=os.environ | {"READTHEDOCS_OUTPUT": str(state_dir.parent)},
         capture_output=True,
         text=True,
