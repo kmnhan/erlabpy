@@ -7,6 +7,10 @@ catalog. A contributor should be able to read one operation definition and answe
 three questions. Which inputs does it consume? What Python calculation does it
 perform? Which DataArray does it return? Adding an operation should require no
 changes to Refresh, Copy Full Code, window placement, or the graph traversal.
+The same user workflows must stay as fast as the pre-redesign implementation
+or get faster, with equal or lower peak and retained memory. Apply the
+[performance criteria](#performance-and-large-workspaces) from the first
+milestone onward.
 
 Stage 1 (`7d3f7541`) and Stage 2 (`d7c4329b`) provide the revision graph on
 main `9b62b1e3`. The Manager still uses the existing provenance system. The
@@ -132,7 +136,52 @@ future built-in of the same form supplies only its definition and fixtures.
    zero operation-specific branches. Show which former execution and code
    generation methods the port deletes. Complete this milestone when each
    execution form has evidence and every catalog entry has a porting route.
-   Track the remaining production ports separately.
+   Verify the affected workloads below before closing the milestone. Track
+   the remaining production ports separately.
+
+## Performance and large workspaces
+
+**Baseline.** Compare each migrated path with the same user action on
+pre-redesign main (`9b62b1e3` for this branch). Use the same hardware, dependency
+versions, backend, arrays, chunking, display settings, and retained history.
+Verify the final arrays and completed updates in both runs. For new graph
+behavior without a previous equivalent, measure scaling and operation counts.
+Record both commits, the workload and the command so the comparison can be rerun.
+
+| Workload | Acceptance |
+| --- | --- |
+| Many entries, small arrays | Grow a workspace from 1,000 to 10,000 entries, including pending rows, long chains, wide fan-out, and branches with shared ancestors. Hold the affected branch fixed while adding unrelated rows. A local edit, stale-state query, or Refresh should do work proportional to the dependencies it needs. Count entries and edges visited, numerical calls, and rows materialized. Each required shared producer runs once per request. Inspecting one row must leave unrelated pending windows unloaded. |
+| Few entries, large arrays | Exercise eager volumes and chunked, file-backed data whose logical size exceeds RAM. Inspect metadata, preview a command, take a plane, and publish a derived result. Count chunks read and full-buffer copies, including coordinates. Metadata queries read zero data chunks. A slice or coordinate-only operand reads only the chunks it needs. Charge viewer rendering separately. Read-only paths reuse owned buffers. Include the cost of protecting an incoming mutable buffer that the producer immediately overwrites. |
+| Interactive updates | During a growing acquisition grid, move the cursor while new frames arrive, with filtering and Auto both enabled and disabled. Measure throughput, end-to-end command latency, and cursor-event gaps through capture, calculation, and publication. Report the median, tail, and worst observed gap as well as the final displayed result. Coalesce superseded work and bound the queued frames and worker payloads. |
+| Persistence and lifetime | Measure save and reopen time and peak memory with shared data and pending rows. Whole-workspace work should scale with records, edges, and unique payloads processed. Count shared buffers and stored payloads once. Record reachable stored bytes and physical file size after compaction separately. |
+
+**Leak check.** In one long-lived process, hold the surviving windows, undo
+history, pins, and active readers fixed. Repeat create → replace → refresh →
+close and save → reopen cycles, including failure, cancellation, and superseded
+worker results. After pending work drains, count live revisions, unique payload
+bytes, queued jobs, open handles, and caches. They must settle with a fixed
+workload. Then release the last owner and verify that representative arrays,
+windows, and workers can be collected and file handles close. This catches a
+leak even when a small test leaves process memory apparently flat.
+
+**Comparison and sign-off.** Keep deterministic visit, copy, read, and lifetime
+checks in the test suite. For timing and process memory, alternate repeated
+baseline and candidate runs in fresh processes with the same warm-up. Measure
+peak and settled process memory across the Manager and its workers as well as
+live payload bytes. Record the process-memory metric and how shared pages were
+counted. Repeat an inconclusive measurement and report the variation.
+A reproducible slowdown or increase in peak or retained memory keeps the
+affected milestone open. A gain in one metric cannot offset a regression in
+another. Use the affected workloads for each port and the complete set before
+switching the default implementation.
+
+The foundation already tests a 1,100-entry chain and diamond, lazy status queries,
+Auto coalescing, and release of retained revisions. Extend these checks through
+the Manager and workspace so they also catch hidden work in the UI and storage.
+Paired timing and peak-memory measurements are pending for the new framework.
+[Graph tests](../../tests/test_provenance_graph.py) ·
+[Pending previews](../../tests/interactive/imagetool/manager/workspace/test_pending_preview.py) ·
+[Workspace storage](../../tests/interactive/imagetool/manager/workspace/test_storage.py)
 
 ## Manager integration
 
@@ -170,7 +219,7 @@ same assertions to the other producer paths. [Foundation acceptance tests](../..
 | --- | --- |
 | Port the existing writers and readers | Convert operations by common call form and route producers through the shared submission path. Retire their independent source selection, precomputation, and emitters. Preserve file and watched ingress, display filters and transpose, rejected updates, batch rollback, metadata edits, and clipboard behavior. Grouped historical edits restore the complete group from any member and affect only the selected branch. |
 | Console and ToolWindows | A console window handle is live, a calculated result retains its inputs, and `.data` is an independent editable snapshot. Item assignment records an edit. Assigning a plain array starts a checkpoint. Assigning a recorded result retains provenance. Preserve direct `xr` and `era` calls, repeated operands, and `tools.apply`. Use the console matrix in the prototype plan, lines 233–289. A ToolWindow edits durable output recipes. In ktool, a changed conversion offset can make an output stale and restoring it can clear the cause. Display overlays leave it current. Exercise editor close and out-of-order fit completion. Figure Composer can reference ftool directly without adding a data edge. |
-| Native workspace and performance | Save shared graph records once and restore the graph before the windows. Reopen a workspace while C is stale and verify both bindings, Auto, copied Python, and Refresh. Repeat a grouped edit. Bound retained payloads across refresh/save/reopen and measure file size after compaction. Compare cursor-event gaps during growing acquisition, filtering, Auto, and publication with the same workload on main. |
+| Native workspace | Save shared graph records once and restore the graph before the windows. Reopen a workspace while C is stale and verify both bindings, Auto, copied Python, and Refresh. Repeat a grouped edit and run the persistence and lifetime comparisons above. |
 | Legacy migration | After the native format round-trips, import representative old workspaces. Recover evidenced file origins, operations, bindings, placement, and checkpoints. Preserve available descriptions where only a value survives. Verify trust and legacy fixtures before switching the default reader and writer. |
 
 Use one Qt binding locally and exercise binding-sensitive paths on both bindings
