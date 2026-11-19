@@ -1,6 +1,7 @@
 import ast
 import collections.abc
 import copy
+import csv
 import itertools
 import json
 import pathlib
@@ -38,11 +39,14 @@ from erlab._provenance._code import (
     _validate_script_replay_code,
 )
 from erlab._provenance._files import (
+    _load_file_source_data,
     _load_provenance_from_file_details,
     _load_source_details_from_file,
     _load_source_details_from_provenance,
+    _parse_replay_input,
     _register_local_callable_loader,
     _registered_local_callable_loader,
+    _select_replay_input,
 )
 from erlab._provenance._model import (
     _OPERATION_TYPES,
@@ -168,9 +172,6 @@ from erlab.interactive._code_trust import (
 )
 from erlab.interactive._code_trust._api import _document_trust_after_save
 from erlab.interactive.imagetool._provenance._execution import (
-    _load_file_source_data,
-    _parse_replay_input,
-    _select_replay_input,
     can_reload_without_trust,
     execute_replay_graph,
     file_load_source_status,
@@ -1392,6 +1393,16 @@ def test_tool_provenance_discards_saved_cosmetic_coordinate_sorting() -> None:
     assert "sort_coord_order" not in str(spec.model_dump(mode="json"))
 
 
+def test_porting_routes_cover_the_registered_operations() -> None:
+    inventory = pathlib.Path(__file__).with_name("provenance_ports.csv")
+    with inventory.open(encoding="utf-8", newline="") as file:
+        routes = list(csv.DictReader(file))
+
+    provenance_model._ensure_operation_catalog_loaded()
+    assert all(row["porting route"].strip() for row in routes)
+    assert sorted(row["operation"] for row in routes) == sorted(_OPERATION_TYPES)
+
+
 def test_registered_provenance_define_operation_code_api() -> None:
 
     structured_operation_types = [
@@ -1546,7 +1557,7 @@ def test_operation_replay_code_preserves_input_expression_grouping(
     right = left * 2.0
     namespace = _exec_generated_code(
         operation.replay_code("left - right", output_name="result"),
-        {"left": left, "right": right},
+        {"left": left, "right": right, "era": erlab.analysis},
     )
     xr.testing.assert_identical(namespace["result"], operation.apply(left - right))
 
@@ -1840,27 +1851,22 @@ def test_operation_code_base_edges() -> None:
 
 
 @pytest.mark.parametrize(
-    ("operation", "expected"),
+    ("mode", "expected_values"),
     [
-        (
-            NormalizeOperation(dims=("x",), mode="area"),
-            'data / data.mean("x")',
-        ),
-        (
-            NormalizeOperation(dims=("x",), mode="min"),
-            'data - data.min("x")',
-        ),
-        (
-            NormalizeOperation(dims=("x",), mode="min_area"),
-            '(data - data.min("x")) / data.mean("x")',
-        ),
+        ("area", [0.5, 1.5]),
+        ("minmax", [0.0, 1.0]),
+        ("min", [0.0, 2.0]),
+        ("min_area", [0.0, 1.0]),
     ],
 )
-def test_normalize_operation_expression_modes(
-    operation: NormalizeOperation,
-    expected: str,
-) -> None:
-    assert operation.expression_code("data") == expected
+def test_normalize_operation_expression_modes(mode, expected_values) -> None:
+    operation = NormalizeOperation(dims=("x",), mode=mode)
+    data = xr.DataArray([1.0, 3.0], dims="x")
+    code = operation.replay_code("data", output_name="normalized")
+    result = _exec_generated_code(code, {"era": erlab.analysis, "data": data})
+    xr.testing.assert_identical(
+        result["normalized"], xr.DataArray(expected_values, dims="x")
+    )
 
 
 @pytest.mark.parametrize("mode", ["area", "minmax", "min", "min_area"])
@@ -1902,7 +1908,7 @@ def test_normalize_avoids_full_size_temporaries(
                 scale = (
                     abs(data).where(np.isfinite(data)).max(operation.dims, skipna=True)
                 )
-            denominator = operation._safe_denominator(
+            denominator = erlab.analysis.transform._safe_denominator(
                 denominator, scale, operation.denominator_rtol
             )
             expected = (data if mode == "area" else data - minimum) / denominator
@@ -1950,7 +1956,7 @@ def test_normalize_preserves_other_dtypes(mode, dtype) -> None:
             if mode == "minmax"
             else abs(data).where(np.isfinite(data)).max("x", skipna=True)
         )
-        denominator = operation._safe_denominator(
+        denominator = erlab.analysis.transform._safe_denominator(
             maximum - minimum if mode == "minmax" else data.mean("x"),
             scale,
             operation.denominator_rtol,
@@ -2637,12 +2643,12 @@ def test_interpolation_nonstring_dimension_serialization(dim) -> None:
     assert parse_tool_provenance_operation(legacy) == operation
     bound = InterpolationFromInputOperation(dimensions=(dim,))
     assert parse_tool_provenance_operation(json.loads(bound.model_dump_json())) == bound
-    expression = ast.parse(
+    call = ast.parse(
         bound.expression_code_with_inputs("data", {"target": "target"}), mode="eval"
     ).body
-    assert isinstance(expression, ast.Call)
-    assert len(expression.args) == 1
-    assert isinstance(expression.args[0], ast.Dict)
+    assert isinstance(call, ast.Call)
+    dims = next(arg.value for arg in call.keywords if arg.arg == "dimensions")
+    assert ast.literal_eval(dims) == (dim,)
 
 
 @pytest.mark.parametrize(
@@ -2702,13 +2708,11 @@ def test_interpolation_from_input_replay_and_code(dimensions) -> None:
     assert provenance_code_trust_entries(restored, location_prefix="interpolate") == ()
     code = spec.display_code()
     assert code is not None
-    namespace = _exec_generated_code(code, inputs)
+    namespace = _exec_generated_code(code, {**inputs, "era": erlab.analysis})
     xr.testing.assert_identical(namespace["interpolated"], expected)
     if dimensions == ("eV",):
-        assert ".interp(eV=target.eV" in code
         assert "hv" in namespace["interpolated"].coords
     elif dimensions is None:
-        assert ".interp_like(target" in code
         assert "hv" not in namespace["interpolated"].coords
 
 
@@ -2736,7 +2740,9 @@ def test_interpolation_from_input_safe_coordinate_code(dim) -> None:
     code = operation.replay_code(
         "data + 1", output_name="result", bound_inputs={"target": "target + 2"}
     )
-    namespace = _exec_generated_code(code, {"data": data, "target": target})
+    namespace = _exec_generated_code(
+        code, {"era": erlab.analysis, "data": data, "target": target}
+    )
     expected = operation.apply_with_inputs(data + 1, {"target": target + 2})
     xr.testing.assert_identical(namespace["result"], expected)
 
@@ -2809,7 +2815,8 @@ def test_interpolation_expression_preserves_input_grouping(dimensions) -> None:
         "data + 1", {"target": "target + 2"}
     )
     namespace = _exec_generated_code(
-        f"result = {expression}", {"data": data, "target": target}
+        f"result = {expression}",
+        {"era": erlab.analysis, "data": data, "target": target},
     )
     xr.testing.assert_identical(
         namespace["result"],
@@ -3351,10 +3358,10 @@ def test_tool_provenance_affine_coord_operation(
 
     code = full_data(operation).to_replay_spec().display_code(parent_data=data)
     assert code is not None
-    call_names = _generated_call_names(code)
-    assert any(call.endswith(".assign_coords") for call in call_names)
-    assert "erlab.utils.array.sort_coord_order" not in call_names
-    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    assert "era.transform.affine_coord" in _generated_call_names(code)
+    namespace = _exec_generated_code(
+        code, {"era": erlab.analysis, "data": data.copy(deep=True)}
+    )
     xr.testing.assert_identical(
         namespace["derived"],
         data.assign_coords(
@@ -3364,45 +3371,6 @@ def test_tool_provenance_affine_coord_operation(
                 )
             }
         ),
-    )
-
-
-@pytest.mark.parametrize(
-    ("scale", "offset", "expected_fragments", "forbidden_fragments"),
-    [
-        (1.0, -3.7, ("['y'].values - 3.7",), ("1.0 *", "+ -3.7")),
-        (2.0, -3.7, ("2.0 *", "['y'].values - 3.7"), ("+ -3.7",)),
-        (
-            1.0,
-            0.0,
-            ("['y'].values)",),
-            ("1.0 *", "+ 0.0", "- 0.0"),
-        ),
-    ],
-)
-def test_tool_provenance_affine_coord_display_code_formats_no_ops(
-    scale: float,
-    offset: float,
-    expected_fragments: tuple[str, ...],
-    forbidden_fragments: tuple[str, ...],
-) -> None:
-    data = _base_data()
-    operation = AffineCoordOperation(
-        coord_name="y",
-        scale=scale,
-        offset=offset,
-    )
-
-    code = full_data(operation).to_replay_spec().display_code(parent_data=data)
-    assert code is not None
-    for fragment in expected_fragments:
-        assert fragment in code
-    for fragment in forbidden_fragments:
-        assert fragment not in code
-
-    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
-    xr.testing.assert_identical(
-        namespace["derived"], _expected_affine_coord(data, "y", scale, offset)
     )
 
 
@@ -3433,7 +3401,9 @@ def test_tool_provenance_affine_coord_uses_scalar_coordinate_offset() -> None:
     code = full_data(operation).to_replay_spec().display_code(parent_data=data)
     assert code is not None
     destination = data.assign_coords(hv=40.0)
-    namespace = _exec_generated_code(code, {"data": destination.copy(deep=True)})
+    namespace = _exec_generated_code(
+        code, {"era": erlab.analysis, "data": destination.copy(deep=True)}
+    )
     xr.testing.assert_identical(
         namespace["derived"],
         destination.assign_coords(
@@ -3462,7 +3432,7 @@ def test_tool_provenance_affine_coord_lazy_scalar_offset_code() -> None:
 
     code = full_data(operation).to_replay_spec().display_code(parent_data=data)
     assert code is not None
-    namespace = _exec_generated_code(code, {"data": data})
+    namespace = _exec_generated_code(code, {"era": erlab.analysis, "data": data})
     xr.testing.assert_identical(
         namespace["derived"],
         data.assign_coords(
@@ -11087,4 +11057,46 @@ def test_released_display_mapping_stops_at_its_restore_step(kind) -> None:
     assert code is not None
     xr.testing.assert_identical(
         _exec_generated_code(code, {"data": data})["derived"], expected
+    )
+
+
+def test_stored_program_repeated_revision_shares_one_isolated_input() -> None:
+    source = xr.DataArray([1, 2], attrs={"labels": ["initial"]})
+    expected = xr.DataArray([9, 2], attrs={"labels": ["initial", "changed"]})
+    program = script(
+        ScriptCodeOperation(
+            label="Edit input",
+            code=(
+                "left[0] = 9\n"
+                "left.attrs['labels'].append('changed')\n"
+                "left = left + 1\n"
+                "derived = right"
+            ),
+        ),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=tuple(
+            ScriptInput(name=name, node_uid="entry", revision_id="revision")
+            for name in ("left", "right")
+        ),
+    )
+    restored = ToolProvenanceSpec.model_validate_json(program.model_dump_json())
+    actual = replay_script_provenance(
+        restored,
+        {"left": source, "right": source},
+        authorize=_authorize_execution,
+    )
+    xr.testing.assert_identical(actual, expected)
+    graph = compile_replay_graph(restored, display=True)
+    (source_key,) = graph.required_input_keys()
+    code = emit_replay_code(
+        graph,
+        output_name="derived",
+        input_name_overrides={source_key: "scan"},
+    )
+    namespace = {"scan": source.copy(deep=True)}
+    exec(code, namespace)  # noqa: S102 - execute the exported program
+    xr.testing.assert_identical(namespace["derived"], expected)
+    xr.testing.assert_identical(
+        source, xr.DataArray([1, 2], attrs={"labels": ["initial"]})
     )

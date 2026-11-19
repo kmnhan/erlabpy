@@ -9,13 +9,14 @@ import typing
 import uuid
 import weakref
 from concurrent.futures import CancelledError
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from graphlib import TopologicalSorter
 
 import pydantic
 import xarray as xr
 
+from erlab._provenance._checkpoint import FileVersion, checkpoint_data, editable_data
 from erlab._provenance._records import (
     Application,
     Binding,
@@ -29,13 +30,12 @@ from erlab._provenance._records import (
     Pin,
     Recipe,
     check_id,
-    checkpoint_data,
 )
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Hashable, Iterable, Iterator
 
-    from erlab._provenance._model import FileReplayCall
+    from erlab._provenance._model import FileReplayCall, ToolProvenanceOperation
 
 
 @dataclass(frozen=True, eq=False)
@@ -105,7 +105,11 @@ def _share_producer(
             if isinstance(step, FileLoad):
                 key = (step.source, _setting_key(step._captured))
             else:
-                key = (step._captured.inputs, _setting_key(step._captured.operation))
+                key = (
+                    step._captured.inputs,
+                    step._captured.execution,
+                    _setting_key(step._captured.operation),
+                )
             representative = versions.setdefault(key, representative)
         for binding in group:
             if representative != binding:
@@ -201,6 +205,16 @@ class _Evaluation:
     entries: dict[str, tuple[str, xr.DataArray]] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class EvaluatedEntry:
+    """One pending display update, available to the host before graph publication."""
+
+    entry_id: str
+    revision: DataRevision
+    recipe: Recipe | FileLoad
+    data: xr.DataArray
+
+
 class ProvenanceGraph:
     """A single-owner, synchronous graph with stable ImageTool entries.
 
@@ -218,13 +232,23 @@ class ProvenanceGraph:
     def __init__(
         self,
         *,
-        read_file: Callable[[FileSource, FileReplayCall], xr.DataArray] | None = None,
+        read_file: Callable[
+            [FileSource, FileReplayCall],
+            xr.DataArray | tuple[xr.DataArray, FileVersion],
+        ]
+        | None = None,
         schedule_auto: Callable[[Callable[[], None]], None] | None = None,
+        install: Callable[[tuple[EvaluatedEntry, ...]], AbstractContextManager[None]]
+        | None = None,
     ) -> None:
         self._read_file = read_file
+        self._install = install
         self._owner = threading.get_ident()
-        self._files: dict[str, FileSource] = {}
+        self._files: weakref.WeakValueDictionary[str, FileSource] = (
+            weakref.WeakValueDictionary()
+        )
         self._entries: dict[str, ImageToolEntry] = {}
+        self._closed: dict[str, _StoredRevision] = {}
         self._revisions: weakref.WeakValueDictionary[str, _StoredRevision] = (
             weakref.WeakValueDictionary()
         )
@@ -247,12 +271,33 @@ class ProvenanceGraph:
     def revision_ids(self) -> frozenset[str]:
         return frozenset(self._revisions)
 
+    def __contains__(self, entry_id: str) -> bool:
+        return entry_id in self._entries
+
+    def current_revision(self, entry_id: str) -> str:
+        return self._entries[entry_id].revision_id
+
+    def followed_entries(self, entry_id: str) -> set[str]:
+        return self._sources(self._entries[entry_id].recipe)
+
+    def has_followers(self, entry_id: str) -> bool:
+        return bool(self._followers.get(entry_id))
+
+    def has_recipe(self, entry_id: str) -> bool:
+        entry = self._entries.get(entry_id)
+        return entry is not None and entry.recipe is not None
+
     def entry(self, entry_id: str) -> ImageToolEntry:
         # A frozen typed operation can still contain mutable parameter values.
         return copy.deepcopy(self._entries[entry_id])
 
     def revision(self, revision_id: str) -> DataRevision:
         return copy.deepcopy(self._revisions[revision_id].record)
+
+    def on_release(self, revision_id: str, release: Callable[[str], None]) -> None:
+        """Release an exported projection when the last graph owner goes away."""
+        finalizer = weakref.finalize(self._revisions[revision_id], release, revision_id)
+        finalizer.atexit = False
 
     @contextmanager
     def retain(self, revision_id: str) -> Iterator[None]:
@@ -285,6 +330,11 @@ class ProvenanceGraph:
         inputs: list[tuple[str, str | Follow | EarlierStep]] = []
         for slot, binding in recipe._captured.inputs:
             if isinstance(binding, Follow):
+                if binding.entry_id in self._closed:
+                    inputs.append(
+                        (slot, self._closed[binding.entry_id].record.revision_id)
+                    )
+                    continue
                 source = self._entries[binding.entry_id]
                 inputs.append(
                     (
@@ -304,7 +354,7 @@ class ProvenanceGraph:
         """Read a revision, replaying virtual steps from their recorded inputs."""
         root = Pin(revision_id)
         result = self._evaluate(self._plan(root))
-        return result.values[root][1].copy(deep=True)
+        return editable_data(result.values[root][1])
 
     def recorded_lineage(self, revision_id: str) -> tuple[DataRevision, ...]:
         """Return each recorded ancestor once, before the revision that used it."""
@@ -328,7 +378,7 @@ class ProvenanceGraph:
 
     def _check_new_entry(self, entry_id: str, parent_id: str | None) -> None:
         check_id(entry_id)
-        if entry_id in self._entries:
+        if entry_id in self._entries or entry_id in self._closed:
             raise ValueError(f"ImageTool entry {entry_id!r} already exists")
         if parent_id is not None and parent_id not in self._entries:
             raise KeyError(parent_id)
@@ -338,17 +388,18 @@ class ProvenanceGraph:
         entry_id: str,
         data: xr.DataArray,
         *,
+        backing: FileVersion | None = None,
         auto: bool = False,
         parent_id: str | None = None,
     ) -> str:
         self._check_new_entry(entry_id, parent_id)
         generation = self._write_generation()
-        owned = checkpoint_data(data)
+        owned = checkpoint_data(data, backing=backing)
         if self._generation != generation:
             self._check_new_entry(entry_id, parent_id)
         revision_id = uuid.uuid4().hex
         stored = _StoredRevision(
-            DataRevision(revision_id, None, True), revision_id, None, owned, ()
+            DataRevision(revision_id, None, True, backing), revision_id, None, owned, ()
         )
         self._revisions[revision_id] = stored
         self._entry_roots[entry_id] = (stored,)
@@ -359,13 +410,77 @@ class ProvenanceGraph:
         self._generation += 1
         return revision_id
 
+    def adopt_checkpoint(
+        self,
+        entry_id: str,
+        revision_id: str,
+        owned: xr.DataArray,
+        *,
+        file_load: FileLoad | None = None,
+        backing: FileVersion | None = None,
+    ) -> None:
+        """Bind an already protected checkpoint from the host revision store."""
+        self._write_generation()
+        check_id(entry_id)
+        check_id(revision_id)
+        if not isinstance(owned, xr.DataArray):
+            raise TypeError("A checkpoint must be a DataArray")
+        current = self._entries.get(entry_id)
+        if current is not None and current.revision_id == revision_id:
+            return
+        stored = self._revisions.get(revision_id)
+        if stored is None:
+            stored = _StoredRevision(
+                DataRevision(revision_id, file_load, True, backing),
+                revision_id,
+                file_load,
+                owned,
+                (),
+            )
+            self._revisions[revision_id] = stored
+        if current is None:
+            self._check_new_entry(entry_id, None)
+            entry = ImageToolEntry(
+                entry_id, revision_id, file_load, False, None, len(self._entries)
+            )
+        else:
+            self._index_sources(entry_id, current.recipe, set())
+            self._displayed.pop(current.revision_id, None)
+            entry = replace(
+                current, revision_id=revision_id, recipe=file_load, auto=False
+            )
+        self._entries[entry_id] = entry
+        self._displayed[revision_id] = owned
+        self._entry_roots[entry_id] = (stored,)
+        self._stale.discard(entry_id)
+        self._auto_pending.pop(entry_id, None)
+        self._auto_errors.pop(entry_id, None)
+        self._generation += 1
+        self._queue_auto(self._invalidate({entry_id}))
+
+    def remove_entry(self, entry_id: str) -> None:
+        """Close a window. Followers retain its last displayed revision."""
+        self._write_generation()
+        entry = self._entries[entry_id]
+        self._index_sources(entry_id, entry.recipe, set())
+        if self._followers.get(entry_id):
+            self._closed[entry_id] = self._revisions[entry.revision_id]
+        del self._entries[entry_id], self._entry_roots[entry_id]
+        self._displayed.pop(entry.revision_id, None)
+        self._stale.discard(entry_id)
+        self._auto_pending.pop(entry_id, None)
+        self._auto_errors.pop(entry_id, None)
+        self._generation += 1
+
     def file_source(self, path: str) -> FileSource:
         self._write_generation()
         if not path:
             raise ValueError("A file source needs a path")
-        if path not in self._files:
-            self._files[path] = FileSource(uuid.uuid4().hex, path)
-        return self._files[path]
+        source = self._files.get(path)
+        if source is None:
+            source = FileSource(uuid.uuid4().hex, path)
+            self._files[path] = source
+        return source
 
     def derive(
         self,
@@ -411,6 +526,45 @@ class ProvenanceGraph:
                 ),
             )
         return self._run(entry_id, recipe, is_cancelled=is_cancelled)
+
+    def edit_application(
+        self,
+        entry_id: str,
+        revision_id: str,
+        operation: ToolProvenanceOperation,
+        *,
+        changed_inputs: dict[str, Follow] | None = None,
+    ) -> str:
+        """Edit the displayed calculation and keep the existing Refresh bindings."""
+        entry = self._entries[entry_id]
+        if entry.revision_id != revision_id:
+            raise ValueError("The displayed revision changed. Reopen the editor.")
+        producer = self._revisions[revision_id].record.producer
+        if not isinstance(entry.recipe, Recipe) or not isinstance(
+            producer, Application
+        ):
+            raise TypeError("The entry has no editable operation.")
+        changed = {} if changed_inputs is None else changed_inputs
+        previous = dict(entry.recipe.inputs)
+        used = dict(producer.inputs)
+        slots = ("data", *operation.input_slots())
+        pending = Recipe(
+            operation,
+            tuple(
+                (slot, changed[slot] if slot in changed else previous[slot])
+                for slot in slots
+            ),
+            execution=entry.recipe._captured.execution,
+        )
+        displayed = Recipe(
+            operation,
+            tuple(
+                (slot, changed[slot] if slot in changed else Pin(used[slot]))
+                for slot in slots
+            ),
+            execution=producer.execution,
+        )
+        return self._run(entry_id, pending, displayed=displayed)
 
     def set_auto(self, entry_id: str, *, enabled: bool) -> None:
         self._write_generation()
@@ -488,7 +642,10 @@ class ProvenanceGraph:
             elif isinstance(step, Recipe):
                 for _, binding in step._captured.inputs:
                     if isinstance(binding, Follow):
-                        if binding.entry_id not in self._entries:
+                        if (
+                            binding.entry_id not in self._entries
+                            and binding.entry_id not in self._closed
+                        ):
                             raise KeyError(binding.entry_id)
                         sources.add(binding.entry_id)
                     elif isinstance(binding, Pin):
@@ -557,7 +714,12 @@ class ProvenanceGraph:
             ):
                 if (
                     isinstance(source, Follow)
-                    and self._entries[source.entry_id].revision_id != used
+                    and (
+                        self._entries[source.entry_id].revision_id
+                        if source.entry_id in self._entries
+                        else self._closed[source.entry_id].record.revision_id
+                    )
+                    != used
                 ):
                     return True
                 if isinstance(source, EarlierStep):
@@ -678,9 +840,14 @@ class ProvenanceGraph:
     def _index_sources(
         self, entry_id: str, old: Recipe | FileLoad | None, sources: set[str]
     ) -> None:
-        for source in self._sources(old):
-            self._followers[source].remove(entry_id)
-        for source in sources:
+        previous = self._sources(old)
+        for source in previous - sources:
+            followers = self._followers[source]
+            followers.remove(entry_id)
+            if not followers:
+                del self._followers[source]
+                self._closed.pop(source, None)
+        for source in sources - previous:
             self._followers.setdefault(source, set()).add(entry_id)
 
     def _check_current(self, plan: _Plan) -> None:
@@ -702,6 +869,7 @@ class ProvenanceGraph:
         recipe: Recipe | FileLoad | None,
         *,
         mode: _Mode = "displayed",
+        displayed: Recipe | None = None,
         auto: bool = False,
         parent_id: str | None = None,
         is_cancelled: Callable[[], bool] | None = None,
@@ -716,7 +884,9 @@ class ProvenanceGraph:
             else self._sources(recipe)
         )
         root = Follow(entry_id)
-        plan = self._plan(root, recipe=recipe, mode=mode)
+        plan = self._plan(
+            root, recipe=displayed if displayed is not None else recipe, mode=mode
+        )
         try:
             result = self._evaluate(plan, is_cancelled=is_cancelled)
         except _SupersededEvaluation:
@@ -733,42 +903,96 @@ class ProvenanceGraph:
                 # A new edge elsewhere may have closed a proposed live cycle.
                 self._check_recipe(entry_id, recipe)
 
-        # Commit the prepared values and edges together after every operation succeeds.
-        self._revisions.update(result.revisions)
-        for target, (revision_id, data) in result.entries.items():
-            old = self._entries.get(target)
-            stored = result.revisions[revision_id]
-            effective = stored.recipe
-            if old is None:
-                entry = ImageToolEntry(
-                    target, revision_id, effective, auto, parent_id, len(self._entries)
+        historical = False
+        if displayed is not None and isinstance(recipe, Recipe):
+            revision_id = result.entries[entry_id][0]
+            captured = result.revisions[revision_id]
+            applied = typing.cast("Application", captured.record.producer)
+            parents = {
+                revision.record.revision_id: revision for revision in captured.parents
+            }
+            for key in self._recipe_revisions(recipe):
+                parents[key] = self._revisions[key]
+            result.revisions[revision_id] = replace(
+                captured, recipe=recipe, parents=tuple(parents.values())
+            )
+            historical = any(
+                isinstance(binding, Follow)
+                and binding.entry_id in self._entries
+                and self._entries[binding.entry_id].revision_id != used
+                for (_, binding), (_, used) in zip(
+                    recipe.inputs, applied.inputs, strict=True
                 )
-            else:
-                del self._displayed[old.revision_id]
-                entry = replace(old, revision_id=revision_id, recipe=effective)
-            if target == entry_id and mode == "displayed":
-                self._index_sources(target, old.recipe if old else None, sources)
-            self._entries[target] = entry
-            self._displayed[revision_id] = data
-            self._entry_roots[target] = (stored,)
-            self._auto_errors.pop(target, None)
+            )
+        if self._install is not None:
+            updates = tuple(
+                EvaluatedEntry(
+                    target,
+                    copy.deepcopy(result.revisions[node].record),
+                    copy.deepcopy(
+                        typing.cast("Recipe | FileLoad", result.revisions[node].recipe)
+                    ),
+                    data,
+                )
+                for target, (node, data) in result.entries.items()
+            )
+            installation = self._install(updates)
+        else:
+            installation = nullcontext()
+        with installation:
+            _check_cancelled(is_cancelled)
+            if self._generation != generation:
+                self._check_current(plan)
+                if mode == "displayed":
+                    self._check_recipe(entry_id, recipe)
 
-        candidates = self._invalidate(set(result.entries))
-        self._stale.difference_update(result.entries)
-        if (
-            mode == "displayed"
-            and recipe is not None
-            and (sources & self._stale or self._earlier_input_changed(recipe))
-        ):
-            # Derive and Replace consume the data on screen, including stale data.
-            self._stale.add(entry_id)
-            candidates.add(entry_id)
-        self._generation += 1
+            # Install the values and edges after all operations succeed.
+            self._revisions.update(result.revisions)
+            for target, (revision_id, data) in result.entries.items():
+                old = self._entries.get(target)
+                stored = result.revisions[revision_id]
+                effective = stored.recipe
+                if old is None:
+                    entry = ImageToolEntry(
+                        target,
+                        revision_id,
+                        effective,
+                        auto,
+                        parent_id,
+                        len(self._entries),
+                    )
+                else:
+                    self._displayed.pop(old.revision_id, None)
+                    entry = replace(old, revision_id=revision_id, recipe=effective)
+                if target == entry_id and mode == "displayed":
+                    self._index_sources(target, old.recipe if old else None, sources)
+                self._entries[target] = entry
+                self._displayed[revision_id] = data
+                self._entry_roots[target] = (stored,)
+                self._auto_errors.pop(target, None)
+
+            candidates = self._invalidate(set(result.entries))
+            self._stale.difference_update(result.entries)
+            if (
+                mode == "displayed"
+                and recipe is not None
+                and (
+                    historical
+                    or sources & self._stale
+                    or self._earlier_input_changed(recipe)
+                )
+            ):
+                # Derive and Replace consume the data on screen, including stale data.
+                self._stale.add(entry_id)
+                candidates.add(entry_id)
+            self._generation += 1
         self._queue_auto(candidates)
         return self._entries[entry_id].revision_id
 
     def _plan_input(self, binding: Binding, *, mode: _Mode) -> _Action:
         if isinstance(binding, Follow):
+            if binding.entry_id in self._closed:
+                return Pin(self._closed[binding.entry_id].record.revision_id)
             entry = self._entries[binding.entry_id]
             if entry.recipe is not None and (
                 mode == "reload"
@@ -902,23 +1126,27 @@ class ProvenanceGraph:
         producer_id: str | None,
     ) -> None:
         producer: Application | FileLoad
+        backing = None
         if isinstance(step, FileLoad):
             if self._read_file is None:
                 raise ValueError(f"No file reader for {step.source.path!r}")
-            data = checkpoint_data(
-                self._read_file(step.source, copy.deepcopy(step._captured))
-            )
+            loaded = self._read_file(step.source, copy.deepcopy(step._captured))
+            if isinstance(loaded, tuple):
+                array, backing = loaded
+                data = checkpoint_data(array, backing=backing)
+            else:
+                data = checkpoint_data(loaded)
             producer = step
         else:
             inputs = tuple(
                 (slot, result.values[source][0])
                 for slot, source in step._captured.inputs
             )
-            producer = Application(step._captured.operation, inputs)
-            values = dict(result.values[source] for _, source in step._captured.inputs)
-            data = producer.apply(
-                {node: value.copy(deep=True) for node, value in values.items()}
+            producer = Application(
+                step._captured.operation, inputs, step._captured.execution
             )
+            values = dict(result.values[source] for _, source in step._captured.inputs)
+            data = producer.apply(values)
             if not isinstance(data, xr.DataArray):
                 raise TypeError("An operation must produce a DataArray")
         if isinstance(binding, Pin):
@@ -930,7 +1158,7 @@ class ProvenanceGraph:
         if isinstance(producer, Application):
             parent_ids.update(node for _, node in producer.inputs)
         result.revisions[revision_id] = _StoredRevision(
-            DataRevision(revision_id, producer, isinstance(step, FileLoad)),
+            DataRevision(revision_id, producer, isinstance(step, FileLoad), backing),
             revision_id if producer_id is None else producer_id,
             step,
             data if isinstance(step, FileLoad) else None,

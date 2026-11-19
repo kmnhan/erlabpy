@@ -1948,7 +1948,7 @@ def test_extension_loader_execution_uses_public_runner(
         lambda path, **kwargs: calls.append((path, kwargs)) or xr.DataArray([1.0]),
     )
 
-    result = provenance_execution._load_file_source_object(source)
+    result = imagetool_load_source._load_file_source_object(source)
 
     xr.testing.assert_identical(result, xr.DataArray([1.0]))
     assert calls[0][0] == source_file
@@ -14691,9 +14691,8 @@ def test_itool_assign_coords_affine(qtbot, accept_dialog) -> None:
     assert win.provenance_spec is not None
     display_code = win.provenance_spec.display_code(parent_data=data)
     assert display_code is not None
-    assert "['y'].values - 3.7" in display_code
-    assert "1.0 *" not in display_code
-    assert "+ -3.7" not in display_code
+    namespace = _exec_generated_code(display_code, {"data": data.copy(deep=True)})
+    xr.testing.assert_identical(namespace["derived"], win.slicer_area._data)
 
 
 def test_itool_assign_coords_affine_scalar_coordinate_offset(
@@ -16831,8 +16830,6 @@ def test_itool_normalize_filter_copies_code_and_records_display_provenance(
 
     expected = normalize(data, ("x",), 1)
     xarray.testing.assert_identical(win.slicer_area.data, expected)
-    assert ".min(" in pyperclip.paste()
-    assert ".max(" in pyperclip.paste()
     xarray.testing.assert_identical(
         _exec_data_fragment(data, pyperclip.paste()),
         expected,
@@ -16842,8 +16839,6 @@ def test_itool_normalize_filter_copies_code_and_records_display_provenance(
     assert display_code is not None
     code = display_code.display_code()
     assert code is not None
-    assert ".min(" in code
-    assert ".max(" in code
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
     xarray.testing.assert_identical(namespace["derived"], expected)
 

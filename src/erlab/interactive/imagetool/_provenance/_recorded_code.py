@@ -134,6 +134,7 @@ def full_code(
                     parents=(primary, primary, *(source for _, source in others)),
                     payload={
                         "operation": producer.operation,
+                        "execution_settings": producer.local_execution,
                         "input_bindings": tuple(others),
                     },
                 )
@@ -143,6 +144,8 @@ def full_code(
                     f"(file {producer.source.path!r})."
                 )
                 try:
+                    if node.backing is not None:
+                        node.backing.verify()
                     verified = verify_file is not None and verify_file(
                         copy.deepcopy(node)
                     )

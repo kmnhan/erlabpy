@@ -10,6 +10,7 @@ import pydantic
 import xarray as xr
 
 import erlab
+from erlab._provenance._calls import ArrayMethodOperation
 from erlab._provenance._code import _format_selection_expr
 from erlab._provenance._model import (
     _SORT_COORD_ORDER_DERIVATION_LABEL,
@@ -298,7 +299,7 @@ class SortByOperation(ToolProvenanceOperation):
         variables: Hashable | list[Hashable] = (
             self.variables[0] if len(self.variables) == 1 else list(self.variables)
         )
-        args = erlab.interactive.utils._parse_single_arg(variables)
+        args = erlab.utils._code._parse_single_arg(variables)
         if self.ascending:
             return f"{input_name}.sortby({args})"
         return f"{input_name}.sortby({args}, ascending=False)"
@@ -318,11 +319,13 @@ class SelectCoordOperation(ToolProvenanceOperation):
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
-        coord_name_code = erlab.interactive.utils._parse_single_arg(self.coord_name)
+        coord_name_code = erlab.utils._code._parse_single_arg(self.coord_name)
         return f"{input_name}.coords[{coord_name_code}]"
 
 
-class TransposeOperation(ToolProvenanceOperation):
+class TransposeOperation(ArrayMethodOperation):
+    method: typing.ClassVar[str] = "transpose"
+
     op: typing.Literal["transpose"] = "transpose"
     dims: NullableProvenanceHashableTuple = None
 
@@ -347,27 +350,14 @@ class TransposeOperation(ToolProvenanceOperation):
             return cls(dims=tuple(call.args) or None)
         return None
 
-    def apply(self, data: xr.DataArray) -> xr.DataArray:
-        if self.dims:
-            return data.transpose(*self.dims)
-        return data.transpose()
+    def arguments(self) -> tuple[typing.Any, ...]:
+        return self.dims or ()
 
     def derivation_label(self) -> str:
         if self.dims:
             dims_tuple = tuple(self.dims)
             return f"transpose({_format_derivation_value(dims_tuple)})"
         return "transpose()"
-
-    def expression_code(
-        self, input_name: str, *, source_name: str | None = None
-    ) -> str:
-        if self.dims:
-            dims_tuple = tuple(self.dims)
-            return (
-                f"{input_name}.transpose(*"
-                f"{erlab.interactive.utils._parse_single_arg(dims_tuple)})"
-            )
-        return f"{input_name}.transpose()"
 
 
 class SqueezeOperation(ToolProvenanceOperation):
@@ -435,10 +425,12 @@ class SqueezeOperation(ToolProvenanceOperation):
             kwargs["drop"] = self.drop
         if not kwargs:
             return f"{input_name}.squeeze()"
-        return f"{input_name}.squeeze({erlab.interactive.utils.format_kwargs(kwargs)})"
+        return f"{input_name}.squeeze({erlab.utils._code.format_kwargs(kwargs)})"
 
 
-class RenameOperation(ToolProvenanceOperation):
+class RenameOperation(ArrayMethodOperation):
+    method: typing.ClassVar[str] = "rename"
+
     op: typing.Literal["rename"] = "rename"
     name: str | None
 
@@ -457,14 +449,8 @@ class RenameOperation(ToolProvenanceOperation):
             return cls(name=call.args[0])
         return None
 
-    def apply(self, data: xr.DataArray) -> xr.DataArray:
-        return data.rename(self.name)
+    def arguments(self) -> tuple[typing.Any, ...]:
+        return (self.name,)
 
     def derivation_label(self) -> str:
         return f"rename({_format_derivation_value(self.name)})"
-
-    def expression_code(
-        self, input_name: str, *, source_name: str | None = None
-    ) -> str:
-        name_code = erlab.interactive.utils._parse_single_arg(self.name)
-        return f"{input_name}.rename({name_code})"

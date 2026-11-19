@@ -9,6 +9,7 @@ import numpy as np
 import pydantic
 
 import erlab
+from erlab._provenance._calls import MetadataSetterOperation, SetAttribute
 from erlab._provenance._code import _TUPLE_MARKER
 from erlab._provenance._model import (
     ConsoleOperationPattern,
@@ -84,32 +85,32 @@ class _MutatingKspaceOperation(ToolProvenanceOperation):
         raise NotImplementedError
 
 
-class KspaceWorkFunctionOperation(_MutatingKspaceOperation):
+class KspaceWorkFunctionOperation(MetadataSetterOperation):
     op: typing.Literal["kspace_work_function"] = "kspace_work_function"
     work_function: float
 
     def derivation_label(self) -> str:
         return f"Set analyzer work function({self.work_function:g} eV)"
 
-    def _apply_kspace_statement(self, data: xr.DataArray) -> None:
-        data.kspace.analyzer_work_function = self.work_function
+    batch_available: typing.ClassVar[bool] = True
+    console_applies_to_receiver: typing.ClassVar[bool] = True
 
-    def _kspace_statement_code(self, output_name: str) -> str:
-        return f"{output_name}.kspace.analyzer_work_function = {self.work_function!r}"
+    def assignment(self) -> SetAttribute:
+        return SetAttribute("kspace", "analyzer_work_function", self.work_function)
 
 
-class KspaceInnerPotentialOperation(_MutatingKspaceOperation):
+class KspaceInnerPotentialOperation(MetadataSetterOperation):
     op: typing.Literal["kspace_inner_potential"] = "kspace_inner_potential"
     inner_potential: float
 
     def derivation_label(self) -> str:
         return f"Set inner potential({self.inner_potential:g} eV)"
 
-    def _apply_kspace_statement(self, data: xr.DataArray) -> None:
-        data.kspace.inner_potential = self.inner_potential
+    batch_available: typing.ClassVar[bool] = True
+    console_applies_to_receiver: typing.ClassVar[bool] = True
 
-    def _kspace_statement_code(self, output_name: str) -> str:
-        return f"{output_name}.kspace.inner_potential = {self.inner_potential!r}"
+    def assignment(self) -> SetAttribute:
+        return SetAttribute("kspace", "inner_potential", self.inner_potential)
 
 
 class KspaceSetNormalOperation(_MutatingKspaceOperation):
@@ -147,7 +148,7 @@ class KspaceSetNormalOperation(_MutatingKspaceOperation):
     def _kspace_statement_code(self, output_name: str) -> str:
         return (
             f"{output_name}.kspace.set_normal("
-            f"{erlab.interactive.utils.format_call_kwargs(self.kwargs)})"
+            f"{erlab.utils._code.format_call_kwargs(self.kwargs)})"
         )
 
 
@@ -203,7 +204,7 @@ class KspaceConvertOperation(ToolProvenanceOperation):
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
-        kwargs_code = erlab.interactive.utils.format_call_kwargs(self.kwargs)
+        kwargs_code = erlab.utils._code.format_call_kwargs(self.kwargs)
         return f"{input_name}.kspace.convert({kwargs_code})"
 
 

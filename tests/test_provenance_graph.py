@@ -1333,3 +1333,472 @@ def test_preview_reuses_captured_file_kwargs_without_copying_the_array(tmp_path)
     (_, live), (_, earlier) = graph.revision(c).producer.inputs
     assert live == earlier
     assert graph.data(c).item() == 2
+
+
+def test_xarray_file_capture_bounds_layout_checks(tmp_path, monkeypatch):
+    import h5py
+
+    from erlab._provenance import _files
+
+    path = tmp_path / "multiple.h5"
+    with h5py.File(path, "w") as f:
+        f["first"] = [0]
+        f["second"] = [1]
+    monkeypatch.setattr(_files, "_MAX_STORAGE_LINKS", 1)
+    assert _files._capture_loader_file(path, xr.open_dataarray, {}) is None
+    monkeypatch.setattr(_files, "_MAX_STORAGE_LINKS", 2)
+    assert _files._capture_loader_file(path, xr.open_dataarray, {}) is not None
+
+
+@pytest.mark.parametrize("layout", ["virtual", "external_link", "external_storage"])
+def test_xarray_loader_does_not_pin_only_the_container_of_multifile_data(
+    graph, tmp_path, layout
+):
+    import h5py
+
+    from erlab._provenance._files import _capture_loader_file
+
+    path = tmp_path / "container.h5"
+    other = tmp_path / "values.h5"
+    values = np.array([1.0, 2.0])
+    with h5py.File(other, "w") as f:
+        f["values"] = values
+    with h5py.File(path, "w") as f:
+        if layout == "virtual":
+            mapping = h5py.VirtualLayout(shape=values.shape, dtype=values.dtype)
+            mapping[:] = h5py.VirtualSource(str(other), "/values", shape=values.shape)
+            f.create_virtual_dataset("values", mapping)
+        elif layout == "external_link":
+            f["values"] = h5py.ExternalLink(str(other), "/values")
+        else:
+            f.create_dataset(
+                "values",
+                data=values,
+                external=[(str(tmp_path / "raw"), 0, values.nbytes)],
+            )
+
+    kwargs = {"engine": "h5netcdf", "phony_dims": "sort", "chunks": {}}
+    backing = _capture_loader_file(path, xr.open_dataset, kwargs)
+    assert backing is None
+    with xr.open_dataset(path, **kwargs) as ds:
+        revision = graph.add_source("A", ds["values"], backing=backing)
+    with h5py.File(path, "r+") as f:
+        f["values"][:] = values + 2
+    np.testing.assert_equal(graph.data(revision).values, values)
+
+
+def test_unversioned_source_and_public_reads_isolate_mutable_buffers(graph, tmp_path):
+    import dask.array as da
+    from dask import delayed
+
+    values = np.array([{"items": [1]}], dtype=object)
+    incoming = xr.DataArray(
+        da.from_delayed(delayed(lambda: values)(), shape=(1,), dtype=object),
+        dims="x",
+        coords={"label": ("x", [12])},
+        attrs={"labels": ["sample"]},
+    )
+    # Xarray can propagate the source encoding through an arbitrary calculation.
+    # This path says nothing about the buffer closed over by the delayed task.
+    incoming.encoding["source"] = str(tmp_path / "old-source")
+    revision = graph.add_source("A", incoming)
+    values[0]["items"].append(2)
+    incoming.attrs["labels"].clear()
+    incoming.label.values[:] = -1
+    editable = graph.data(revision)
+    editable.values[0]["items"].clear()
+    editable.attrs["labels"].clear()
+    editable.label.values[:] = -2
+
+    original = graph.data(revision)
+    assert original.values[0] == {"items": [1]}
+    assert original.attrs == {"labels": ["sample"]}
+    np.testing.assert_array_equal(original.label.values, [12])
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_versioned_source_reads_only_requested_chunks_and_checks_file(
+    graph, tmp_path, monkeypatch, chunked
+):
+    from xarray.backends.h5netcdf_ import H5NetCDFArrayWrapper
+
+    from erlab._provenance import FileVersion
+    from erlab._provenance._operations import SelectCoordOperation
+
+    path = tmp_path / "source.nc"
+    volume = np.arange(8 * 12).reshape(8, 12)
+    source = xr.DataArray(
+        volume, dims=("y", "x"), coords={"line": ("x", np.arange(12))}, name="volume"
+    )
+    source.to_netcdf(
+        path, engine="h5netcdf", encoding={"volume": {"chunksizes": (2, 4)}}
+    )
+    reads = []
+    original_get = H5NetCDFArrayWrapper._getitem
+
+    def record_get(self, key):
+        reads.append((self.variable_name, key))
+        return original_get(self, key)
+
+    monkeypatch.setattr(H5NetCDFArrayWrapper, "_getitem", record_get)
+    version = FileVersion.capture(path)
+    with xr.open_dataarray(
+        path, engine="h5netcdf", chunks={} if chunked else None
+    ) as incoming:
+        revision = graph.add_source("A", incoming, backing=version)
+    line = graph.derive(
+        "line", Recipe.bind(SelectCoordOperation(coord_name="line"), Follow("A"))
+    )
+    assert graph.entry("line").revision_id == line
+    assert reads == []
+    np.testing.assert_array_equal(graph.data(line).values, np.arange(12))
+    result = graph.data(revision)
+    assert result.chunks == ((2, 2, 2, 2), (4, 4, 4))
+    tile = result.isel(y=slice(2, 4), x=slice(8, 12))
+    np.testing.assert_array_equal(tile.values, volume[2:4, 8:12])
+    assert [key for name, key in reads if name == "volume"] == [
+        (slice(2, 4, 1), slice(8, 12, 1))
+    ]
+
+    # Replace the file after the caller has obtained a deferred result.
+    replacement = tmp_path / "replacement.nc"
+    (source + 1000).to_netcdf(replacement, engine="h5netcdf")
+    replacement.replace(path)
+    with pytest.raises(OSError, match="has changed"):
+        tile.compute()
+
+
+def test_file_backed_checkpoint_releases_source_after_last_owner(tmp_path):
+    import gc
+    import weakref
+
+    import psutil
+
+    from erlab._provenance import FileLoad, FileVersion
+    from erlab._provenance._model import FileDataSelection, FileReplayCall
+
+    path = tmp_path / "scan.nc"
+    data = xr.DataArray(np.arange(4))
+    data.to_netcdf(path, engine="h5netcdf")
+
+    def read_file(source, call):
+        version = FileVersion.capture(source.path)
+        with xr.open_dataarray(source.path, engine="h5netcdf") as opened:
+            return opened, version
+
+    graph = ProvenanceGraph(read_file=read_file)
+    for _ in range(6):
+        source = graph.file_source(str(path))
+        source_ref = weakref.ref(source)
+        load = FileLoad(
+            source,
+            FileReplayCall(
+                kind="callable",
+                target="xarray.open_dataarray",
+                selection=FileDataSelection(kind="dataarray"),
+            ),
+        )
+        revision = graph.derive("scan", load)
+        with graph.retain(revision):
+            graph.remove_entry("scan")
+            del load, source
+            assert source_ref() is graph.file_source(str(path))
+            np.testing.assert_array_equal(graph.data(revision).values, data.values)
+        gc.collect()
+        assert source_ref() is None
+        assert graph.revision_ids == frozenset()
+        assert str(path.resolve()) not in {
+            f.path for f in psutil.Process().open_files()
+        }
+
+
+def test_saved_operations_without_qt(tmp_path):
+    # Import the actual catalog only after installing the Qt import check.
+    code = textwrap.dedent("""
+        import pathlib
+        import runpy
+        import sys
+
+        class BlockQt:
+            def find_spec(self, fullname, path, target=None):
+                blocked = {"qtpy", "PyQt6", "PySide6", "pyqtgraph"}
+                if fullname.partition(".")[0] in blocked:
+                    raise AssertionError(f"Unexpected Qt import: {fullname}")
+                return None
+
+        sys.meta_path.insert(0, BlockQt())
+        suite = runpy.run_path(sys.argv[1])
+        suite["_check_saved_operations"]()
+        suite["_check_saved_file_call"](pathlib.Path(sys.argv[2]))
+    """)
+    subprocess.run([sys.executable, "-c", code, __file__, str(tmp_path)], check=True)
+
+
+def _check_saved_operations():
+    import erlab
+    from erlab._provenance import Application
+    from erlab._provenance._model import parse_tool_provenance_operation
+    from erlab._provenance._operations import (
+        AffineCoordOperation,
+        ConcatOperation,
+        KspaceWorkFunctionOperation,
+        NormalizeOperation,
+        RemoveMeshOperation,
+        RenameOperation,
+        TransposeOperation,
+    )
+
+    data = xr.DataArray(
+        np.array([-1, 1, 2, 6], dtype=np.float32).reshape(2, 2),
+        dims=("y", "x"),
+        coords={"x": np.arange(2, dtype=np.float32) * 1e-6, "ref": 21.2},
+        name="signal",
+        attrs={"sample": {"labels": ["original"]}},
+    )
+    before = data.copy(deep=True)
+    # This expectation does not invoke the normalization helper under test.
+    normalized = data.copy(
+        data=np.array([[np.nan, np.nan], [0.5, 1.5]], dtype="float32")
+    )
+    setter_result = data.copy(deep=True)
+    setter_result.kspace.analyzer_work_function = 4.2
+    operand = (("data", "A"),)
+    with xr.set_options(keep_attrs=True):
+        cases = [
+            (RenameOperation(name="data"), operand, {"A": data}, data.rename("data")),
+            (
+                TransposeOperation(dims=("x", "y")),
+                operand,
+                {"A": data},
+                data.transpose("x", "y"),
+            ),
+            (
+                AffineCoordOperation(
+                    coord_name="x",
+                    scale=1,
+                    offset=21.2,
+                    offset_coord="ref",
+                    offset_coord_sign=-1,
+                ),
+                operand,
+                {"A": data},
+                data,
+            ),
+            (NormalizeOperation(dims=("x",)), operand, {"A": data}, normalized),
+            (
+                KspaceWorkFunctionOperation(work_function=4.2),
+                operand,
+                {"A": data},
+                setter_result,
+            ),
+            (
+                ConcatOperation(dim="part", input_count=3),
+                (*operand, ("other_0", "B"), ("other_1", "A")),
+                {"A": data, "B": -data},
+                xr.concat([data, -data, data], dim="part"),
+            ),
+        ]
+        spectrum = xr.DataArray(
+            np.arange(1, 65, dtype=float).reshape(8, 8),
+            dims=("alpha", "eV"),
+            coords={"alpha": np.arange(8), "eV": np.arange(8)},
+        )
+        peaks = ((4, 4), (4, 6), (4, 2))
+        args = {"first_order_peaks": peaks, "order": 1, "n_pad": 0, "roi_hw": 2}
+        corrected, mesh = erlab.analysis.mesh.remove_mesh(spectrum, **args)
+        for output, expected in (("corrected", corrected), ("mesh", mesh)):
+            cases.append(
+                (
+                    RemoveMeshOperation(**args, output=output),
+                    operand,
+                    {"A": spectrum},
+                    expected,
+                )
+            )
+        for operation, slots, inputs, expected in cases:
+            restored = parse_tool_provenance_operation(
+                operation.model_dump(mode="json")
+            )
+            applied = Application(restored, slots)
+            names = {key: f"input_{key}" for key in inputs}
+            namespace = {names[k]: v.copy(deep=True) for k, v in inputs.items()}
+            namespace.update(xr=xr, np=np, era=erlab.analysis)
+            with xr.set_options(keep_attrs=False):
+                live = applied.apply(inputs)
+                exec(applied.code(names, output_name="result"), namespace)  # noqa: S102
+                for result in (live, namespace["result"]):
+                    assert result.dtype == expected.dtype
+                    xr.testing.assert_identical(result, expected)
+    xr.testing.assert_identical(data, before)
+
+
+def _check_saved_file_call(tmp_path):
+    from erlab._provenance._files import _load_file_source_data, _resolve_load_func
+    from erlab._provenance._model import (
+        FileDataSelection,
+        FileLoadSource,
+        FileReplayCall,
+    )
+
+    expected = xr.DataArray(
+        np.array([3, 7], dtype="float32"),
+        dims="energy",
+        name="counts",
+        attrs={"unit": "Hz"},
+    )
+    path = tmp_path / "scan.nc"
+    xr.Dataset({"other": -expected, "counts": expected}).to_netcdf(
+        path, engine="h5netcdf"
+    )
+    selection = FileDataSelection(kind="dataset_variable", value="counts")
+    resolved = _resolve_load_func((xr.load_dataset, {"engine": "h5netcdf"}, selection))
+    call = FileReplayCall.model_validate_json(resolved.replay_call().model_dump_json())
+    record = FileLoadSource(
+        path=str(path),
+        replay_call=call,
+        loader_text=call.target,
+        loader_label="Loader",
+        kwargs_text="",
+    )
+    actual = _load_file_source_data(record)
+    assert actual.dtype == expected.dtype
+    xr.testing.assert_identical(actual, expected)
+    from erlab._provenance._files import _registered_local_callable_loader
+
+    saved_loader = _registered_local_callable_loader(call.target)
+    restored = _resolve_load_func((saved_loader, call.kwargs, call.selection))
+    namespace = {}
+    exec(restored.load_code(path, assign="result"), namespace)  # noqa: S102
+    xr.testing.assert_identical(namespace["result"], expected)
+
+
+def test_checkpoint_reuses_only_immutable_numeric_values():
+    from erlab._provenance._checkpoint import checkpoint_data
+
+    mutable = np.arange(12)
+    for values, share in (
+        (np.frombuffer(mutable.tobytes(), dtype=mutable.dtype), True),
+        (mutable.view(), False),
+    ):
+        values.setflags(write=False)
+        source = xr.DataArray(values, dims="x", attrs={"groups": [1]})
+        owned = checkpoint_data(source)
+        assert np.shares_memory(owned.values, source.values) is share
+        owned.attrs["groups"].clear()
+        assert source.attrs == {"groups": [1]}
+
+
+def test_public_read_detaches_objects_in_deferred_results(graph):
+    import dask.array as da
+    from dask import delayed
+
+    class DeferredObjects:
+        def input_slots(self):
+            return ()
+
+        def apply(self, data):
+            # One durable delayed task can hand out the same Python objects.
+            values = np.array([{"scan": [data.item()]}], dtype=object)
+            return xr.DataArray(
+                da.from_delayed(delayed(lambda: values)(), shape=(1,), dtype=object)
+            )
+
+    graph.add_source("A", xr.DataArray(12))
+    revision = graph.derive("B", Recipe.bind(DeferredObjects(), Follow("A")))
+    graph.data(revision).values[0]["scan"].clear()
+    assert graph.data(revision).values[0] == {"scan": [12]}
+
+
+@pytest.mark.parametrize("size", [1000, 10000])
+def test_unrelated_workspace_rows_do_not_add_refresh_work(graph, size, monkeypatch):
+    from erlab._provenance import Pin
+
+    arr = xr.DataArray(1)
+    source = graph.add_source("source", arr)
+    graph.derive("child", Recipe.bind(Scale(2), Follow("source")))
+    for n in range(size - 2):
+        graph.add_source(f"row{n}", arr)
+    visits = []
+    plan_input = graph._plan_input
+
+    def visit(binding, *, mode):
+        visits.append(binding)
+        return plan_input(binding, mode=mode)
+
+    monkeypatch.setattr(graph, "_plan_input", visit)
+    revision = graph.refresh("child")
+    assert visits == [Follow("source"), Pin(source)]
+    xr.testing.assert_identical(graph.data(revision), xr.DataArray(2))
+
+
+def test_call_keeps_nested_input_references_distinct_from_literals():
+    from erlab._provenance._calls import Call, InputRef
+
+    primary = xr.DataArray(np.ones(2), dims="x")
+    source = xr.DataArray([1, 2], dims="x", name="a")
+    literal = np.array([3, 5], dtype=np.int16)
+    call = Call.method(
+        "assign_coords",
+        args=({"data": InputRef("grid"), "|grid|": ("x", literal), "label": "grid"},),
+    )
+    result = call.evaluate({"data": primary, "grid": source})
+    scope = {"a": primary.copy(), "b": source.copy(), "np": np}
+    code = call.expression({"data": "a", "grid": "b"})
+    exec("result = " + code, scope)  # noqa: S102
+    expected = primary.assign_coords(
+        {"data": source, "|grid|": ("x", literal), "label": "grid"}
+    )
+    for actual in (result, scope["result"]):
+        xr.testing.assert_identical(actual, expected)
+        assert actual.coords["|grid|"].dtype == np.int16
+
+
+def test_recorded_code_preserves_each_steps_settings():
+    from erlab._provenance._operations import NormalizeOperation
+    from erlab.interactive.imagetool._provenance._recorded_code import full_code
+
+    graph = ProvenanceGraph()
+    source = xr.DataArray([1.0, 3.0], dims="x", attrs={"unit": "count"})
+    original = graph.add_source("A", source)
+    with xr.set_options(keep_attrs=True):
+        normalized = graph.derive(
+            "B", Recipe.bind(NormalizeOperation(dims=("x",)), Follow("A"))
+        )
+    with xr.set_options(keep_attrs=False):
+        code = full_code(
+            graph,
+            normalized,
+            output_name="result",
+            source_names={original: "input_data"},
+        )
+        scope = {"input_data": source.copy(deep=True)}
+        exec(code, scope)  # noqa: S102
+        expected = source.copy(data=[0.5, 1.5])
+        xr.testing.assert_identical(scope["result"], expected)
+        xr.testing.assert_identical(graph.data(normalized), expected)
+        edited = graph.edit_application(
+            "B", normalized, NormalizeOperation(dims=("x",))
+        )
+        xr.testing.assert_identical(graph.data(edited), expected)
+        refreshed = graph.refresh("B")
+        xr.testing.assert_identical(graph.data(refreshed), expected)
+        assert xr.get_options()["keep_attrs"] is False
+
+
+def test_copied_array_method_uses_edited_arguments():
+    from erlab._provenance._operations import RenameOperation, TransposeOperation
+
+    source = xr.DataArray([[1], [2]], dims=("x", "y"), name="source")
+    rename = RenameOperation(name="first")
+    assert rename.apply(source).name == "first"
+    updated = rename.model_copy(update={"name": "next"})
+    assert updated.apply(source).name == "next"
+    assert updated.model_dump(mode="json") == RenameOperation(name="next").model_dump(
+        mode="json"
+    )
+    transpose = TransposeOperation(dims=("y", "x"))
+    assert transpose.apply(source).dims == ("y", "x")
+    assert (
+        transpose.model_copy(update={"dims": ("x", "y")}, deep=True).apply(source).dims
+        == source.dims
+    )

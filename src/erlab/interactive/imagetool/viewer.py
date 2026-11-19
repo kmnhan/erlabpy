@@ -33,6 +33,8 @@ from erlab._provenance._files import (
     _parse_serialized_file_data_selection,
     _register_local_callable_loader,
     _registered_local_callable_loader,
+    _select_replay_input,
+    _semantic_file_data_selection,
     _serialize_loader_kwargs,
 )
 from erlab._provenance._model import (
@@ -54,8 +56,6 @@ from erlab.interactive._options.runtime import (
 )
 from erlab.interactive.imagetool import _history, _kspace_conversion
 from erlab.interactive.imagetool._provenance._execution import (
-    _select_replay_input,
-    _semantic_file_data_selection,
     can_reload_with_trusted_code,
     can_reload_without_trust,
     file_load_source_status,

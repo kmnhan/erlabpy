@@ -11,6 +11,7 @@ from dataclasses import dataclass, replace
 
 import xarray as xr
 
+from erlab._provenance._checkpoint import checkpoint_data
 from erlab._provenance._model import (
     ReplayStep,
     ScriptInput,
@@ -23,7 +24,6 @@ from erlab._provenance._operations import (
     AssignScalarCoordOperation,
     ScriptCodeOperation,
 )
-from erlab._provenance._records import checkpoint_data
 from erlab.interactive.imagetool._provenance._trust import (
     remap_script_input_provenance,
     script_replay_source_input_names,

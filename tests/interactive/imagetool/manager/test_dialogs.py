@@ -20,6 +20,7 @@ import erlab.interactive.imagetool.manager._window_layout as window_layout
 from erlab._provenance._files import (
     _deserialize_loader_kwargs,
     _load_code_from_file_details,
+    _load_file_source_object,
     _resolve_identified_path,
     _scan_number_load_call_args,
     _serialize_loader_kwargs,
@@ -33,7 +34,6 @@ from erlab._provenance._model import (
     ScriptInput,
 )
 from erlab.interactive.fermiedge import GoldTool
-from erlab.interactive.imagetool._provenance._execution import _load_file_source_object
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
     _CoordinateAttrsPickerDialog,

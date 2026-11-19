@@ -3453,7 +3453,13 @@ class _ProvenanceEditController:
             ):
                 return None
             old_coord_values = (
-                coord_values - operation._resolved_offset(data)
+                coord_values
+                - erlab.analysis.transform._coordinate_offset(
+                    data,
+                    operation.offset,
+                    operation.offset_coord,
+                    operation.offset_coord_sign,
+                )
             ) / operation.scale
             if not np.all(np.isfinite(old_coord_values)):
                 return None

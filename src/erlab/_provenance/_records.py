@@ -7,11 +7,14 @@ import keyword
 import typing
 from dataclasses import dataclass, field
 
-import xarray as xr
+from erlab._provenance._settings import ExecutionSettings
 
 if typing.TYPE_CHECKING:
     from collections.abc import Mapping
 
+    import xarray as xr
+
+    from erlab._provenance._checkpoint import FileVersion
     from erlab._provenance._model import FileReplayCall, ToolProvenanceOperation
 
 
@@ -24,13 +27,6 @@ def check_id(identifier: object) -> None:
         or identifier in {".", ".."}
     ):
         raise ValueError(f"Invalid provenance ID {identifier!r}")
-
-
-def checkpoint_data(data: xr.DataArray) -> xr.DataArray:
-    if not isinstance(data, xr.DataArray):
-        raise TypeError("Revision data must be a DataArray")
-    # A copied lazy array can still read from a mutable external source.
-    return data.copy(deep=True).load()
 
 
 @dataclass(frozen=True)
@@ -99,6 +95,7 @@ class _Settings(typing.Generic[_T]):
 
 @dataclass(frozen=True)
 class _RecipeData:
+    execution: ExecutionSettings
     operation: ToolProvenanceOperation
     inputs: tuple[tuple[str, Binding], ...]
 
@@ -111,10 +108,25 @@ class Recipe:
         self,
         operation: ToolProvenanceOperation,
         inputs: tuple[tuple[str, Binding], ...],
+        *,
+        execution: ExecutionSettings | None = None,
     ) -> None:
+        from erlab._provenance._calls import WorkerCallOperation
+
+        settings = execution or ExecutionSettings.capture()
+        if isinstance(operation, WorkerCallOperation):
+            settings = operation.effective_settings(settings)
         _check_slots(operation, tuple(slot for slot, _ in inputs))
         object.__setattr__(
-            self, "_settings", _Settings(copy.deepcopy(_RecipeData(operation, inputs)))
+            self,
+            "_settings",
+            _Settings(
+                _RecipeData(
+                    settings,
+                    copy.deepcopy(operation),
+                    copy.deepcopy(inputs),
+                )
+            ),
         )
 
     @property
@@ -142,7 +154,9 @@ class Recipe:
         _check_slots(operation, tuple(slot for slot, _ in inputs))
         result = copy.copy(self)
         object.__setattr__(
-            result, "_settings", _Settings(_RecipeData(operation, inputs))
+            result,
+            "_settings",
+            _Settings(_RecipeData(self._captured.execution, operation, inputs)),
         )
         return result
 
@@ -164,36 +178,73 @@ class Application:
 
     operation: ToolProvenanceOperation
     inputs: tuple[tuple[str, str], ...]
+    execution: ExecutionSettings = field(default_factory=ExecutionSettings.capture)
 
     def __post_init__(self) -> None:
+        from erlab._provenance._calls import WorkerCallOperation
+
+        if isinstance(self.operation, WorkerCallOperation):
+            settings = self.operation.effective_settings(self.execution)
+            object.__setattr__(self, "execution", settings)
+            if self.operation.execution_options != settings.as_dict():
+                operation = self.operation.model_copy(
+                    update={"execution_options": settings.as_dict()}
+                )
+                object.__setattr__(self, "operation", operation)
         _check_slots(self.operation, tuple(slot for slot, _ in self.inputs))
         for _, node in self.inputs:
             check_id(node)
 
+    @property
+    def local_execution(self) -> ExecutionSettings:
+        """Options this application must install in the calling interpreter."""
+        from erlab._provenance._calls import WorkerCallOperation
+
+        if isinstance(self.operation, WorkerCallOperation):
+            return ExecutionSettings()
+        return self.execution
+
     def apply(self, values: Mapping[str, xr.DataArray]) -> xr.DataArray:
-        (_, primary), *others = self.inputs
-        data = values[primary]
-        if others:
-            return self.operation.apply_with_inputs(
-                data, {slot: values[node] for slot, node in others}
-            )
-        return self.operation.apply(data)
+        from erlab._provenance._calls import CallOperation, MetadataSetterOperation
+
+        with self.local_execution.scope():
+            if isinstance(self.operation, CallOperation):
+                operands = {slot: values[node] for slot, node in self.inputs}
+                return self.operation.evaluate(operands)
+            (_, primary), *others = self.inputs
+            if isinstance(self.operation, MetadataSetterOperation):
+                return self.operation.apply(values[primary])
+            # Legacy operations and callbacks can write into any operand.
+            # Repeated uses of the same revision share one isolated copy.
+            isolated = {
+                node: values[node].copy(deep=True)
+                for node in dict.fromkeys(node for _, node in self.inputs)
+            }
+            if others:
+                return self.operation.apply_with_inputs(
+                    isolated[primary], {slot: isolated[node] for slot, node in others}
+                )
+            return self.operation.apply(isolated[primary])
 
     def code(self, names: Mapping[str, str], *, output_name: str) -> str:
         """Emit the applied step using names for its exact input revisions."""
         (_, primary), *others = self.inputs
-        return self.operation.replay_code(
+        statement = self.operation.replay_code(
             names[primary],
             output_name=output_name,
             bound_inputs={slot: names[node] for slot, node in others},
             reserved_names=(*names.values(), output_name),
         )
+        return self.local_execution.wrap_code(statement)
 
 
 @dataclass(frozen=True)
 class FileSource:
     source_id: str
     path: str
+
+    def __deepcopy__(self, memo: dict[int, typing.Any]) -> FileSource:
+        return self
 
 
 @dataclass(frozen=True, init=False)
@@ -226,6 +277,7 @@ class DataRevision:
     revision_id: str
     producer: Application | FileLoad | None
     checkpointed: bool
+    backing: FileVersion | None = None
 
 
 @dataclass(frozen=True)

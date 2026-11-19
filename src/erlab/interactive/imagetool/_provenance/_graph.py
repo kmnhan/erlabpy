@@ -3567,19 +3567,23 @@ def emit_replay_code(
                     for slot, input_key in node.payload.get("input_bindings", ())
                 }
                 consume(node.parents)
-                append_code(
-                    _operation_replay_code(
-                        operation,
-                        active_name=name,
-                        context_name=context_name,
-                        parent_name=parent_name,
-                        bound_inputs=bound_input_names,
-                        reserved_names=(
-                            graph.reserved_names
-                            | reserved_binding_names
-                            | set(names.values())
-                        ),
+                statement = _operation_replay_code(
+                    operation,
+                    active_name=name,
+                    context_name=context_name,
+                    parent_name=parent_name,
+                    bound_inputs=bound_input_names,
+                    reserved_names=(
+                        graph.reserved_names
+                        | reserved_binding_names
+                        | set(names.values())
                     ),
+                )
+                settings = node.payload.get("execution_settings")
+                if settings is not None:
+                    statement = settings.wrap_code(statement)
+                append_code(
+                    statement,
                     allowed_accesses=(
                         parent_name,
                         context_name,

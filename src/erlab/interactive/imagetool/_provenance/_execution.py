@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import copy
 import importlib
 import pathlib
 import typing
@@ -21,11 +22,10 @@ from erlab._provenance._code import (
     _script_replay_import_names,
 )
 from erlab._provenance._files import (
-    _deserialize_loader_kwargs,
+    _load_file_source_data,
     _registered_local_callable_loader,
 )
 from erlab._provenance._model import (
-    FileDataSelection,
     FileLoadSource,
     FileLoadSourceStatus,
     ScriptInput,
@@ -77,214 +77,9 @@ def _memoized_live_input_resolver(
     return None if resolver is None else _memoized_by_identity(resolver)
 
 
-def _processed_replay_ndim(darr: xr.DataArray) -> int:
-    if darr.ndim == 1:
-        return 2
-    if darr.ndim > 4:
-        return len(tuple(size for size in darr.shape if size != 1))
-    return darr.ndim
-
-
-def _reducible_replay_shape(darr: xr.DataArray) -> bool:
-    return _processed_replay_ndim(darr) >= 2
-
-
-def _parse_replay_dataset(ds: xr.Dataset) -> tuple[xr.DataArray, ...]:
-    return tuple(
-        darr for darr in ds.data_vars.values() if _reducible_replay_shape(darr)
-    )
-
-
-def _parse_replay_input(data: typing.Any) -> list[xr.DataArray]:
-    input_cls = data.__class__.__name__
-    parsed: typing.Any = data
-    if isinstance(data, np.ndarray | xr.DataArray):
-        parsed = (data,)
-    elif isinstance(data, xr.Dataset):
-        parsed = _parse_replay_dataset(data)
-    elif isinstance(data, xr.DataTree):
-        parsed = tuple(
-            darr for leaf in data.leaves for darr in _parse_replay_dataset(leaf.dataset)
-        )
-
-    if len(parsed) == 0:
-        raise ValueError(f"No valid data for ImageTool found in {input_cls}")
-    if not isinstance(next(iter(parsed)), xr.DataArray | np.ndarray):
-        raise TypeError(
-            f"Unsupported input type {input_cls}. Expected DataArray, Dataset, "
-            "DataTree, numpy array, or a list of DataArray or numpy arrays."
-        )
-    return [
-        xr.DataArray(item) if not isinstance(item, xr.DataArray) else item
-        for item in parsed
-    ]
-
-
-def _require_replay_dataarray(data: typing.Any) -> xr.DataArray:
-    if isinstance(data, np.ndarray):
-        data = xr.DataArray(data)
-    if not isinstance(data, xr.DataArray):
-        raise TypeError(
-            f"Selected file data must be a DataArray, got {type(data).__name__!r}"
-        )
-    if not _reducible_replay_shape(data):
-        raise ValueError("Selected file data is not valid for ImageTool")
-    return data
-
-
-def _select_replay_input(
-    data: typing.Any,
-    selection: FileDataSelection,
-) -> xr.DataArray:
-    selection = _semantic_file_data_selection(data, selection)
-    if selection.kind == "dataarray":
-        return _require_replay_dataarray(data)
-    if selection.kind == "dataset_variable":
-        if not isinstance(data, xr.Dataset):
-            raise TypeError(
-                "Dataset variable file selections require the loader to return "
-                "a Dataset"
-            )
-        try:
-            selected = data[selection.value]
-        except KeyError as err:
-            raise KeyError(
-                f"Selected file variable {selection.value!r} was not found"
-            ) from err
-        return _require_replay_dataarray(selected)
-    if selection.kind == "datatree_variable":
-        if not isinstance(data, xr.DataTree):
-            raise TypeError(
-                "DataTree variable selections require the loader to return a DataTree"
-            )
-        node_path, variable = typing.cast(
-            "tuple[str, typing.Hashable]", selection.value
-        )
-        try:
-            selected = data[node_path].dataset[variable]
-        except KeyError as err:
-            raise KeyError(
-                f"Selected file DataTree variable {variable!r} at "
-                f"{node_path!r} was not found"
-            ) from err
-        return _require_replay_dataarray(selected)
-    if selection.kind == "sequence_index":
-        if isinstance(data, str | bytes) or not isinstance(data, Sequence):
-            raise TypeError(
-                "Sequence-index file selections require the loader to return a sequence"
-            )
-        index = typing.cast("int", selection.value)
-        try:
-            selected = data[index]
-        except IndexError as err:
-            raise IndexError(
-                f"Selected file sequence index {index} is out of range"
-            ) from err
-        return _require_replay_dataarray(selected)
-
-    raise ValueError(f"Unsupported file data selection kind {selection.kind!r}")
-
-
-def _semantic_file_data_selection(
-    data: typing.Any,
-    selection: FileDataSelection,
-) -> FileDataSelection:
-    """Resolve a legacy parsed index to stable loader-output semantics."""
-    if selection.kind != "parsed_index":
-        return selection
-
-    index = typing.cast("int", selection.value)
-    if isinstance(data, np.ndarray | xr.DataArray):
-        if index != 0:
-            raise IndexError("Selected file replay index is out of range for 1 array")
-        return FileDataSelection(kind="dataarray")
-    if isinstance(data, xr.Dataset):
-        variables = tuple(
-            name
-            for name, darr in data.data_vars.items()
-            if _reducible_replay_shape(darr)
-        )
-        if index >= len(variables):
-            raise IndexError(
-                f"Selected file replay index {index} is out of range for "
-                f"{len(variables)} parsed arrays"
-            )
-        return FileDataSelection(kind="dataset_variable", value=variables[index])
-    if isinstance(data, xr.DataTree):
-        variables = tuple(
-            (str(leaf.path), name)
-            for leaf in data.leaves
-            for name, darr in leaf.dataset.data_vars.items()
-            if _reducible_replay_shape(darr)
-        )
-        if index >= len(variables):
-            raise IndexError(
-                f"Selected file replay index {index} is out of range for "
-                f"{len(variables)} parsed arrays"
-            )
-        return FileDataSelection(kind="datatree_variable", value=variables[index])
-    if isinstance(data, str | bytes) or not isinstance(data, Sequence):
-        _parse_replay_input(data)
-        raise TypeError("Unsupported file loader output")
-    if index >= len(data):
-        raise IndexError(
-            f"Selected file replay index {index} is out of range for "
-            f"{len(data)} parsed arrays"
-        )
-    _require_replay_dataarray(data[index])
-    return FileDataSelection(kind="sequence_index", value=index)
-
-
-def _load_file_source_object(
-    load_source: FileLoadSource,
-    *,
-    extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
-) -> typing.Any:
-    call = load_source.replay_call
-    if call is None:
-        raise ValueError("File load source does not define replay metadata")
-    file_path = pathlib.Path(load_source.path)
-    if call.kind == "erlab_loader":
-        func = erlab.io.loaders[call.target].load
-    elif call.kind == "extension_loader":
-        if extension_loader_executor is not None:
-            return extension_loader_executor(load_source)
-        return erlab.extensions.run_loader(
-            file_path,
-            registered_script=call.target,
-            source_hash=typing.cast("str", call.source_hash),
-            loader_id=typing.cast("str", call.capability_id),
-            parameters=_deserialize_loader_kwargs(call.kwargs),
-        )
-    else:
-        func = _registered_local_callable_loader(call.target)
-        if func is None:
-            raise ValueError(
-                f"Callable file loader {call.target!r} is not registered locally"
-            )
-
-    return func(file_path, **_deserialize_loader_kwargs(call.kwargs))
-
-
-def _load_file_source_data(
-    load_source: FileLoadSource,
-    *,
-    extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
-) -> xr.DataArray:
-    call = load_source.replay_call
-    if call is None:
-        raise ValueError("File load source does not define replay metadata")
-    loaded = _load_file_source_object(
-        load_source,
-        extension_loader_executor=extension_loader_executor,
-    )
-    data = _select_replay_input(loaded, call.selection)
-    if call.cast_float64:
-        data = data.astype(np.float64)
-    return data
-
-
 def _shares_array_memory(first: xr.DataArray, second: xr.DataArray) -> bool:
+    if not first.variable._in_memory or not second.variable._in_memory:
+        return False
     try:
         return bool(np.shares_memory(first.data, second.data))
     except (TypeError, ValueError):
@@ -328,13 +123,11 @@ def _execute_replay_graph(
     on_value: Callable[[str, xr.DataArray], None] | None = None,
 ) -> xr.DataArray:
     values: dict[str, xr.DataArray] = {}
-    live_values: list[xr.DataArray] = []
+    live_values: dict[int, xr.DataArray] = {}
     remaining_uses = Counter(parent for node in graph.nodes for parent in node.parents)
 
     def record_value(node: ReplayNode, data: xr.DataArray) -> None:
         values[node.key] = data
-        if node.kind == "live_input":
-            live_values.append(data)
         if on_value is not None:
             on_value(node.key, data)
         for parent in node.parents:
@@ -357,7 +150,11 @@ def _execute_replay_graph(
         elif node.kind == "setup":
             continue
         elif node.kind == "live_input":
-            data = typing.cast("xr.DataArray", node.payload["data"]).copy(deep=False)
+            live = typing.cast("xr.DataArray", node.payload["data"])
+            key = id(live)
+            if key not in live_values:
+                live_values[key] = live.copy(deep=False)
+            data = live_values[key]
         elif node.kind == "relay" or node.kind == "source_view":
             data = values[node.parents[0]].copy(deep=False)
         elif node.kind == "operation":
@@ -439,10 +236,10 @@ def _execute_replay_graph(
                 for attr in target.split(".")[1:]:
                     value = getattr(value, attr)
                 namespace[alias] = value
-            for input_name, input_key in typing.cast(
-                "tuple[tuple[str, str], ...]", node.payload["bindings"]
-            ):
-                namespace[input_name] = values[input_key].copy(deep=True)
+            # Copy all bindings together so two names for the same operand
+            # share an isolated array, including its values and mutable metadata.
+            bindings = {name: values[key] for name, key in node.payload["bindings"]}
+            namespace.update(copy.deepcopy(bindings))
             for compiled in compiled_codes:
                 exec(compiled, namespace, namespace)  # noqa: S102
             active_name = typing.cast("str", node.payload["active_name"])
@@ -469,7 +266,7 @@ def _execute_replay_graph(
     if graph.output_key is None:
         raise ReplayGraphError("Replay graph has no output")
     output = values[graph.output_key]
-    if any(_shares_array_memory(output, live) for live in live_values):
+    if any(_shares_array_memory(output, live) for live in live_values.values()):
         return output.copy(deep=True)
     return output
 
