@@ -201,6 +201,14 @@ single-dot sibling imports. The `__init__.pyi` files read by
   editor and Copy Full Code use the displayed application. Refresh uses the
   current bindings. The Manager tests also exercise a rejected installation
   and release of the last owner.
+- Copied Python for a versioned file calls the public
+  [file reader](../../src/erlab/io/utils.py) with the recorded loader, selected
+  array and local filesystem identity. Replacing the file after copying the
+  code raises an error on the next read. A separate machine or a multi-file
+  source without a complete version needs an independent named checkpoint.
+- A mutable callback receives one isolated array per distinct input revision.
+  It can edit object-valued index members and nested coordinate attributes or
+  encoding without changing the source or an existing sibling result.
 - The extension tests exercise module initialization, a second submission with
   different settings, deferred computation, and notebook export. The worker
   implementation is on the local `dev-provenance-extension-candidate` branch.
@@ -208,19 +216,23 @@ single-dot sibling imports. The `__init__.pyi` files read by
 
 ### Verification of the integration
 
-The complete PyQt6 run on `3c337ad8` passed 11,767 tests and skipped 14.
-One test failed. Restoring an old Dataset selection and reloading it kept the
-numerical selection index in the window state. Commit `ac288957` installs
-the variable name resolved by the actual load. All 616 tests in the viewer
-module then passed. Twelve related file and Reload cases passed under both
-Qt bindings. The source-capture change passed 2,271 Manager, workspace and
-interactive utility tests with five skips.
+The full PyQt6 suite passed 11,778 tests with 14 skips on the integrated
+code at `e5ae4297`. This includes the corrected legacy Dataset selection,
+historical file reads, callback ownership and deferred interpolation chooser.
+The chooser and related workspace checks passed 73 tests under each binding.
+The file-copy and extension-loader regressions also passed under PySide6.
 
 The experimental branch passed 919 extension, graph, replay and clipboard
 tests under each Qt binding. A minimal frozen macOS arm64 executable used the
 Manager startup sequence and reproduced both an eager result and three deferred
 chunks in a child process. The full standalone GUI bundle and other operating
 systems still need separate checks.
+
+After the file and chooser changes, 860 experimental extension, graph, replay
+and I/O tests passed under PyQt6. All 81 graph tests then passed with the
+final numeric ownership optimization. The resulting combined selection passed
+861 tests under PySide6. Both branches passed Ruff, mypy, import checks, the
+test partition check and the HTML documentation build.
 
 ### Operation and replay inventory
 
@@ -313,17 +325,50 @@ interpolation once, produced the expected data, and opened zero unrelated
 datasets. Opening details for a pending row read its coordinates and its
 16 × 16 preview. The other rows stayed unloaded.
 
-Opening the interpolation target chooser still reads coordinates for every
-pending candidate. At 1,000 rows this took 6.30 s on main and 6.55 s on the
-redesign. Both versions exceeded 70 s at 10,000 rows. The chooser kept the
-windows unloaded. Future selector work should measure dataset opens as well
-as window creation.
+The interpolation chooser reads coordinates on demand. Rows that reference the
+same saved payload and equivalent displayed coordinates share one eligibility
+check per pass. With 10,000 differently named, unfiltered rows referencing one
+payload, opening the popup took about 0.18 s and read one coordinate pair.
+The original chooser exceeded 70 s for 10,000 shared rows. With 1,000 distinct
+files, constructing the dialog took 24 ms and opening the popup took 6.42 s.
+The popup read each coordinate pair, skipped the signal arrays and retained
+zero datasets after the pass. The selected row is checked again before use.
 
 Replacing both inputs during cursor activity exposed a second conversion to
 public array layout during graph capture. The Manager now reuses the array
 from the source-change signal and applies the same ownership and metadata
 rules. Across 24 replacements it removed 24 conversions under each Qt binding.
 Both versions still made the 24 copies needed to protect those input revisions.
+
+Historical file replay now checks the version during notebook execution.
+Against the unguarded export at `d86aa722`, six paired runs gave a median
+elapsed difference of −0.02 ms for eager interpolation and +0.13 ms for
+coordinate-only interpolation. Reading one 8 KiB tile cost 0.47 ms more.
+Reading one cell cost 0.56 ms more and requested its 8 KiB tile from the
+backend. The old code requested eight logical bytes. The largest increase
+in traced peak allocation across the four workloads was 28 KiB. After closing
+the result, the paired difference was at most 0.3 KiB. The full test suite
+was active during these measurements. Two additional pairs used the actual
+copied code from pre-redesign main at `9b62b1e3`. Both versions produced the
+same result bytes. The main-branch eager export needed the notebook grid bound
+as `target`. The median tile read took 6.36 ms on main and 7.31 ms on the
+integration. Traced peak memory fell by about 1 MiB for both interpolation
+workloads and rose by about 16 KiB for the selected tile.
+
+The callback ownership benchmark compared mutable and numeric indexes at
+`d86aa722` and `e5ae4297`.
+With 32 mutable Python index labels, a correct derivation took 309 µs and
+peaked at 31,914 traced bytes. The earlier code took 137 µs and 13,192 bytes
+but changed the source and a sibling. Copying the 32 label objects alone
+peaked at 14,026 bytes in the same Python runtime. Rebuilding the axis with
+the public xarray constructor used more time in all four paired processes.
+For three plain numeric workloads, peak, published and post-close allocation
+counts matched the earlier code. The measured CPU time ranges overlapped.
+Pre-redesign main has no corresponding graph command. Against the Stage 2
+graph at `d7c4329b`, the integrated numeric derivations took about 9–13 µs
+more CPU and 0.9–1.0 KiB more peak allocation. The two implementations each
+retained 64 traced bytes after closing the complete graph. Stage 2 also let
+the mutable callback change the caller's original index.
 
 ### Extension measurements
 
@@ -355,6 +400,19 @@ peak memory regressions keep the extension gate open. A read-only memory map
 reduced the warm transfer time for a 32 MiB operand from 12.3 ms to 0.71 ms,
 but required a 32 MiB file and 282 ms on the first transfer. It does not resolve
 the interpreter cost.
+
+The experimental worker now starts one idle timer across 26 consecutive jobs.
+Five alternating runs measured warm median times of 1.60 ms on main and
+2.31 ms with this worker. The first job took 3.72 ms and 928 ms, respectively.
+macOS also measured the physical footprint of the actual Manager worker group.
+The active worker added about 153 MiB. The baseline added about 0.3 MiB.
+Both released that memory after the last owner closed.
+
+A separately spawned, single-threaded scientific interpreter on macOS could
+fork a clean child before importing a user routine. This reduced the median
+time to change settings from 906 ms to 242 ms. The first result took 870 ms,
+and the template retained about 140 MiB after its child exited. NumPy could
+not start in an isolated CPython subinterpreter on this installation.
 
 ## Finding and retiring the old paths
 
@@ -471,5 +529,5 @@ same assertions to the other producer paths. [Foundation acceptance tests](../..
 | Legacy migration | After the native format round-trips, import representative old workspaces. Recover evidenced file origins, operations, bindings, placement, and checkpoints. Preserve available descriptions where only a value survives. Verify trust and legacy fixtures before switching the default reader and writer. |
 
 Use one Qt binding locally and exercise binding-sensitive paths on both bindings
-in CI. The rebased foundation passed 767 selected tests. Framework implementation
-and conformance testing begin with the catalog and execution forms above.
+in CI. The rebased foundation passed 767 selected tests. The
+[integration results](#verification-of-the-integration) give the current checks.
