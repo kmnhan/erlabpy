@@ -1387,6 +1387,63 @@ def test_xarray_loader_does_not_pin_only_the_container_of_multifile_data(
     np.testing.assert_equal(graph.data(revision).values, values)
 
 
+@pytest.mark.parametrize(
+    "layout", ["index", "categorical", "multi_index", "values", "dropped_index"]
+)
+def test_snapshots_own_mutable_members_of_pandas_coordinates(graph, layout):
+    from dataclasses import dataclass, field
+
+    import pandas as pd
+
+    @dataclass(frozen=True)
+    class Label:
+        key: str
+        notes: list[str] = field(compare=False)
+
+    labels = [Label("a", ["original"]), Label("b", [])]
+    if layout == "values":
+        incoming = xr.DataArray(pd.Categorical(labels, categories=labels), dims="x")
+
+        def first(array):
+            return array.values[0]
+
+    else:
+        if layout == "multi_index":
+            index = pd.MultiIndex.from_product(
+                [labels, [1]], names=["sample", "channel"]
+            )
+            coords = xr.Coordinates.from_pandas_multiindex(index, "x")
+        else:
+            index = (
+                pd.CategoricalIndex(labels, categories=labels)
+                if layout == "categorical"
+                else pd.Index(labels)
+            )
+            coords = {"x": index}
+        incoming = xr.DataArray([1, 2], dims="x", coords=coords)
+
+        if layout == "dropped_index":
+            incoming = incoming.drop_indexes("x")
+
+        def first(array):
+            if layout == "dropped_index":
+                return array.x.values[0]
+            item = array.indexes["x"][0]
+            return item[0] if layout == "multi_index" else item
+
+    revision = graph.add_source("A", incoming)
+    labels[0].notes.clear()
+    public = graph.data(revision)
+    assert first(public).notes == ["original"]
+    first(public).notes.append("edited")
+    saved = graph.data(revision)
+    assert first(saved).notes == ["original"]
+    assert saved.dtype == incoming.dtype
+    if layout not in {"values", "dropped_index"}:
+        assert type(saved.indexes["x"]) is type(incoming.indexes["x"])
+        assert saved.coords.keys() == incoming.coords.keys()
+
+
 def test_unversioned_source_and_public_reads_isolate_mutable_buffers(graph, tmp_path):
     import dask.array as da
     from dask import delayed
@@ -1395,23 +1452,31 @@ def test_unversioned_source_and_public_reads_isolate_mutable_buffers(graph, tmp_
     incoming = xr.DataArray(
         da.from_delayed(delayed(lambda: values)(), shape=(1,), dtype=object),
         dims="x",
-        coords={"label": ("x", [12])},
+        coords={"x": [1], "label": ("x", [12])},
         attrs={"labels": ["sample"]},
     )
     # Xarray can propagate the source encoding through an arbitrary calculation.
     # This path says nothing about the buffer closed over by the delayed task.
     incoming.encoding["source"] = str(tmp_path / "old-source")
+    incoming.x.attrs["calibration"] = {"labels": ["position"]}
+    incoming.x.encoding["metadata"] = {"codes": [3]}
     revision = graph.add_source("A", incoming)
     values[0]["items"].append(2)
     incoming.attrs["labels"].clear()
     incoming.label.values[:] = -1
+    incoming.x.attrs["calibration"]["labels"].clear()
+    incoming.x.encoding["metadata"]["codes"].clear()
     editable = graph.data(revision)
     editable.values[0]["items"].clear()
     editable.attrs["labels"].clear()
     editable.label.values[:] = -2
+    editable.x.attrs["calibration"]["labels"].append("edited")
+    editable.x.encoding["metadata"]["codes"].append(4)
 
     original = graph.data(revision)
     assert original.values[0] == {"items": [1]}
+    assert original.x.attrs["calibration"]["labels"] == ["position"]
+    assert original.x.encoding["metadata"]["codes"] == [3]
     assert original.attrs == {"labels": ["sample"]}
     np.testing.assert_array_equal(original.label.values, [12])
 

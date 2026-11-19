@@ -9,7 +9,10 @@ import stat
 from dataclasses import dataclass
 
 import numpy as np
+import pandas as pd
 import xarray as xr
+from xarray.core.indexing import PandasIndexingAdapter
+from xarray.indexes import PandasIndex
 
 
 @dataclass(frozen=True)
@@ -88,11 +91,83 @@ class _FileVariable:
         return _checked_chunk(self.variable[key].values, backing=self.backing)
 
 
+def _owned_categories(values: pd.Categorical) -> pd.Categorical:
+    return pd.Categorical.from_codes(
+        values.codes.copy(), _owned_index(values.categories), ordered=values.ordered
+    )
+
+
+def _owned_index(index: pd.Index) -> pd.Index:
+    # A deep pandas Index copy still shares Python objects in the index.
+    if isinstance(index, pd.MultiIndex):
+        return index.set_levels(
+            [_owned_index(level) for level in index.levels], verify_integrity=False
+        )
+    if isinstance(index, pd.CategoricalIndex):
+        return pd.CategoricalIndex(_owned_categories(index.array), name=index.name)
+    if index.dtype != np.dtype(object):
+        return index
+    values = copy.deepcopy(index.to_numpy())
+    if type(index) is pd.Index:
+        return pd.Index(values, dtype=index.dtype, name=index.name, tupleize_cols=False)
+    return type(index)(values, name=index.name)
+
+
+def _own_index_data(data: xr.DataArray) -> xr.DataArray:
+    """Detach pandas index members and xarray's linked coordinate metadata."""
+    variable = data.variable
+    coordinates = data.coords.variables
+    has_objects = variable.dtype.kind == "O"
+    for coord in coordinates.values():
+        has_objects |= coord.dtype.kind == "O"
+        if isinstance(coord, xr.IndexVariable):
+            # Xarray recreates coordinate variables from their index and reuses
+            # nested metadata even when the DataArray copy requests deep=True.
+            if coord.attrs:
+                coord.attrs = copy.deepcopy(coord.attrs)
+            if coord.encoding:
+                coord.encoding = copy.deepcopy(coord.encoding)
+    if not has_objects:
+        return data
+    for item in (variable, *coordinates.values()):
+        if item.dtype.kind != "O" or isinstance(item, xr.IndexVariable):
+            continue
+        if isinstance(item.dtype, pd.CategoricalDtype):
+            item.data = _owned_categories(item.data)
+        elif isinstance(item._data, PandasIndexingAdapter):
+            # drop_indexes can leave the pandas backing on an ordinary Variable.
+            item.data = copy.deepcopy(item.data)
+    if isinstance(variable, xr.IndexVariable) and variable.dtype.kind == "O":
+        variable = variable.copy(deep=False, data=_owned_index(variable.to_index()))
+    if not any(
+        isinstance(coord, xr.IndexVariable) and coord.dtype.kind == "O"
+        for coord in coordinates.values()
+    ):
+        return data if variable is data.variable else data._replace(variable)
+    coords = dict(coordinates)
+    indexes = dict(data.xindexes)
+    for name, coord in coordinates.items():
+        if (
+            name not in indexes
+            and isinstance(coord, xr.IndexVariable)
+            and coord.dtype.kind == "O"
+        ):
+            coords[name] = coord.copy(deep=False, data=_owned_index(coord.to_index()))
+    for index, variables in data.xindexes.group_by_index():
+        if isinstance(index, PandasIndex) and any(
+            coord.dtype.kind == "O" for coord in variables.values()
+        ):
+            owned = index._replace(_owned_index(index.to_pandas_index()))
+            coords.update(owned.create_variables(variables))
+            indexes.update(dict.fromkeys(variables, owned))
+    return data._replace(variable, coords, indexes=indexes)
+
+
 def editable_data(data: xr.DataArray) -> xr.DataArray:
     """Give the caller independent values, coordinates, and nested metadata."""
-    result = data.copy(deep=True)
+    result = _own_index_data(data.copy(deep=True))
     for variable in (result.variable, *(c.variable for c in result.coords.values())):
-        if variable.dtype.hasobject and variable.chunks is not None:
+        if variable.chunks is not None and variable.dtype.hasobject:
             # Dask's final NumPy copy of a computed object array is shallow.
             array = variable.data
             variable.data = array.map_blocks(
@@ -150,7 +225,7 @@ def checkpoint_data(
     # metadata. Only a numeric buffer backed by immutable bytes can be shared.
     values = data.data
     shared = values if isinstance(_buffer_owner(values), bytes) else None
-    captured = data.copy(deep=True, data=shared)
+    captured = _own_index_data(data.copy(deep=True, data=shared))
     if backing is not None:
         backing.verify()
     return captured

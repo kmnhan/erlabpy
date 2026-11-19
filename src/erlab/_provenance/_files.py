@@ -108,8 +108,13 @@ def _single_netcdf_file(path: str) -> bool:
             if info.type != h5py.h5l.TYPE_HARD:
                 return True
             item = handle[name]
-            if isinstance(item, h5py.Dataset) and (item.is_virtual or item.external):
-                return True
+            if isinstance(item, h5py.Dataset):
+                layout = item.id.get_create_plist()
+                if (
+                    layout.get_layout() == h5py.h5d.VIRTUAL
+                    or layout.get_external_count()
+                ):
+                    return True
             return None
 
         # H5Lvisit sees external links without resolving or opening them.
