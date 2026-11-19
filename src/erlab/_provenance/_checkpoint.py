@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import mmap
 import os
 import stat
 import typing
+import weakref
 from dataclasses import dataclass
 
 import numpy as np
@@ -16,7 +18,7 @@ from xarray.core.indexing import PandasIndexingAdapter
 from xarray.indexes import PandasIndex
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Hashable
+    from collections.abc import Callable, Hashable, Iterator, Mapping
 
 
 @dataclass(frozen=True)
@@ -187,50 +189,202 @@ def editable_data(data: xr.DataArray) -> xr.DataArray:
     return _own_index_data(data.copy(deep=True), copy_object_chunks=True)
 
 
-def _guard_file_variables(
-    data: xr.DataArray, backing: FileVersion, *, storage_key: str | None = None
-) -> xr.DataArray:
-    result = data.copy(deep=False)
-    variables: list[tuple[tuple[Hashable, ...], xr.Variable]] = [((), result.variable)]
-    variables.extend(((key,), coord) for key, coord in result.coords.variables.items())
-    for identity, variable in variables:
-        if variable._in_memory and not isinstance(
-            _buffer_owner(variable.data), mmap.mmap
-        ):
-            continue
-        if variable.chunks is None:
-            import dask.array as da
+# Dask copies preserve their graph. Keep no file, array or graph alive here.
+_guarded_graphs: weakref.WeakValueDictionary[
+    tuple[int, str, FileVersion], typing.Any
+] = weakref.WeakValueDictionary()
 
-            preferred = variable.encoding.get("preferred_chunks") or {}
-            name: str | bool = False
-            if storage_key is not None:
-                from dask.base import tokenize
 
-                # xarray chunks={} uses the file layout, or the full extent for
-                # a contiguous variable. Dask's getter can fuse a narrower slice.
-                chunks = tuple(
-                    preferred.get(dim, size)
-                    for dim, size in zip(variable.dims, variable.shape, strict=True)
-                )
-                name = "read-file-version-" + tokenize(storage_key, identity)
-            else:
-                chunks = (
-                    tuple(preferred.get(d, "auto") for d in variable.dims)
-                    if preferred
-                    else "auto"
-                )
-            variable.data = da.from_array(
-                _FileVariable(variable, backing),
-                chunks=chunks,
-                name=name,
-                meta=np.empty((0,) * variable.ndim, dtype=variable.dtype),
+def _guard_variable(
+    variable: xr.Variable,
+    backing: FileVersion,
+    storage_key: str | None = None,
+    *,
+    auto_chunks: bool = False,
+) -> None:
+    if variable._in_memory and not isinstance(_buffer_owner(variable.data), mmap.mmap):
+        return
+    import dask.array as da
+
+    if variable.chunks is None:
+        preferred = variable.encoding.get("preferred_chunks") or {}
+        if storage_key is None:
+            chunks = (
+                tuple(preferred.get(dim, "auto") for dim in variable.dims)
+                if preferred
+                else "auto"
             )
         else:
-            array = variable.data
-            variable.data = array.map_blocks(
-                _checked_chunk, backing=backing, dtype=array.dtype, meta=array._meta
+            chunks = tuple(
+                preferred.get(dim, size)
+                for dim, size in zip(variable.dims, variable.shape, strict=True)
             )
+            if auto_chunks:
+                from dask.array.core import normalize_chunks
+                from dask.base import tokenize
+
+                chunks = normalize_chunks(
+                    "auto", variable.shape, dtype=variable.dtype, previous_chunks=chunks
+                )
+                storage_key = tokenize(storage_key, chunks)
+        array = da.from_array(
+            _FileVariable(variable, backing),
+            chunks=chunks,
+            name=False if storage_key is None else "read-file-version-" + storage_key,
+            meta=np.empty((0,) * variable.ndim, dtype=variable.dtype),
+        )
+        _guarded_graphs[id(array.dask), array.name, backing] = array.dask
+    else:
+        array = variable.data
+        if isinstance(array, da.Array):
+            key = (id(array.dask), array.name, backing)
+            if _guarded_graphs.get(key) is array.dask:
+                return
+        array = array.map_blocks(
+            _checked_chunk, backing=backing, dtype=array.dtype, meta=array._meta
+        )
+    variable.data = array
+
+
+def _guard_file_variables(
+    data: xr.DataArray,
+    backing: FileVersion,
+    *,
+    storage_key: str | None = None,
+    node_path: str = "/",
+    data_key: tuple[Hashable, ...] = (),
+    auto_chunks: bool = False,
+) -> xr.DataArray:
+    if storage_key is not None:
+        from dask.base import tokenize
+
+    result = data.copy(deep=False)
+    variables = [(data_key, result.variable)]
+    variables.extend(
+        ((name,), coord) for name, coord in result.coords.variables.items()
+    )
+    for key, variable in variables:
+        _guard_variable(
+            variable,
+            backing,
+            tokenize(storage_key, node_path, key) if storage_key is not None else None,
+            auto_chunks=auto_chunks,
+        )
     return result
+
+
+def _native_file_options(
+    read: Callable[..., typing.Any],
+    kwargs: Mapping[str, typing.Any],
+    backing: FileVersion | None,
+) -> tuple[Mapping[str, typing.Any], str | None]:
+    """Open native storage chunks without a Dask layer between the guard and backend."""
+    if backing is None or kwargs.get("chunks") not in ({}, "auto"):
+        return kwargs, None
+    manager = kwargs.get("chunked_array_type")
+    if manager is None:
+        manager = xr.get_options().get("chunk_manager", "dask")
+    if (
+        not any(
+            read is opener
+            for opener in (xr.open_dataset, xr.open_dataarray, xr.open_datatree)
+        )
+        or manager != "dask"
+        or kwargs.get("from_array_kwargs")
+        or kwargs.get("inline_array")
+        or kwargs.get("overwrite_encoded_chunks")
+        or (kwargs.get("backend_kwargs") or {}).get("overwrite_encoded_chunks")
+    ):
+        return kwargs, None
+    from dask.base import tokenize
+
+    if kwargs.get("engine") is None:
+        guess = xr.backends.plugins.guess_engine
+        # Newer DataTree readers also require group support from their backend.
+        options = (
+            {"must_support_groups": True}
+            if read is xr.open_datatree
+            and "must_support_groups" in inspect.signature(guess).parameters
+            else {}
+        )
+        kwargs = {**kwargs, "engine": guess(backing.path, **options)}
+    if kwargs["engine"] not in ("h5netcdf", "netcdf4", "scipy"):
+        return kwargs, None
+    token = tokenize(backing, read, kwargs)
+    native = {**kwargs, "chunks": None}
+    if native.get("cache") is None:
+        native["cache"] = False
+    return native, token
+
+
+def _file_variables(
+    opened: xr.DataArray | xr.Dataset | xr.DataTree,
+) -> Iterator[tuple[str, tuple[Hashable, ...], xr.Variable]]:
+    if isinstance(opened, xr.DataArray):
+        yield "/", (), opened.variable
+        for name, coord in opened.coords.variables.items():
+            yield "/", (name,), coord
+        return
+    groups = (
+        ((node.path, node.to_dataset(inherit=False)) for node in opened.subtree)
+        if isinstance(opened, xr.DataTree)
+        else (("/", opened),)
+    )
+    for node_path, dataset in groups:
+        for name, variable in dataset.variables.items():
+            yield node_path, (name,), variable
+
+
+def _open_file_for_chunks(
+    read: Callable[..., typing.Any],
+    path: str | os.PathLike[str],
+    kwargs: Mapping[str, typing.Any],
+    backing: FileVersion | None,
+) -> tuple[typing.Any, str | None]:
+    options, token = _native_file_options(read, kwargs, backing)
+    opened = read(path, **options)
+    if token is not None and kwargs.get("chunks") == "auto":
+        # xarray has release-specific chunk estimates for object and cftime
+        # arrays. Use the original reader for the entire mixed file.
+        try:
+            numeric = all(
+                variable.dtype.kind in "biufc" and variable.ndim and all(variable.shape)
+                for _, _, variable in _file_variables(opened)
+            )
+        except BaseException:
+            opened.close()
+            raise
+        if not numeric:
+            opened.close()
+            return read(path, **{**kwargs, "engine": options["engine"]}), None
+    return opened, token
+
+
+def _read_versioned_file(
+    read: Callable[..., typing.Any],
+    path: str | os.PathLike[str],
+    kwargs: Mapping[str, typing.Any],
+    backing: FileVersion | None,
+) -> typing.Any:
+    """Guard variables in a native file before exposing its container to ImageTool."""
+    opened, token = _open_file_for_chunks(read, path, kwargs, backing)
+    if token is None or backing is None:
+        return opened
+    from dask.base import tokenize
+
+    try:
+        for node_path, key, variable in _file_variables(opened):
+            _guard_variable(
+                variable,
+                backing,
+                tokenize(token, node_path, key),
+                auto_chunks=kwargs.get("chunks") == "auto",
+            )
+        backing.verify()
+    except BaseException:
+        opened.close()
+        raise
+    return opened
 
 
 def checkpoint_data(

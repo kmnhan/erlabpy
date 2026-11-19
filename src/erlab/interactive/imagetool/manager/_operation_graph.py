@@ -69,7 +69,7 @@ def _read_file(
         loader_label="Loader",
         kwargs_text="",
     )
-    data = _load_file_source_data(record)
+    data = _load_file_source_data(record, backing=backing)
     return data if backing is None else (data, backing)
 
 

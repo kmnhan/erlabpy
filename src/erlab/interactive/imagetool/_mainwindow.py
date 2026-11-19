@@ -27,6 +27,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab._provenance._checkpoint import _read_versioned_file
 from erlab._provenance._files import (
     _capture_loader_file,
     _load_provenance_from_file_details,
@@ -654,7 +655,7 @@ class ImageTool(BaseImageTool):
             try:
                 with erlab.interactive.utils.wait_dialog(self, "Loading..."):
                     backing = _capture_loader_file(fname, fn, kargs)
-                    loaded_data = fn(fname, **kargs)
+                    loaded_data = _read_versioned_file(fn, fname, kargs, backing)
                 selected_data = _select_input_dataarrays(loaded_data, self)
                 if selected_data is None:
                     return

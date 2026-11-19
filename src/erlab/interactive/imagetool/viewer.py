@@ -26,7 +26,11 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab._provenance._checkpoint import FileVersion, _guard_file_variables
+from erlab._provenance._checkpoint import (
+    FileVersion,
+    _guard_file_variables,
+    _read_versioned_file,
+)
 from erlab._provenance._files import (
     _capture_loader_file,
     _deserialize_loader_kwargs,
@@ -3131,7 +3135,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             return None
         return self._local_reload_unavailable_reason()
 
-    def _fetch_for_reload(self) -> xr.DataArray:
+    def _fetch_for_reload(self, backing: FileVersion | None = None) -> xr.DataArray:
         file_path = self._file_path
         load_func = self._load_func
         if file_path is None or load_func is None:
@@ -3144,7 +3148,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
         reloaded = typing.cast(
             "xr.DataArray | xr.Dataset | xr.DataTree",
-            func(file_path, **load_func[1]),
+            _read_versioned_file(func, file_path, load_func[1], backing),
         )
         selection = _semantic_file_data_selection(reloaded, load_func[2])
         if selection != load_func[2]:
@@ -3243,13 +3247,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
             return self._fetch_for_provenance_reload(), {}
         if self._direct_reloadable():
             kwargs: dict[str, typing.Any] = {"file_path": self._file_path}
+            version = None
             if self._file_path is not None and self._load_func is not None:
                 version = _capture_loader_file(
                     self._file_path, self._load_func[0], self._load_func[1]
                 )
                 if version is not None:
                     kwargs["_file_backing"] = version
-            data = self._fetch_for_reload()
+            data = self._fetch_for_reload(version)
             # Fetching resolves a saved positional selection against the opened file.
             kwargs["load_func"] = self._load_func
             return data, kwargs

@@ -97,7 +97,11 @@ def read_file_version(
     OSError
         If the path is missing or the file version has changed.
     """
-    from erlab._provenance._checkpoint import FileVersion, _guard_file_variables
+    from erlab._provenance._checkpoint import (
+        FileVersion,
+        _guard_file_variables,
+        _open_file_for_chunks,
+    )
 
     if select is not None and (
         variable is not _NO_FILE_VARIABLE or node_path is not None
@@ -110,37 +114,11 @@ def read_file_version(
         os.path.abspath(path), device, inode, size, modified_ns, changed_ns
     )
     version.verify()
-    kwargs = dict(read_kwargs or {})
-    storage_key = None
-    chunk_manager = kwargs.get("chunked_array_type")
-    if chunk_manager is None:
-        chunk_manager = xr.get_options().get("chunk_manager", "dask")
-    if (
-        select is None
-        and kwargs.get("chunks") == {}
-        and kwargs.get("engine") in ("h5netcdf", "netcdf4", "scipy")
-        and any(
-            read is opener
-            for opener in (xr.open_dataset, xr.open_dataarray, xr.open_datatree)
-        )
-        and chunk_manager == "dask"
-        and not kwargs.get("from_array_kwargs")
-        and not kwargs.get("inline_array")
-        and not kwargs.get("overwrite_encoded_chunks")
-        and not (kwargs.get("backend_kwargs") or {}).get("overwrite_encoded_chunks")
-    ):
-        from dask.base import tokenize
-
-        # Bind identical reads to one Dask key using the actual public call.
-        # Opening unchunked lets us check the file around each backend slice.
-        selection = () if variable is _NO_FILE_VARIABLE else (variable,)
-        storage_key = tokenize(version, read, kwargs, node_path, selection)
-        kwargs.pop("chunks")
-        if kwargs.get("cache") is None:
-            kwargs["cache"] = False
-
+    kwargs = read_kwargs or {}
     try:
-        opened = read(version.path, **kwargs)
+        opened, token = _open_file_for_chunks(
+            read, version.path, kwargs, version if select is None else None
+        )
     except Exception:
         version.verify()
         raise
@@ -156,6 +134,7 @@ def read_file_version(
             node = opened if node_path is None else opened[node_path]
             if not isinstance(node, xr.DataTree):
                 raise TypeError("The node path must identify a DataTree node.")
+            node_path = node.path
             data = node.dataset[variable]
         elif isinstance(opened, xr.Dataset):
             data = opened[variable]
@@ -163,7 +142,15 @@ def read_file_version(
             raise TypeError("A named file variable requires a Dataset or DataTree.")
         if not isinstance(data, xr.DataArray):
             raise TypeError("The reader must select a DataArray.")
-        result = _guard_file_variables(data, version, storage_key=storage_key)
+        data_key = () if variable is _NO_FILE_VARIABLE else (variable,)
+        result = _guard_file_variables(
+            data,
+            version,
+            storage_key=token,
+            node_path=node_path or "/",
+            data_key=data_key,
+            auto_chunks=kwargs.get("chunks") == "auto",
+        )
         if dtype is not None:
             result = result.astype(dtype)
         version.verify()

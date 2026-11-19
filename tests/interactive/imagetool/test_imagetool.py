@@ -4656,6 +4656,76 @@ def test_itool_file_open_uses_selected_dataset_variable(
     win.close()
 
 
+def test_itool_file_open_and_reload_keep_native_slice_reads(
+    qtbot, monkeypatch, accept_dialog, tmp_path, request
+) -> None:
+    from xarray.backends.h5netcdf_ import H5NetCDFArrayWrapper
+
+    grid = xr.DataArray(
+        np.arange(48.0).reshape(6, 8),
+        dims=("x", "y"),
+        coords={"x": np.arange(6.0), "y": np.arange(8.0)},
+        name="grid",
+    )
+    path = tmp_path / "grid.h5"
+    encoding = {"grid": {"chunksizes": (2, 4)}}
+    grid.to_netcdf(path, engine="h5netcdf", encoding=encoding)
+    menu_filter = "xarray HDF5 Files Chunked (*.h5)"
+    assert erlab.interactive.utils.file_loaders(path)[menu_filter] == (
+        xr.open_dataarray,
+        {"engine": "h5netcdf", "chunks": "auto"},
+    )
+    option = "io/dask/compute_threshold"
+    previous = erlab.interactive.options[option]
+    request.addfinalizer(lambda: erlab.interactive.options.set(option, previous))
+    erlab.interactive.options[option] = 0
+
+    win = itool(np.zeros((2, 2)), manager=False, execute=False)
+    qtbot.addWidget(win)
+
+    def choose(dialog: QtWidgets.QFileDialog) -> None:
+        dialog.setDirectory(str(tmp_path))
+        dialog.selectFile(str(path))
+        dialog.selectNameFilter(menu_filter)
+        focused = dialog.focusWidget()
+        if isinstance(focused, QtWidgets.QLineEdit):
+            focused.setText(path.name)
+
+    accept_dialog(lambda: win._open_file(native=False), pre_call=choose)
+    sizes = []
+    read = H5NetCDFArrayWrapper._getitem
+
+    def track(self, key):
+        result = read(self, key)
+        if self.variable_name == "grid":
+            sizes.append(result.size)
+        return result
+
+    monkeypatch.setattr(H5NetCDFArrayWrapper, "_getitem", track)
+    selected = win.slicer_area.displayed_data.isel(x=1, y=slice(1, 3))
+    xr.testing.assert_identical(selected.compute(), grid.isel(x=1, y=slice(1, 3)))
+    assert sizes == [2]
+
+    updated = (grid + 100).rename("grid")
+    replacement = tmp_path / "changed.nc"
+    updated.to_netcdf(replacement, engine="h5netcdf", encoding=encoding)
+    replacement.replace(path)
+    sizes.clear()
+    with pytest.raises(OSError, match="has changed"):
+        selected.compute()
+    assert not sizes
+
+    with qtbot.wait_signal(win.slicer_area.sigDataChanged):
+        win.slicer_area.reload()
+    sizes.clear()
+    xr.testing.assert_identical(
+        win.slicer_area.displayed_data.isel(x=1, y=slice(1, 3)).compute(),
+        updated.isel(x=1, y=slice(1, 3)),
+    )
+    assert sizes == [2]
+    win.close()
+
+
 def test_itool_file_open_reduces_high_dimensional_data_with_provenance(
     qtbot,
     monkeypatch,

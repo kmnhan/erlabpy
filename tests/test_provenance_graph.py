@@ -2083,3 +2083,33 @@ def test_copied_array_method_uses_edited_arguments():
         transpose.model_copy(update={"dims": ("x", "y")}, deep=True).apply(source).dims
         == source.dims
     )
+
+
+def test_foreign_dask_graph_with_guarded_name_keeps_its_actual_tasks(tmp_path):
+    import dask.array as da
+
+    from erlab._provenance._checkpoint import (
+        FileVersion,
+        _guard_file_variables,
+        _read_versioned_file,
+    )
+
+    path = tmp_path / "source.nc"
+    original = xr.DataArray(np.arange(8), dims="x", name="scan")
+    original.to_netcdf(path, engine="h5netcdf")
+    version = FileVersion.capture(path)
+    with _read_versioned_file(
+        xr.open_dataarray, path, {"engine": "h5netcdf", "chunks": {}}, version
+    ) as source:
+        # A different graph may use exactly the same public collection name.
+        name = source.data.name
+        foreign = da.Array(
+            {(name, 0): np.arange(8)[::-1]}, name, ((8,),), dtype=source.dtype
+        )
+        guarded = _guard_file_variables(xr.DataArray(foreign, dims="x"), version)
+        np.testing.assert_array_equal(guarded.compute(), np.arange(8)[::-1])
+        replacement = tmp_path / "changed.nc"
+        replacement.touch()
+        replacement.replace(path)
+        with pytest.raises(OSError, match="has changed"):
+            guarded.compute()

@@ -13,7 +13,7 @@ import numpy as np
 import xarray as xr
 
 import erlab
-from erlab._provenance._checkpoint import FileVersion
+from erlab._provenance._checkpoint import FileVersion, _read_versioned_file
 from erlab._provenance._code import _provenance_value_code
 from erlab._provenance._model import (
     FileDataSelection,
@@ -1220,6 +1220,7 @@ def _semantic_file_data_selection(
 def _load_file_source_object(
     load_source: FileLoadSource,
     *,
+    backing: FileVersion | None = None,
     extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
 ) -> typing.Any:
     call = load_source.replay_call
@@ -1245,12 +1246,15 @@ def _load_file_source_object(
                 f"Callable file loader {call.target!r} is not registered locally"
             )
 
-    return func(file_path, **_deserialize_loader_kwargs(call.kwargs))
+    return _read_versioned_file(
+        func, file_path, _deserialize_loader_kwargs(call.kwargs), backing
+    )
 
 
 def _load_file_source_data(
     load_source: FileLoadSource,
     *,
+    backing: FileVersion | None = None,
     extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
 ) -> xr.DataArray:
     call = load_source.replay_call
@@ -1258,6 +1262,7 @@ def _load_file_source_data(
         raise ValueError("File load source does not define replay metadata")
     loaded = _load_file_source_object(
         load_source,
+        backing=backing,
         extension_loader_executor=extension_loader_executor,
     )
     data = _select_replay_input(loaded, call.selection)

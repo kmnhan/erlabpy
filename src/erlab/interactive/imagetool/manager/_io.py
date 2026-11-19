@@ -18,6 +18,7 @@ import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
+from erlab._provenance._checkpoint import _read_versioned_file
 from erlab._provenance._files import _capture_loader_file, _extension_loader_identity
 from erlab._provenance._model import FileDataSelection
 from erlab.interactive.imagetool._mainwindow import ImageTool
@@ -570,7 +571,9 @@ class _DataLoader(QtCore.QRunnable):
     def run(self) -> None:
         try:
             backing = _capture_loader_file(self._file_path, self._func, self._kwargs)
-            data = self._func(self._file_path, **self._kwargs)
+            data = _read_versioned_file(
+                self._func, self._file_path, self._kwargs, backing
+            )
         except Exception:
             logger.debug(
                 "Error loading data from %s", self._file_path

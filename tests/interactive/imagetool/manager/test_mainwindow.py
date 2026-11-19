@@ -11742,8 +11742,15 @@ def test_manager_failed_graph_install_restores_prerequisites(
         assert not ops.graph.is_stale(second)
 
 
+@pytest.mark.parametrize("chunked_filter", [False, True])
 def test_managed_file_operand_keeps_lazy_checkpoint_and_reloads_origin(
-    qtbot, manager_context, tmp_path, monkeypatch, request, accept_dialog
+    qtbot,
+    manager_context,
+    tmp_path,
+    monkeypatch,
+    request,
+    accept_dialog,
+    chunked_filter,
 ) -> None:
     from xarray.backends.h5netcdf_ import H5NetCDFArrayWrapper
 
@@ -11765,9 +11772,14 @@ def test_managed_file_operand_keeps_lazy_checkpoint_and_reloads_origin(
         previous = erlab.interactive.options[option]
         request.addfinalizer(lambda: erlab.interactive.options.set(option, previous))
         erlab.interactive.options[option] = 0
-        handler = _MultiFileHandler(
-            manager, [path], xr.open_dataset, {"engine": "h5netcdf", "chunks": {}}
+        loader, options = (
+            erlab.interactive.utils.file_loaders(path)[
+                "xarray HDF5 Files Chunked (*.h5)"
+            ]
+            if chunked_filter
+            else (xr.open_dataset, {"engine": "h5netcdf", "chunks": {}})
         )
+        handler = _MultiFileHandler(manager, [path], loader, options)
         with qtbot.waitSignal(handler.sigFinished, timeout=10000):
             handler.start()
         assert handler.loaded == [path]
@@ -11783,11 +11795,15 @@ def test_managed_file_operand_keeps_lazy_checkpoint_and_reloads_origin(
         dialog.target_tool_selector.set_current_uid(node.uid)
 
         reads = []
+        grid_read_sizes = []
         read_chunk = H5NetCDFArrayWrapper._getitem
 
         def record(self, key):
             reads.append(self.variable_name)
-            return read_chunk(self, key)
+            value = read_chunk(self, key)
+            if self.variable_name == "grid":
+                grid_read_sizes.append(value.size)
+            return value
 
         monkeypatch.setattr(H5NetCDFArrayWrapper, "_getitem", record)
         # The displayed file binding was captured at open. An obsolete local
@@ -11802,20 +11818,36 @@ def test_managed_file_operand_keeps_lazy_checkpoint_and_reloads_origin(
         assert isinstance(graph.revision(old).producer, FileLoad)
         assert graph.data(old).chunks is not None
         values = graph.data(old)
-        xr.testing.assert_identical(values.isel(x=0).compute(), grid.isel(x=0))
+        # Revisit a two-value slice inside one eight-value storage chunk through
+        # the live viewer and the revision it exposed to the interpolation.
+        slices = [
+            data.isel(x=1, y=slice(1, 3))
+            for data in (node.slicer_area.displayed_data, values)
+        ]
+        for selected in slices:
+            for _ in range(2):
+                grid_read_sizes.clear()
+                xr.testing.assert_identical(
+                    selected.compute(), grid.isel(x=1, y=slice(1, 3))
+                )
+                assert grid_read_sizes == [2]
 
         copied = []
         monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)
         manager._set_metadata_node(node)
         manager._copy_full_derivation_code()
         file_code = copied[0]
-        assert "open_dataset" in file_code
-        assert "variable='grid'" in file_code
+        assert loader.__name__ in file_code
+        if chunked_filter:
+            assert "'chunks': 'auto'" in file_code
+        else:
+            assert "variable='grid'" in file_code
         reads.clear()
         copied_grid = _exec_generated_code(file_code, {})["derived"]
         assert "grid" not in reads
+        grid_read_sizes.clear()
         xr.testing.assert_identical(copied_grid.isel(x=0, y=0).compute(), grid[0, 0])
-        assert reads.count("grid") == 1
+        assert grid_read_sizes == [1]
 
         result = manager._child_node(sample_node._childtool_indices[-1])
         manager._set_metadata_node(result)
@@ -11835,6 +11867,11 @@ def test_managed_file_operand_keeps_lazy_checkpoint_and_reloads_origin(
         changed_path = tmp_path / "changed.h5"
         (grid + 2).rename("grid").to_netcdf(changed_path, engine="h5netcdf")
         changed_path.replace(path)
+        grid_read_sizes.clear()
+        for selected in slices:
+            with pytest.raises(OSError, match="has changed"):
+                selected.compute()
+        assert not grid_read_sizes
         with pytest.raises(OSError, match="has changed"):
             values.compute()
         with pytest.raises(OSError, match=r"has changed.*checkpoint"):
@@ -11855,6 +11892,14 @@ def test_managed_file_operand_keeps_lazy_checkpoint_and_reloads_origin(
         assert new != old
         assert graph.revision(new).backing == node.slicer_area._file_backing
         assert node.slicer_area._file_path == path
+        new_values = graph.data(new)
+        for data in (node.slicer_area.displayed_data, new_values):
+            grid_read_sizes.clear()
+            xr.testing.assert_identical(
+                data.isel(x=1, y=slice(1, 3)).compute(),
+                (grid + 2).isel(x=1, y=slice(1, 3)),
+            )
+            assert grid_read_sizes == [2]
         xr.testing.assert_identical(node.data_for_role("displayed").compute(), grid + 2)
         path.unlink()
         assert not node.slicer_area.reloadable
