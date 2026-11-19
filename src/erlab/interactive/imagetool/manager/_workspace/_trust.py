@@ -11,6 +11,7 @@ import erlab
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._revisions as workspace_revisions
+from erlab._provenance._model import ToolProvenanceSpec, parse_tool_provenance_spec
 from erlab.interactive import _persistence_constants
 from erlab.interactive._code_trust import (
     create_manifest,
@@ -21,10 +22,6 @@ from erlab.interactive._code_trust import (
 from erlab.interactive._code_trust._core import CodeTrustReason
 from erlab.interactive._code_trust._payloads import store_code_payload_entries
 from erlab.interactive._saved_tools import resolve_saved_tool_class
-from erlab.interactive.imagetool._provenance._model import (
-    ToolProvenanceSpec,
-    parse_tool_provenance_spec,
-)
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 
 if typing.TYPE_CHECKING:

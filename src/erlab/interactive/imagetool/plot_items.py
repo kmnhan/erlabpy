@@ -18,11 +18,7 @@ from pyqtgraph.GraphicsScene import mouseEvents
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool._colorlevels import (
-    finite_percentile_limits,
-    resolve_image_levels,
-)
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ScriptInput,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
@@ -31,11 +27,15 @@ from erlab.interactive.imagetool._provenance._model import (
     public_data,
     selection,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     IselOperation,
     SelectCoordOperation,
     SqueezeOperation,
     TransposeOperation,
+)
+from erlab.interactive.imagetool._colorlevels import (
+    finite_percentile_limits,
+    resolve_image_levels,
 )
 from erlab.interactive.imagetool.viewer_linking import record_history, suppress_history
 from erlab.interactive.imagetool.viewer_state import (

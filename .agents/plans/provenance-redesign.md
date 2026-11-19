@@ -59,7 +59,7 @@ If the bindings are A₀, B₀, A₀, execution passes those three arrays to
 `xr.concat([a, b, a], ...)` with the same keyword arguments. The ellipsis here
 stands for the captured options. Name allocation, imports, and literal formatting
 belong to the exporter. Validation, editor controls, and labels can continue to
-use the existing typed fields. [Existing concat implementation](../../src/erlab/interactive/imagetool/_provenance/_operations/_analysis.py)
+use the existing typed fields. [Existing concat implementation](../../src/erlab/_provenance/_operations/_analysis.py)
 
 Keep the call description small. For a calculation that requires branching,
 numerical guards, multiple statements, or selection from a tuple or Dataset,
@@ -78,8 +78,8 @@ input roles, authoring behavior, and any code-trust requirements. Replace its
 numerical `apply` and handwritten Python emitter with the call definition. Port
 its existing public-behavior examples to the shared test described below. A
 future built-in of the same form supplies only its definition and fixtures.
-[Operation catalog](../../src/erlab/interactive/imagetool/_provenance/_operations) ·
-[Operation registration and serialization](../../src/erlab/interactive/imagetool/_provenance/_model.py)
+[Operation catalog](../../src/erlab/_provenance/_operations) ·
+[Operation registration and serialization](../../src/erlab/_provenance/_model.py)
 
 ### Python readability is an acceptance criterion
 

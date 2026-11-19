@@ -42,12 +42,12 @@ if typing.TYPE_CHECKING:
     import lmfit
     import varname
 
+    from erlab._provenance._model import ToolProvenanceSpec
     from erlab.interactive._figurecomposer._fit_sources import (
         FigureFitParameterSourceSnapshot,
         FigureFitSourceSnapshot,
     )
     from erlab.interactive._figurecomposer._providers import FigureSourceProvider
-    from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
     from erlab.interactive.imagetool.manager import ImageToolManager
     from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
 else:

@@ -15,6 +15,21 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
+from erlab._provenance._model import (
+    ReplayStep,
+    ScriptInput,
+    ScriptInputDataRole,
+    ScriptInputDependencyRef,
+    ToolProvenanceOperation,
+    ToolProvenanceSpec,
+    has_file_load_source,
+    rebase_script_input_node_uids,
+    rebase_script_inputs_node_uids,
+    recipe,
+    script,
+    to_replay_provenance_spec,
+)
+from erlab._provenance._operations import ScriptCodeOperation
 from erlab.interactive import _persistence_constants
 from erlab.interactive._code_trust import execution_capability_allows
 from erlab.interactive.imagetool._mainwindow import ImageTool
@@ -31,21 +46,6 @@ from erlab.interactive.imagetool._provenance._graph import (
     ReplayGraphError,
     ResolvedReplayInput,
 )
-from erlab.interactive.imagetool._provenance._model import (
-    ReplayStep,
-    ScriptInput,
-    ScriptInputDataRole,
-    ScriptInputDependencyRef,
-    ToolProvenanceOperation,
-    ToolProvenanceSpec,
-    has_file_load_source,
-    rebase_script_input_node_uids,
-    rebase_script_inputs_node_uids,
-    recipe,
-    script,
-    to_replay_provenance_spec,
-)
-from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 from erlab.interactive.imagetool.manager._dependency import _combine_source_states
 from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange

@@ -15,13 +15,7 @@ import erlab
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
-from erlab.interactive.imagetool import _kspace_conversion, itool
-from erlab.interactive.imagetool._provenance._execution import (
-    replay_file_provenance,
-    replay_script_provenance,
-)
-from erlab.interactive.imagetool._provenance._graph import ReplayGraphError
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     DerivationEntry,
     ReplayStep,
     ScriptInput,
@@ -37,7 +31,7 @@ from erlab.interactive.imagetool._provenance._model import (
     stamp_operation_group,
     strip_operation_groups,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AffineCoordOperation,
     AssignAttrsOperation,
     AverageOperation,
@@ -54,6 +48,12 @@ from erlab.interactive.imagetool._provenance._operations import (
     SwapDimsOperation,
     TransposeOperation,
 )
+from erlab.interactive.imagetool import _kspace_conversion, itool
+from erlab.interactive.imagetool._provenance._execution import (
+    replay_file_provenance,
+    replay_script_provenance,
+)
+from erlab.interactive.imagetool._provenance._graph import ReplayGraphError
 from erlab.interactive.imagetool.manager import replace_data
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _controller as provenance_edit_controller,

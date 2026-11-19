@@ -3,7 +3,7 @@
 .. versionchanged:: 3.25.0
    This module now focuses on provenance models, source constructors, composition,
    grouping, parsing, and replay. Concrete operation models live in the evolving
-   ``erlab.interactive.imagetool._provenance._operations`` catalog.
+   ``erlab._provenance._operations`` catalog.
 """
 
 from __future__ import annotations
@@ -35,11 +35,7 @@ __all__ = [
     "strip_operation_groups",
 ]
 
-from erlab.interactive.imagetool._provenance._execution import (
-    replay_file_provenance,
-    replay_script_provenance,
-)
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     DerivationEntry,
     FileDataSelection,
     FileLoadSource,
@@ -62,4 +58,8 @@ from erlab.interactive.imagetool._provenance._model import (
     selection,
     stamp_operation_group,
     strip_operation_groups,
+)
+from erlab.interactive.imagetool._provenance._execution import (
+    replay_file_provenance,
+    replay_script_provenance,
 )

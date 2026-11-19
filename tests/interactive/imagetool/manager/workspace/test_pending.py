@@ -14,7 +14,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-import erlab.interactive.imagetool._load_source as imagetool_load_source
+import erlab._provenance._files as imagetool_load_source
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.manager._console as manager_console
 import erlab.interactive.imagetool.manager._lineage as manager_lineage
@@ -25,10 +25,8 @@ import erlab.interactive.imagetool.manager._workspace._loading as workspace_load
 import erlab.interactive.imagetool.manager._workspace._pending as workspace_pending
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 import erlab.interactive.imagetool.viewer as imagetool_viewer
-from erlab.interactive import _persistence_constants
-from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._load_source import _register_local_callable_loader
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._files import _register_local_callable_loader
+from erlab._provenance._model import (
     FileDataSelection,
     ScriptInput,
     ToolProvenanceOperation,
@@ -37,13 +35,15 @@ from erlab.interactive.imagetool._provenance._model import (
     script,
     selection,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AverageOperation,
     BoxcarFilterOperation,
     GaussianFilterOperation,
     SortCoordOrderOperation,
     SqueezeOperation,
 )
+from erlab.interactive import _persistence_constants
+from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import replace_data
 from tests.interactive.imagetool.manager.helpers import (
     _exec_generated_code,

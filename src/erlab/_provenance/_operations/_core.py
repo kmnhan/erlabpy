@@ -9,11 +9,8 @@ import pydantic
 import xarray as xr
 
 import erlab
-from erlab.interactive.imagetool._provenance._code import (
-    _format_selection_expr,
-    _provenance_value_code,
-)
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._code import _format_selection_expr, _provenance_value_code
+from erlab._provenance._model import (
     DerivationEntry,
     NullableProvenanceHashable,
     ProvenanceHashable,

@@ -20,11 +20,7 @@ import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.utils
-from erlab.interactive._code_trust import issue_execution_capability, new_document_trust
-from erlab.interactive.imagetool import _kspace_conversion, itool
-from erlab.interactive.imagetool._provenance import _execution
-from erlab.interactive.imagetool._provenance._execution import replay_script_provenance
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     DerivationEntry,
     FileDataSelection,
     FileLoadSource,
@@ -39,7 +35,7 @@ from erlab.interactive.imagetool._provenance._model import (
     selection,
     to_replay_provenance_spec,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AverageOperation,
     ConcatOperation,
     GaussianFilterOperation,
@@ -49,6 +45,10 @@ from erlab.interactive.imagetool._provenance._operations import (
     SqueezeOperation,
     TransposeOperation,
 )
+from erlab.interactive._code_trust import issue_execution_capability, new_document_trust
+from erlab.interactive.imagetool import _kspace_conversion, itool
+from erlab.interactive.imagetool._provenance import _execution
+from erlab.interactive.imagetool._provenance._execution import replay_script_provenance
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 from erlab.interactive.imagetool.manager import fetch
 from erlab.interactive.imagetool.manager._console import ToolNamespace

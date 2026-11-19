@@ -13,13 +13,7 @@ from qtpy import QtCore, QtWidgets
 import erlab
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
-from erlab.interactive._fit1d import Fit1DTool
-from erlab.interactive._fit2d import Fit2DTool
-from erlab.interactive._mesh import MeshTool
-from erlab.interactive.derivative import DerivativeTool
-from erlab.interactive.fermiedge import GoldTool, ResolutionTool
-from erlab.interactive.imagetool import _kspace_conversion, itool
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     DerivationEntry,
     OperationGroupMarker,
     ReplayStep,
@@ -36,7 +30,7 @@ from erlab.interactive.imagetool._provenance._model import (
     selection,
     stamp_operation_group,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AffineCoordOperation,
     AssignAttrsOperation,
     ConcatOperation,
@@ -65,6 +59,12 @@ from erlab.interactive.imagetool._provenance._operations import (
     UniformInterpolationOperation,
     _ModelFitParameterSpec,
 )
+from erlab.interactive._fit1d import Fit1DTool
+from erlab.interactive._fit2d import Fit2DTool
+from erlab.interactive._mesh import MeshTool
+from erlab.interactive.derivative import DerivativeTool
+from erlab.interactive.fermiedge import GoldTool, ResolutionTool
+from erlab.interactive.imagetool import _kspace_conversion, itool
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 from erlab.interactive.imagetool.dialogs import SelectionDialog
 from erlab.interactive.imagetool.manager import fetch, replace_data

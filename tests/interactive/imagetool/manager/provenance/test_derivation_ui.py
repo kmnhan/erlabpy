@@ -16,12 +16,7 @@ import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._source_labels as manager_source_labels
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
-from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._provenance._execution import (
-    replay_file_provenance,
-    replay_script_provenance,
-)
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     DerivationEntry,
     FileDataSelection,
     ReplayStep,
@@ -39,7 +34,7 @@ from erlab.interactive.imagetool._provenance._model import (
     script,
     stamp_operation_group,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AssignAttrsOperation,
     AssignCoordsOperation,
     InterpolationOperation,
@@ -48,6 +43,11 @@ from erlab.interactive.imagetool._provenance._operations import (
     QSelAggregationOperation,
     RenameOperation,
     ScriptCodeOperation,
+)
+from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool._provenance._execution import (
+    replay_file_provenance,
+    replay_script_provenance,
 )
 from erlab.interactive.imagetool._provenance._trust import (
     script_replay_source_input_names,

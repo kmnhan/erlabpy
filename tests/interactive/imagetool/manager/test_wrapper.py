@@ -14,20 +14,20 @@ import xarray as xr
 from qtpy import QtCore, QtGui
 
 import erlab
-from erlab.interactive import _persistence_constants
-from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._load_source import (
+from erlab._provenance._files import (
     _load_code_from_file_details,
     _load_provenance_from_file_details,
     _load_source_label_and_text,
     _loader_callable_text,
 )
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     FileDataSelection,
     ScriptInput,
     ToolProvenanceSpec,
     full_data,
 )
+from erlab.interactive import _persistence_constants
+from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._provenance._trust import remap_script_input_provenance
 from erlab.interactive.imagetool.manager._wrapper import (
     _coerce_added_time,

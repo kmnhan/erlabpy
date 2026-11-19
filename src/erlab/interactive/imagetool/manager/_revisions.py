@@ -11,19 +11,19 @@ from dataclasses import dataclass, replace
 
 import xarray as xr
 
-from erlab._provenance._records import checkpoint_data
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ReplayStep,
     ScriptInput,
     ToolProvenanceSpec,
     _normalize_legacy_script_input,
     parse_tool_provenance_spec,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AssignAttrsOperation,
     AssignScalarCoordOperation,
     ScriptCodeOperation,
 )
+from erlab._provenance._records import checkpoint_data
 from erlab.interactive.imagetool._provenance._trust import (
     remap_script_input_provenance,
     script_replay_source_input_names,
@@ -32,7 +32,7 @@ from erlab.interactive.imagetool._provenance._trust import (
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
-    from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
+    from erlab._provenance._model import ToolProvenanceOperation
 
 
 def _copy_checkpoint_metadata(data: xr.DataArray) -> xr.DataArray:

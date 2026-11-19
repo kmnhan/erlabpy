@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import typing
 
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ScriptInputDependencyRef,
     script_inputs_dependency_refs,
 )
@@ -14,7 +14,7 @@ __all__ = ["_DependencyStatus", "_ManagerDependencyTracker"]
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
-    from erlab.interactive.imagetool._provenance._model import ScriptInput
+    from erlab._provenance._model import ScriptInput
     from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
     from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
 

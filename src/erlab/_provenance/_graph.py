@@ -35,7 +35,7 @@ from erlab._provenance._records import (
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Hashable, Iterable, Iterator
 
-    from erlab.interactive.imagetool._provenance._model import FileReplayCall
+    from erlab._provenance._model import FileReplayCall
 
 
 @dataclass(frozen=True, eq=False)

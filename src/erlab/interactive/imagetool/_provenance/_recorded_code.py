@@ -9,11 +9,12 @@ import unicodedata
 from dataclasses import replace
 
 from erlab._provenance import Application, FileLoad
-from erlab.interactive.imagetool._load_source import (
+from erlab._provenance._files import (
     _deserialize_loader_kwargs,
     _registered_local_callable_loader,
     _resolve_load_func,
 )
+from erlab._provenance._model import FileLoadSource
 from erlab.interactive.imagetool._provenance._graph import (
     ReplayGraph,
     ReplayGraphError,
@@ -22,7 +23,6 @@ from erlab.interactive.imagetool._provenance._graph import (
     _validate_external_input_name,
     emit_replay_code,
 )
-from erlab.interactive.imagetool._provenance._model import FileLoadSource
 from erlab.utils.misc import _is_valid_identifier
 
 if typing.TYPE_CHECKING:

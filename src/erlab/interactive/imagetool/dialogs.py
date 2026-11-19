@@ -18,15 +18,8 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool import _kspace_conversion
-from erlab.interactive.imagetool._dialog_widgets import (
-    CoordinateEditorWidget,
-    CoordinateGridWidget,
-    KspaceInputCoordinatesControl,
-    prompt_kspace_input_coordinates,
-)
-from erlab.interactive.imagetool._provenance._code import _provenance_value_code
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._code import _provenance_value_code
+from erlab._provenance._model import (
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     compose_full_provenance,
@@ -34,7 +27,7 @@ from erlab.interactive.imagetool._provenance._model import (
     public_data,
     require_live_source_spec,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     SHIFT_MODES,
     AffineCoordOperation,
     AssignAttrsOperation,
@@ -78,6 +71,13 @@ from erlab.interactive.imagetool._provenance._operations import (
     SymmetrizeOperation,
     ThinOperation,
     UniformInterpolationOperation,
+)
+from erlab.interactive.imagetool import _kspace_conversion
+from erlab.interactive.imagetool._dialog_widgets import (
+    CoordinateEditorWidget,
+    CoordinateGridWidget,
+    KspaceInputCoordinatesControl,
+    prompt_kspace_input_coordinates,
 )
 from erlab.interactive.imagetool.viewer_state import _child_colormap_kwargs
 

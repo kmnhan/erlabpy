@@ -82,7 +82,7 @@ def test_replace_preserves_recorded_input_until_refresh(graph) -> None:
 
 def test_replacing_a_derived_entry_reapplies_its_previous_step(graph) -> None:
     from erlab._provenance import EarlierStep
-    from erlab.interactive.imagetool._provenance._operations import IselOperation
+    from erlab._provenance._operations import IselOperation
 
     a0 = graph.add_source("A", xr.DataArray([1, 2, 3], dims="x"))
     b0 = graph.derive(
@@ -106,7 +106,7 @@ def test_replacing_a_derived_entry_reapplies_its_previous_step(graph) -> None:
 
 
 def test_failed_refresh_keeps_displayed_data_and_prerequisites(graph) -> None:
-    from erlab.interactive.imagetool._provenance._operations import IselOperation
+    from erlab._provenance._operations import IselOperation
 
     graph.add_source("A", xr.DataArray([1, 2], dims="x"))
     b0 = graph.derive("B", Recipe.bind(Scale(factor=2), Follow("A")))
@@ -134,10 +134,7 @@ def test_failed_refresh_keeps_displayed_data_and_prerequisites(graph) -> None:
 
 def test_shared_file_input_is_read_once_per_refresh(tmp_path) -> None:
     from erlab._provenance import FileLoad
-    from erlab.interactive.imagetool._provenance._model import (
-        FileDataSelection,
-        FileReplayCall,
-    )
+    from erlab._provenance._model import FileDataSelection, FileReplayCall
 
     path = tmp_path / "source.nc"
     xr.Dataset({"first": ("x", [1, 2]), "second": ("x", [10, 20])}).to_netcdf(
@@ -193,7 +190,7 @@ def test_shared_file_input_is_read_once_per_refresh(tmp_path) -> None:
 
 
 def test_ordered_slots_and_applied_code_with_repeated_input(graph) -> None:
-    from erlab.interactive.imagetool._provenance._operations import ConcatOperation
+    from erlab._provenance._operations import ConcatOperation
 
     left = xr.DataArray([1, 2], dims="x")
     right = xr.DataArray([10, 20], dims="x")
@@ -257,7 +254,7 @@ def test_invalid_ids_and_slots_are_rejected_before_publication(graph) -> None:
 
 
 def test_checkpoints_and_nested_operation_settings_are_owned(graph) -> None:
-    from erlab.interactive.imagetool._provenance._operations import IselOperation
+    from erlab._provenance._operations import IselOperation
 
     original = xr.DataArray([10, 20], dims="x", attrs={"labels": ["source"]})
     a = graph.add_source("A", original)
@@ -455,10 +452,7 @@ def test_replacing_a_stale_derived_value_records_what_was_on_screen(graph) -> No
 
 def test_retained_history_and_stale_results_own_file_checkpoints() -> None:
     from erlab._provenance import FileLoad
-    from erlab.interactive.imagetool._provenance._model import (
-        FileDataSelection,
-        FileReplayCall,
-    )
+    from erlab._provenance._model import FileDataSelection, FileReplayCall
 
     values = iter(range(5))
     graph = ProvenanceGraph(read_file=lambda _source, _call: xr.DataArray(next(values)))
@@ -520,7 +514,7 @@ def test_replace_keeps_pending_producer_and_its_pinned_input(graph, derived) -> 
 
 
 def test_replaced_entry_follows_the_edited_source(graph) -> None:
-    from erlab.interactive.imagetool._provenance._operations import IselOperation
+    from erlab._provenance._operations import IselOperation
 
     graph.add_source("A", xr.DataArray([1, 2], dims="x"))
     graph.add_source("X", xr.DataArray([10, 20], dims="x"))
@@ -545,10 +539,7 @@ def test_replaced_entry_follows_the_edited_source(graph) -> None:
 @pytest.fixture
 def file_graph(tmp_path):
     from erlab._provenance import FileLoad
-    from erlab.interactive.imagetool._provenance._model import (
-        FileDataSelection,
-        FileReplayCall,
-    )
+    from erlab._provenance._model import FileDataSelection, FileReplayCall
 
     path = tmp_path / "scan.nc"
     reads = []
@@ -806,11 +797,8 @@ def test_auto_failure_is_isolated_and_retried_on_next_change(graph):
 def test_full_code_uses_recorded_inputs_and_verified_file_or_checkpoint(file_graph):
     import hashlib
 
+    from erlab._provenance._operations import ConcatOperation, IselOperation
     from erlab.interactive.imagetool._provenance._graph import ReplayGraphError
-    from erlab.interactive.imagetool._provenance._operations import (
-        ConcatOperation,
-        IselOperation,
-    )
     from erlab.interactive.imagetool._provenance._recorded_code import full_code
 
     graph, path, load, reads = file_graph
@@ -973,7 +961,7 @@ def test_scheduling_failure_preserves_source_and_allows_retry():
 
 
 def test_full_code_preserves_a_shared_auxiliary_input(graph):
-    from erlab.interactive.imagetool._provenance._operations import (
+    from erlab._provenance._operations import (
         ConcatOperation,
         KspaceWorkFunctionOperation,
     )
@@ -1017,10 +1005,7 @@ def test_reload_from_memory_keeps_the_source_checkpoint(graph):
 
 def test_edit_supersedes_reload_before_downstream_operation():
     from erlab._provenance import FileLoad
-    from erlab.interactive.imagetool._provenance._model import (
-        FileDataSelection,
-        FileReplayCall,
-    )
+    from erlab._provenance._model import FileDataSelection, FileReplayCall
 
     edit = False
     calls = []
@@ -1106,7 +1091,7 @@ def test_array_indexer_sharing_depends_on_the_captured_snapshot(
     graph, monkeypatch, submission
 ) -> None:
     from erlab._provenance import EarlierStep
-    from erlab.interactive.imagetool._provenance._operations import IselOperation
+    from erlab._provenance._operations import IselOperation
 
     graph.add_source("A", xr.DataArray([1, 2, 3], dims="x"))
     indices = np.array([0, 2])
@@ -1253,10 +1238,7 @@ def test_reload_compares_effective_file_settings_for_the_same_producer(
     tmp_path, edited
 ):
     from erlab._provenance import EarlierStep, FileLoad
-    from erlab.interactive.imagetool._provenance._model import (
-        FileDataSelection,
-        FileReplayCall,
-    )
+    from erlab._provenance._model import FileDataSelection, FileReplayCall
 
     path = tmp_path / "offsets.nc"
     xr.Dataset({"a": ("x", [1]), "b": ("x", [5])}).to_netcdf(path, engine="h5netcdf")
@@ -1300,10 +1282,7 @@ def test_reload_compares_effective_file_settings_for_the_same_producer(
 
 def test_preview_reuses_captured_file_kwargs_without_copying_the_array(tmp_path):
     from erlab._provenance import EarlierStep, FileLoad
-    from erlab.interactive.imagetool._provenance._model import (
-        FileDataSelection,
-        FileReplayCall,
-    )
+    from erlab._provenance._model import FileDataSelection, FileReplayCall
 
     copies = []
     reads = []

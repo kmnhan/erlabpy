@@ -12,10 +12,7 @@ import xarray as xr
 if typing.TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from erlab.interactive.imagetool._provenance._model import (
-        FileReplayCall,
-        ToolProvenanceOperation,
-    )
+    from erlab._provenance._model import FileReplayCall, ToolProvenanceOperation
 
 
 def check_id(identifier: object) -> None:

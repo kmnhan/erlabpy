@@ -30,14 +30,14 @@ import erlab.interactive.imagetool.manager._workspace._arrays as workspace_array
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.viewer as imagetool_viewer
+from erlab._provenance._model import full_data
+from erlab._provenance._operations import GaussianFilterOperation
 from erlab.interactive import _persistence_constants
 from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._provenance._model import full_data
-from erlab.interactive.imagetool._provenance._operations import GaussianFilterOperation
 from erlab.interactive.imagetool.manager import ImageToolManager, fetch, replace_data
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,

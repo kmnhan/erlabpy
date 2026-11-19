@@ -15,19 +15,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.utils
-from erlab.interactive._code_trust import issue_complete_execution_capability
-from erlab.interactive.imagetool import dialogs
-from erlab.interactive.imagetool._provenance._execution import (
-    file_load_source_status,
-    replay_file_provenance,
-    replay_script_provenance,
-    script_provenance_replayable,
-)
-from erlab.interactive.imagetool._provenance._graph import (
-    ReplayGraphError,
-    ResolvedReplayInput,
-)
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     DerivationEntry,
     ReplayStep,
     ScriptInput,
@@ -46,7 +34,7 @@ from erlab.interactive.imagetool._provenance._model import (
     script,
     script_input_dependency_refs,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AffineCoordOperation,
     ConcatOperation,
     DivideByCoordOperation,
@@ -58,6 +46,18 @@ from erlab.interactive.imagetool._provenance._operations import (
     ScriptCodeOperation,
     ShiftFromInputOperation,
     SortByOperation,
+)
+from erlab.interactive._code_trust import issue_complete_execution_capability
+from erlab.interactive.imagetool import dialogs
+from erlab.interactive.imagetool._provenance._execution import (
+    file_load_source_status,
+    replay_file_provenance,
+    replay_script_provenance,
+    script_provenance_replayable,
+)
+from erlab.interactive.imagetool._provenance._graph import (
+    ReplayGraphError,
+    ResolvedReplayInput,
 )
 from erlab.interactive.imagetool._provenance._trust import (
     provenance_code_trust_entries,

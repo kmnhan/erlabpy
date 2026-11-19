@@ -31,12 +31,8 @@ import erlab.interactive.imagetool.manager._workspace._storage as workspace_stor
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.plot_items as imagetool_plot_items
 import erlab.interactive.imagetool.viewer as imagetool_viewer
-from erlab.interactive import _persistence_constants
-from erlab.interactive.angle_calculator._state import AngleCalculatorState
-from erlab.interactive.derivative import DerivativeTool
-from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._load_source import _serialize_loader_kwargs
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._files import _serialize_loader_kwargs
+from erlab._provenance._model import (
     FileDataSelection,
     ScriptInput,
     ToolProvenanceSpec,
@@ -44,13 +40,17 @@ from erlab.interactive.imagetool._provenance._model import (
     full_data,
     script,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     ExtensionRoutineOperation,
     GaussianFilterOperation,
     ImageToolSelectionSourceBinding,
     RenameOperation,
     ScriptCodeOperation,
 )
+from erlab.interactive import _persistence_constants
+from erlab.interactive.angle_calculator._state import AngleCalculatorState
+from erlab.interactive.derivative import DerivativeTool
+from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import ImageToolManager
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,

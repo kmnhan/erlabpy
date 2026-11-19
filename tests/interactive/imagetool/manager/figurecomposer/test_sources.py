@@ -20,6 +20,18 @@ import erlab.interactive._figurecomposer._ui._figure_window as figure_window_ui
 import erlab.interactive._stylesheets
 import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.plotting as eplt
+from erlab._provenance._model import (
+    ScriptInput,
+    ToolProvenanceSpec,
+    parse_tool_provenance_spec,
+    public_data,
+    script_input_dependency_refs,
+)
+from erlab._provenance._operations import (
+    IselOperation,
+    QSelAggregationOperation,
+    QSelOperation,
+)
 from erlab.interactive import _persistence_constants
 from erlab.interactive._figurecomposer import (
     FigureAxesSelectionState,
@@ -59,18 +71,6 @@ from erlab.interactive.imagetool._provenance._execution import execute_replay_gr
 from erlab.interactive.imagetool._provenance._graph import (
     ResolvedReplayInput,
     compile_replay_graph,
-)
-from erlab.interactive.imagetool._provenance._model import (
-    ScriptInput,
-    ToolProvenanceSpec,
-    parse_tool_provenance_spec,
-    public_data,
-    script_input_dependency_refs,
-)
-from erlab.interactive.imagetool._provenance._operations import (
-    IselOperation,
-    QSelAggregationOperation,
-    QSelOperation,
 )
 from tests.interactive.imagetool.manager.helpers import _exec_generated_code
 

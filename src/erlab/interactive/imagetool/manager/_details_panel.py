@@ -15,17 +15,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.utils
-from erlab.interactive._widgets import _CenteredIconToolButton
-from erlab.interactive.imagetool._provenance._graph import (
-    ReplayGraphError,
-    SelectedProvenanceScope,
-    compile_replay_graph,
-    emit_replay_code,
-    script_inputs_code,
-    selected_provenance_code,
-    selected_steps_spec,
-)
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     DerivationEntry,
     ReplayStep,
     ScriptInput,
@@ -38,7 +28,17 @@ from erlab.interactive.imagetool._provenance._model import (
     parse_tool_provenance_spec,
     strip_partial_operation_groups,
 )
-from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
+from erlab._provenance._operations import ScriptCodeOperation
+from erlab.interactive._widgets import _CenteredIconToolButton
+from erlab.interactive.imagetool._provenance._graph import (
+    ReplayGraphError,
+    SelectedProvenanceScope,
+    compile_replay_graph,
+    emit_replay_code,
+    script_inputs_code,
+    selected_provenance_code,
+    selected_steps_spec,
+)
 from erlab.interactive.imagetool.manager._source_labels import script_input_source_label
 from erlab.interactive.imagetool.manager._widgets import (
     _METADATA_DERIVATION_ACTIVATABLE_ROLE,
@@ -61,8 +61,8 @@ if typing.TYPE_CHECKING:
     import pathlib
     from collections.abc import Iterable
 
+    from erlab._provenance._files import _LoadSourceDetails
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
-    from erlab.interactive.imagetool._load_source import _LoadSourceDetails
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
 logger = logging.getLogger(__name__)

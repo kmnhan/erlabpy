@@ -23,15 +23,15 @@ import erlab.interactive.imagetool.manager._workspace._arrays as workspace_array
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.imagetool.viewer_linking
-from erlab.interactive import _persistence_constants
-from erlab.interactive.imagetool import _serialization
-from erlab.interactive.imagetool._colorlevels import resolve_image_levels
-from erlab.interactive.imagetool._mainwindow import ImageTool
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ScriptInputDataRole,
     mark_promoted_1d_source,
     parse_tool_provenance_operation,
 )
+from erlab.interactive import _persistence_constants
+from erlab.interactive.imagetool import _serialization
+from erlab.interactive.imagetool._colorlevels import resolve_image_levels
+from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._trust import (
     provenance_operation_requires_code_trust,
 )

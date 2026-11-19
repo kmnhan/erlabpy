@@ -10,8 +10,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
-from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     FileDataSelection,
     ReplayStep,
     ScriptInput,
@@ -23,7 +22,7 @@ from erlab.interactive.imagetool._provenance._model import (
     script,
     selection,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AssignAttrsOperation,
     IselOperation,
     NormalizeOperation,
@@ -33,6 +32,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     ShiftOperation,
     TransposeOperation,
 )
+from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import fetch, replace_data
 from tests.interactive.imagetool.manager.helpers import (
     _exec_generated_code,
@@ -565,13 +565,10 @@ def test_selected_input_revert_preserves_exact_raw_revision_code_approval(
 def test_relative_restore_keeps_only_its_own_parameter_expression_approval(
     qtbot, tmp_path, manager_context, approved, file_backed
 ) -> None:
+    from erlab._provenance._operations import ModelFitOperation, _ModelFitParameterSpec
     from erlab.interactive._code_trust import (
         execution_capability_allows,
         untrusted_document_trust,
-    )
-    from erlab.interactive.imagetool._provenance._operations import (
-        ModelFitOperation,
-        _ModelFitParameterSpec,
     )
     from erlab.interactive.imagetool._provenance._trust import (
         provenance_code_trust_entries,
@@ -678,11 +675,8 @@ def test_relative_restore_keeps_only_its_own_parameter_expression_approval(
 def test_exact_selected_checkpoint_revert_keeps_pin_without_replaying_fit(
     qtbot, monkeypatch, tmp_path, manager_context, approved, multiple
 ) -> None:
+    from erlab._provenance._operations import ModelFitOperation, _ModelFitParameterSpec
     from erlab.interactive._code_trust import untrusted_document_trust
-    from erlab.interactive.imagetool._provenance._operations import (
-        ModelFitOperation,
-        _ModelFitParameterSpec,
-    )
     from erlab.interactive.imagetool._provenance._trust import (
         provenance_code_trust_entries,
     )

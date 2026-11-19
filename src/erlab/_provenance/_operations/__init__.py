@@ -1,6 +1,6 @@
 """Concrete operations recorded by ImageTool provenance."""
 
-from erlab.interactive.imagetool._provenance._operations._analysis import (
+from erlab._provenance._operations._analysis import (
     SHIFT_MODES,
     AverageOperation,
     BoxcarFilterOperation,
@@ -27,7 +27,7 @@ from erlab.interactive.imagetool._provenance._operations._analysis import (
     ThinOperation,
     UniformInterpolationOperation,
 )
-from erlab.interactive.imagetool._provenance._operations._coordinates import (
+from erlab._provenance._operations._coordinates import (
     AffineCoordOperation,
     AssignAttrsOperation,
     AssignCoord1DOperation,
@@ -37,16 +37,14 @@ from erlab.interactive.imagetool._provenance._operations._coordinates import (
     RenameDimsCoordsOperation,
     SwapDimsOperation,
 )
-from erlab.interactive.imagetool._provenance._operations._core import (
+from erlab._provenance._operations._core import (
     ModelFitOperation,
     ScriptCodeOperation,
     _model_fit_parameters_code,
     _ModelFitParameterSpec,
 )
-from erlab.interactive.imagetool._provenance._operations._extension import (
-    ExtensionRoutineOperation,
-)
-from erlab.interactive.imagetool._provenance._operations._kspace import (
+from erlab._provenance._operations._extension import ExtensionRoutineOperation
+from erlab._provenance._operations._kspace import (
     KspaceConfigurationOperation,
     KspaceConvertOperation,
     KspaceInnerPotentialOperation,
@@ -55,7 +53,7 @@ from erlab.interactive.imagetool._provenance._operations._kspace import (
     MaskWithPolygonOperation,
     SliceAlongPathOperation,
 )
-from erlab.interactive.imagetool._provenance._operations._selection import (
+from erlab._provenance._operations._selection import (
     ImageToolSelectionSourceBinding,
     IselOperation,
     QSelOperation,

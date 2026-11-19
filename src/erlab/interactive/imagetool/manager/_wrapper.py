@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from erlab.interactive import _persistence_constants
-from erlab.interactive.imagetool._provenance._code import _replace_code_identifiers
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._code import _replace_code_identifiers
+from erlab._provenance._model import (
     DerivationEntry,
     ScriptInput,
     ScriptInputDataRole,
@@ -16,9 +15,8 @@ from erlab.interactive.imagetool._provenance._model import (
     require_live_source_spec,
     script,
 )
-from erlab.interactive.imagetool._provenance._operations import (
-    ImageToolSelectionSourceBinding,
-)
+from erlab._provenance._operations import ImageToolSelectionSourceBinding
+from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool._provenance._trust import remap_script_input_provenance
 
 __all__ = ["_ImageToolWrapper", "_ManagedWindowNode"]
@@ -42,7 +40,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
-from erlab.interactive.imagetool._load_source import (
+from erlab._provenance._files import (
     _default_load_source_name,
     _deserialize_loader_kwargs,
     _file_path_stem,
@@ -63,8 +61,8 @@ if typing.TYPE_CHECKING:
     import os
     from collections.abc import Callable, Iterator, Mapping, Sequence
 
+    from erlab._provenance._model import ToolProvenanceOperation
     from erlab.interactive.imagetool._provenance._graph import ReplayGraph
-    from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.manager._widgets import _WorkspaceDocumentAccess
     from erlab.interactive.imagetool.slicer import ArraySlicer

@@ -14,13 +14,13 @@ import erlab
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
-from erlab.interactive import _persistence_constants
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     FileLoadSource,
     FileReplayCall,
     ScriptInput,
     file_load,
 )
+from erlab.interactive import _persistence_constants
 
 
 def add_source_childtool(

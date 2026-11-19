@@ -29,6 +29,35 @@ import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._window_layout as window_layout
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 import erlab.interactive.utils
+from erlab._provenance import _model as provenance_model
+from erlab._provenance._code import _FIT_DATASET_MARKER
+from erlab._provenance._files import _LoadSourceDetails
+from erlab._provenance._model import (
+    FileDataSelection,
+    ScriptInput,
+    ToolProvenanceOperation,
+    ToolProvenanceSpec,
+    full_data,
+    iter_operation_refs,
+    public_data,
+    selection,
+)
+from erlab._provenance._operations import (
+    AffineCoordOperation,
+    AssignAttrsOperation,
+    AssignScalarCoordOperation,
+    DropScalarCoordsOperation,
+    GaussianFilterOperation,
+    ImageDerivativeOperation,
+    ImageToolSelectionSourceBinding,
+    InterpolationFromInputOperation,
+    IselOperation,
+    NormalizeOperation,
+    RenameOperation,
+    ScriptCodeOperation,
+    ShiftFromInputOperation,
+    TransposeOperation,
+)
 from erlab.interactive._figurecomposer import (
     FigureAxesSelectionState,
     FigureComposerTool,
@@ -46,36 +75,7 @@ from erlab.interactive._widgets import _CenteredIconToolButton
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import _kspace_conversion, itool
-from erlab.interactive.imagetool._load_source import _LoadSourceDetails
-from erlab.interactive.imagetool._provenance import _model as provenance_model
-from erlab.interactive.imagetool._provenance._code import _FIT_DATASET_MARKER
 from erlab.interactive.imagetool._provenance._execution import replay_file_provenance
-from erlab.interactive.imagetool._provenance._model import (
-    FileDataSelection,
-    ScriptInput,
-    ToolProvenanceOperation,
-    ToolProvenanceSpec,
-    full_data,
-    iter_operation_refs,
-    public_data,
-    selection,
-)
-from erlab.interactive.imagetool._provenance._operations import (
-    AffineCoordOperation,
-    AssignAttrsOperation,
-    AssignScalarCoordOperation,
-    DropScalarCoordsOperation,
-    GaussianFilterOperation,
-    ImageDerivativeOperation,
-    ImageToolSelectionSourceBinding,
-    InterpolationFromInputOperation,
-    IselOperation,
-    NormalizeOperation,
-    RenameOperation,
-    ScriptCodeOperation,
-    ShiftFromInputOperation,
-    TransposeOperation,
-)
 from erlab.interactive.imagetool.manager import fetch, replace_data
 from erlab.interactive.imagetool.manager._acquisition_context import (
     AcquisitionContextDialog,

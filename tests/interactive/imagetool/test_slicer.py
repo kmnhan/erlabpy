@@ -6,7 +6,7 @@ import xarray as xr
 from qtpy import QtCore
 
 import erlab.utils.array
-from erlab.interactive.imagetool._provenance._model import FileDataSelection
+from erlab._provenance._model import FileDataSelection
 from erlab.interactive.imagetool.slicer import (
     ArraySlicer,
     _display_safe_float,

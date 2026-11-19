@@ -15,11 +15,8 @@ import erlab
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.utils
-from erlab.interactive._code_trust import issue_execution_capability, new_document_trust
-from erlab.interactive._fit2d import Fit2DTool
-from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._load_source import _register_local_callable_loader
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._files import _register_local_callable_loader
+from erlab._provenance._model import (
     FileLoadSource,
     FileReplayCall,
     ReplayStep,
@@ -29,6 +26,9 @@ from erlab.interactive.imagetool._provenance._model import (
     file_load,
     full_data,
 )
+from erlab.interactive._code_trust import issue_execution_capability, new_document_trust
+from erlab.interactive._fit2d import Fit2DTool
+from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.dialogs import SelectionDialog
 from erlab.interactive.imagetool.manager._lineage import _InputResolutionPlan
 from erlab.interactive.imagetool.manager._provenance_edit import (

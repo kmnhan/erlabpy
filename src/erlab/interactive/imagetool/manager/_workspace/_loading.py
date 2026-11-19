@@ -28,22 +28,17 @@ import erlab.interactive.imagetool.manager._workspace._storage as workspace_stor
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.imagetool.viewer_linking
-from erlab.extensions._models import _script_name_key
-from erlab.interactive import _persistence_constants, _qt_state
-from erlab.interactive.imagetool._load_source import (
-    _deserialize_loader_kwargs,
-    _file_path_stem,
-)
-from erlab.interactive.imagetool._mainwindow import ImageTool
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._files import _deserialize_loader_kwargs, _file_path_stem
+from erlab._provenance._model import (
     ScriptInputDataRole,
     ToolProvenanceSpec,
     parse_tool_provenance_spec,
     require_live_source_spec,
 )
-from erlab.interactive.imagetool._provenance._operations import (
-    ImageToolSelectionSourceBinding,
-)
+from erlab._provenance._operations import ImageToolSelectionSourceBinding
+from erlab.extensions._models import _script_name_key
+from erlab.interactive import _persistence_constants, _qt_state
+from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
     _ChooseFromWorkspaceManifestDialog,

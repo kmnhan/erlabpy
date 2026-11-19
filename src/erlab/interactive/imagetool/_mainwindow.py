@@ -7,13 +7,13 @@ functionality of the ImageTool window, including GUI controls and keyboard short
 
 from __future__ import annotations
 
-from erlab.interactive import _persistence_constants
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     FileDataSelection,
     ReplayStep,
     ToolProvenanceSpec,
     parse_tool_provenance_spec,
 )
+from erlab.interactive import _persistence_constants
 
 __all__ = ["BaseImageTool", "ImageTool"]
 
@@ -27,6 +27,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab._provenance._files import _load_provenance_from_file_details
 from erlab.interactive import _qt_state, _shortcut_sequences
 from erlab.interactive._code_trust import (
     create_manifest,
@@ -37,7 +38,6 @@ from erlab.interactive._code_trust import (
 )
 from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool._controls_bar import _ControlsBar
-from erlab.interactive.imagetool._load_source import _load_provenance_from_file_details
 from erlab.interactive.imagetool.viewer_state import _select_input_dataarrays
 
 if typing.TYPE_CHECKING:

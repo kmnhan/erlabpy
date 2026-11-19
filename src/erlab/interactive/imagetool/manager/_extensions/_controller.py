@@ -15,10 +15,10 @@ from collections import defaultdict, deque
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab._provenance._files import _deserialize_loader_kwargs
+from erlab._provenance._model import iter_operation_refs
 from erlab.extensions import EXTENSION_API_VERSION, LoaderDescriptor, RoutineDescriptor
 from erlab.extensions._models import _script_name_key
-from erlab.interactive.imagetool._load_source import _deserialize_loader_kwargs
-from erlab.interactive.imagetool._provenance._model import iter_operation_refs
 from erlab.interactive.imagetool.manager._extensions._catalog import (
     _ExtensionCatalog,
     _ExtensionCatalogConflictError,
@@ -55,16 +55,14 @@ if typing.TYPE_CHECKING:
 
     import xarray as xr
 
-    from erlab.extensions._api import _CapabilityStatus
-    from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
-    from erlab.interactive.imagetool._provenance._model import (
+    from erlab._provenance._model import (
         FileLoadSource,
         FileReplayCall,
         ToolProvenanceSpec,
     )
-    from erlab.interactive.imagetool._provenance._operations import (
-        ExtensionRoutineOperation,
-    )
+    from erlab._provenance._operations import ExtensionRoutineOperation
+    from erlab.extensions._api import _CapabilityStatus
+    from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
 logger = logging.getLogger(__name__)

@@ -14,7 +14,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
-from erlab.interactive.imagetool._provenance._operations import ConcatOperation
+from erlab._provenance._operations import ConcatOperation
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 
 if typing.TYPE_CHECKING:
@@ -22,7 +22,7 @@ if typing.TYPE_CHECKING:
 
     import xarray
 
-    from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
+    from erlab._provenance._model import ToolProvenanceSpec
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
 from erlab.interactive.imagetool.manager._spreadsheet_metadata import (

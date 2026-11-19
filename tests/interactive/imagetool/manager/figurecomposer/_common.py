@@ -21,6 +21,14 @@ import erlab.interactive._figurecomposer._defaults as figurecomposer_defaults
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
 import erlab.interactive._figurecomposer._ui._tick_params as figurecomposer_tick_params
 import erlab.interactive._stylesheets
+from erlab._provenance._model import (
+    FileLoadSource,
+    FileReplayCall,
+    ScriptInput,
+    ToolProvenanceSpec,
+    file_load,
+    script,
+)
 from erlab.interactive._figurecomposer import (
     FigureComposerTool,
     FigureMethodFamily,
@@ -40,14 +48,6 @@ from erlab.interactive.imagetool._provenance._graph import (
     ReplayGraphError,
     compile_replay_graph,
     emit_replay_code,
-)
-from erlab.interactive.imagetool._provenance._model import (
-    FileLoadSource,
-    FileReplayCall,
-    ScriptInput,
-    ToolProvenanceSpec,
-    file_load,
-    script,
 )
 from erlab.io.exampledata import generate_hvdep_cuts
 from tests._qt_helpers import InMemoryClipboard

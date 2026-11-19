@@ -7,15 +7,12 @@ import typing
 import pydantic
 
 import erlab
+from erlab._provenance._code import _provenance_value_code
+from erlab._provenance._model import DerivationEntry, ToolProvenanceOperation
 from erlab.extensions._models import (
     _require_finite_parameter_values,
     _script_name_key,
     _validate_source_hash,
-)
-from erlab.interactive.imagetool._provenance._code import _provenance_value_code
-from erlab.interactive.imagetool._provenance._model import (
-    DerivationEntry,
-    ToolProvenanceOperation,
 )
 
 if typing.TYPE_CHECKING:

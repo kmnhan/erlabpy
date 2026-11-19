@@ -6,7 +6,7 @@ from collections import deque
 from collections.abc import Callable, Mapping
 
 if typing.TYPE_CHECKING:
-    from erlab.interactive.imagetool._provenance._model import ScriptInput
+    from erlab._provenance._model import ScriptInput
     from erlab.interactive.imagetool.manager import ImageToolManager
 
 

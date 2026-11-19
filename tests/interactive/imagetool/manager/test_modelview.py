@@ -23,18 +23,15 @@ import erlab.interactive.imagetool.manager._io as manager_io
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 import erlab.interactive.imagetool.viewer_linking as imagetool_viewer_linking
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
-from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     FileDataSelection,
     ScriptInput,
     ToolProvenanceSpec,
     full_data,
     script,
 )
-from erlab.interactive.imagetool._provenance._operations import (
-    GaussianFilterOperation,
-    ScriptCodeOperation,
-)
+from erlab._provenance._operations import GaussianFilterOperation, ScriptCodeOperation
+from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import ImageToolManager, load_in_manager
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._dialogs import (

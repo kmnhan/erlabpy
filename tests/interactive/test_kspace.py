@@ -10,14 +10,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui
 
 import erlab
-from erlab.accessors.kspace import IncompleteDataError, MomentumAccessor
-from erlab.constants import AxesConfiguration
-from erlab.interactive import _persistence_constants
-from erlab.interactive._momentum_overlays._state import PocketState
-from erlab.interactive._options.schema import AppOptions
-from erlab.interactive.imagetool import _dialog_widgets, _kspace_conversion
-from erlab.interactive.imagetool import dialogs as imagetool_dialogs
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ScriptInput,
     full_data,
     operation_group_range,
@@ -26,7 +19,7 @@ from erlab.interactive.imagetool._provenance._model import (
     stamp_operation_group,
     strip_operation_groups,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AssignAttrsOperation,
     AssignScalarCoordOperation,
     AverageOperation,
@@ -37,6 +30,13 @@ from erlab.interactive.imagetool._provenance._operations import (
     KspaceSetNormalOperation,
     KspaceWorkFunctionOperation,
 )
+from erlab.accessors.kspace import IncompleteDataError, MomentumAccessor
+from erlab.constants import AxesConfiguration
+from erlab.interactive import _persistence_constants
+from erlab.interactive._momentum_overlays._state import PocketState
+from erlab.interactive._options.schema import AppOptions
+from erlab.interactive.imagetool import _dialog_widgets, _kspace_conversion
+from erlab.interactive.imagetool import dialogs as imagetool_dialogs
 from erlab.interactive.imagetool.dialogs import KspaceConversionDialog
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _controller as provenance_edit_controller,

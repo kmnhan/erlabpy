@@ -24,6 +24,8 @@ import xarray as xr
 from qtpy import QtCore
 
 import erlab
+from erlab._provenance._model import compose_display_provenance, full_data
+from erlab._provenance._operations import ExtensionRoutineOperation
 from erlab.extensions import (
     ExtensionExecutionError,
     LoadedScript,
@@ -37,13 +39,6 @@ from erlab.extensions._api import (
 )
 from erlab.extensions._models import _require_finite_parameter_values, _script_name_key
 from erlab.interactive.imagetool._mainwindow import ImageTool
-from erlab.interactive.imagetool._provenance._model import (
-    compose_display_provenance,
-    full_data,
-)
-from erlab.interactive.imagetool._provenance._operations import (
-    ExtensionRoutineOperation,
-)
 from erlab.interactive.imagetool.manager._extensions._catalog import (
     _capability_descriptor,
     _capability_status,
@@ -62,7 +57,7 @@ from erlab.io.dataloader import LoaderBase
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping
 
-    from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
+    from erlab._provenance._model import ToolProvenanceOperation
     from erlab.interactive.imagetool.manager._extensions._catalog import (
         _ExtensionCatalog,
     )

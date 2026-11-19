@@ -22,9 +22,9 @@ from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtGui, QtTest, QtWidgets
 
 import erlab
+import erlab._provenance._files as imagetool_load_source
 import erlab.interactive.imagetool._highdim as imagetool_highdim
 import erlab.interactive.imagetool._itool as itool_mod
-import erlab.interactive.imagetool._load_source as imagetool_load_source
 import erlab.interactive.imagetool._mainwindow as imagetool_mainwindow
 import erlab.interactive.imagetool._provenance._execution as provenance_execution
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
@@ -32,37 +32,8 @@ import erlab.interactive.imagetool.manager._server as imagetool_manager_server
 import erlab.interactive.imagetool.viewer as imagetool_viewer
 import erlab.interactive.imagetool.viewer_linking as imagetool_viewer_linking
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
-from erlab.interactive import _persistence_constants
-from erlab.interactive._code_trust import (
-    issue_complete_execution_capability,
-    new_document_trust,
-)
-from erlab.interactive._figurecomposer import (
-    FigureDataSelectionState,
-    FigureOperationKind,
-    FigureOperationState,
-)
-from erlab.interactive._figurecomposer._exceptions import (
-    FigureComposerPlotSlicesSelectionError,
-)
-from erlab.interactive._widgets import _Separator
-from erlab.interactive.derivative import DerivativeTool, dtool
-from erlab.interactive.fermiedge import GoldTool, ResolutionTool
-from erlab.interactive.imagetool import ImageTool, itool
-from erlab.interactive.imagetool._figurecomposer_adapter import (
-    _multicursor_variable_key,
-    _norm_updates,
-    _operation_updates,
-    _plain_value,
-    _PlotOperationBuilder,
-    build_figure_composer_operation,
-)
-from erlab.interactive.imagetool._load_source import _register_local_callable_loader
-from erlab.interactive.imagetool._provenance._execution import (
-    replay_file_provenance,
-    replay_script_provenance,
-)
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._files import _register_local_callable_loader
+from erlab._provenance._model import (
     FileDataSelection,
     FileLoadSource,
     FileReplayCall,
@@ -76,7 +47,7 @@ from erlab.interactive.imagetool._provenance._model import (
     script,
     selection,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AffineCoordOperation,
     AssignAttrsOperation,
     AssignCoord1DOperation,
@@ -110,6 +81,35 @@ from erlab.interactive.imagetool._provenance._operations import (
     ThinOperation,
     UniformInterpolationOperation,
     _ModelFitParameterSpec,
+)
+from erlab.interactive import _persistence_constants
+from erlab.interactive._code_trust import (
+    issue_complete_execution_capability,
+    new_document_trust,
+)
+from erlab.interactive._figurecomposer import (
+    FigureDataSelectionState,
+    FigureOperationKind,
+    FigureOperationState,
+)
+from erlab.interactive._figurecomposer._exceptions import (
+    FigureComposerPlotSlicesSelectionError,
+)
+from erlab.interactive._widgets import _Separator
+from erlab.interactive.derivative import DerivativeTool, dtool
+from erlab.interactive.fermiedge import GoldTool, ResolutionTool
+from erlab.interactive.imagetool import ImageTool, itool
+from erlab.interactive.imagetool._figurecomposer_adapter import (
+    _multicursor_variable_key,
+    _norm_updates,
+    _operation_updates,
+    _plain_value,
+    _PlotOperationBuilder,
+    build_figure_composer_operation,
+)
+from erlab.interactive.imagetool._provenance._execution import (
+    replay_file_provenance,
+    replay_script_provenance,
 )
 from erlab.interactive.imagetool._viewer_dialogs import (
     _AssociatedCoordsDialog,

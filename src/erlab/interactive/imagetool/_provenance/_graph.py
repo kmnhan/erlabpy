@@ -24,7 +24,7 @@ import uuid
 from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 
-from erlab.interactive.imagetool._provenance._code import (
+from erlab._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
     _BindingState,
     _code_stores_name,
@@ -43,7 +43,7 @@ from erlab.interactive.imagetool._provenance._code import (
     _symbol_table_dependencies,
     _validate_script_replay_code,
 )
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ReplayStep,
     ScriptInput,
     ToolProvenanceSpec,
@@ -56,7 +56,7 @@ from erlab.interactive.imagetool._provenance._model import (
 if typing.TYPE_CHECKING:
     import xarray as xr
 
-    from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
+    from erlab._provenance._operations import ScriptCodeOperation
 
 
 class ReplayGraphError(Exception):
@@ -3139,11 +3139,9 @@ def _extension_script_references(
     graph: ReplayGraph, *, preserve_versions: bool
 ) -> dict[str, tuple[pathlib.Path, str, str | None]]:
     """Resolve each graph-owned extension call to one current local script."""
+    from erlab._provenance._operations._extension import ExtensionRoutineOperation
     from erlab.extensions import ExtensionNotFoundError
     from erlab.extensions._api import _resolve_registered_script_capability
-    from erlab.interactive.imagetool._provenance._operations._extension import (
-        ExtensionRoutineOperation,
-    )
 
     references: dict[str, tuple[pathlib.Path, str, str | None]] = {}
     for node in graph.nodes:
@@ -3276,9 +3274,7 @@ def emit_replay_code(
     code_analyzer: _CodeAnalyzer | None = None,
     preserve_extension_versions: bool = False,
 ) -> str:
-    from erlab.interactive.imagetool._provenance._operations._extension import (
-        ExtensionRoutineOperation,
-    )
+    from erlab._provenance._operations._extension import ExtensionRoutineOperation
 
     code_analyzer = code_analyzer or _CodeAnalyzer()
     _validate_module_future_imports(graph.source_module_futures)
@@ -3515,9 +3511,7 @@ def emit_replay_code(
         name = names[node.key]
         if node.kind == "file_load":
             if _is_extension_loader_node(node):
-                from erlab.interactive.imagetool._load_source import (
-                    _extension_loader_load_code,
-                )
+                from erlab._provenance._files import _extension_loader_load_code
 
                 module_name, function_name = extension_binding(node.key)
                 code = _extension_loader_load_code(

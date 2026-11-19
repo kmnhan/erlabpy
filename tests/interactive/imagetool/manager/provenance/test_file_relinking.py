@@ -9,7 +9,7 @@ from qtpy import QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     DerivationEntry,
     FileLoadSource,
     FileReplayCall,
@@ -23,7 +23,7 @@ from erlab.interactive.imagetool._provenance._model import (
     script,
     selection,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AverageOperation,
     IselOperation,
     RenameOperation,

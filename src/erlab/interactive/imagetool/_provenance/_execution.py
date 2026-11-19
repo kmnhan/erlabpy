@@ -14,18 +14,29 @@ import numpy as np
 import xarray as xr
 
 import erlab
-from erlab.extensions._api import _registered_script_capability_status
-from erlab.interactive._code_trust import execution_capability_allows
-from erlab.interactive.imagetool._load_source import (
-    _deserialize_loader_kwargs,
-    _registered_local_callable_loader,
-)
-from erlab.interactive.imagetool._provenance._code import (
+from erlab._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
     _code_uses_name_any_scope,
     _compile_untrusted_script_replay_code,
     _script_replay_import_names,
 )
+from erlab._provenance._files import (
+    _deserialize_loader_kwargs,
+    _registered_local_callable_loader,
+)
+from erlab._provenance._model import (
+    FileDataSelection,
+    FileLoadSource,
+    FileLoadSourceStatus,
+    ScriptInput,
+    ToolProvenanceSpec,
+    compose_full_provenance,
+    has_file_load_source,
+    iter_operation_refs,
+    parse_tool_provenance_spec,
+)
+from erlab.extensions._api import _registered_script_capability_status
+from erlab.interactive._code_trust import execution_capability_allows
 from erlab.interactive.imagetool._provenance._graph import (
     _REPLAY_ALIASES,
     InputProvenanceResolver,
@@ -39,17 +50,6 @@ from erlab.interactive.imagetool._provenance._graph import (
     _validate_script_provenance,
     compile_replay_graph,
 )
-from erlab.interactive.imagetool._provenance._model import (
-    FileDataSelection,
-    FileLoadSource,
-    FileLoadSourceStatus,
-    ScriptInput,
-    ToolProvenanceSpec,
-    compose_full_provenance,
-    has_file_load_source,
-    iter_operation_refs,
-    parse_tool_provenance_spec,
-)
 from erlab.interactive.imagetool._provenance._trust import (
     provenance_replay_graph_code_trust_entries,
     provenance_replay_node_code_trust_entries,
@@ -59,10 +59,8 @@ from erlab.interactive.imagetool._provenance._trust import (
 if typing.TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from erlab._provenance._operations import ExtensionRoutineOperation
     from erlab.extensions._api import _CapabilityStatus
-    from erlab.interactive.imagetool._provenance._operations import (
-        ExtensionRoutineOperation,
-    )
 
     _CapabilityStatusResolver = Callable[
         [str, str, typing.Literal["routine", "loader"], str], _CapabilityStatus

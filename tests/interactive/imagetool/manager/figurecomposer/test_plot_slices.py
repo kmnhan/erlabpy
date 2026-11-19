@@ -20,6 +20,7 @@ import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
 import erlab.interactive._stylesheets
 import erlab.interactive.imagetool._figurecomposer_adapter as figurecomposer_adapter
 import erlab.plotting as eplt
+from erlab._provenance._code import _SCRIPT_REPLAY_ALLOWED_BUILTINS
 from erlab.interactive._figurecomposer import (
     FigureAxesSelectionState,
     FigureComposerTool,
@@ -67,9 +68,6 @@ from erlab.interactive._figurecomposer._ui import (
 )
 from erlab.interactive._options import options
 from erlab.interactive._widgets import _Separator
-from erlab.interactive.imagetool._provenance._code import (
-    _SCRIPT_REPLAY_ALLOWED_BUILTINS,
-)
 from erlab.interactive.imagetool._provenance._graph import _validate_script_code_names
 
 from ._common import (

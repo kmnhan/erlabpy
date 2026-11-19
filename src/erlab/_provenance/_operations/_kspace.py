@@ -9,8 +9,8 @@ import numpy as np
 import pydantic
 
 import erlab
-from erlab.interactive.imagetool._provenance._code import _TUPLE_MARKER
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._code import _TUPLE_MARKER
+from erlab._provenance._model import (
     ConsoleOperationPattern,
     ProvenanceFloatSequenceMapping,
     ProvenanceHashableTuple,

@@ -112,7 +112,7 @@ Parsing of serialized payloads happens only through :func:`parse_tool_provenance
 authoring code should create specs with :func:`full_data`, :func:`public_data`,
 :func:`selection`, :func:`file_load`, or :func:`script`, then instantiate operation
 models from
-:mod:`erlab.interactive.imagetool._provenance._operations` directly.
+:mod:`erlab._provenance._operations` directly.
 """
 
 from __future__ import annotations
@@ -134,8 +134,7 @@ import pydantic
 import xarray as xr
 
 import erlab
-from erlab.extensions._models import _script_name_key, _validate_source_hash
-from erlab.interactive.imagetool._provenance._code import (
+from erlab._provenance._code import (
     _DATAARRAY_MARKER,
     _DATASET_MARKER,
     _FIT_DATASET_MARKER,
@@ -149,6 +148,7 @@ from erlab.interactive.imagetool._provenance._code import (
     _script_codes_output_name,
     _validate_active_name,
 )
+from erlab.extensions._models import _script_name_key, _validate_source_hash
 
 if typing.TYPE_CHECKING:
     from collections.abc import Iterator
@@ -648,7 +648,7 @@ _OPERATION_TYPES: dict[str, type[ToolProvenanceOperation]] = {}
 
 def _ensure_operation_catalog_loaded() -> None:
     """Load concrete operations before resolving a serialized discriminator."""
-    importlib.import_module("erlab.interactive.imagetool._provenance._operations")
+    importlib.import_module("erlab._provenance._operations")
 
 
 def _operation_is(operation: ToolProvenanceOperation, *operation_names: str) -> bool:

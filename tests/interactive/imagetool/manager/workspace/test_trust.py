@@ -19,6 +19,21 @@ import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._trust as workspace_trust
 import erlab.interactive.utils as interactive_utils
+from erlab._provenance._model import (
+    FileDataSelection,
+    ReplayStep,
+    ScriptInput,
+    full_data,
+    script,
+    selection,
+)
+from erlab._provenance._operations import (
+    AverageOperation,
+    IselOperation,
+    ModelFitOperation,
+    ScriptCodeOperation,
+    _ModelFitParameterSpec,
+)
 from erlab.interactive import _persistence_constants, _saved_tools
 from erlab.interactive._code_trust import (
     create_entry,
@@ -48,21 +63,6 @@ from erlab.interactive._figurecomposer._model._state import (
     FigureRecipeState,
 )
 from erlab.interactive.imagetool._mainwindow import ImageTool
-from erlab.interactive.imagetool._provenance._model import (
-    FileDataSelection,
-    ReplayStep,
-    ScriptInput,
-    full_data,
-    script,
-    selection,
-)
-from erlab.interactive.imagetool._provenance._operations import (
-    AverageOperation,
-    IselOperation,
-    ModelFitOperation,
-    ScriptCodeOperation,
-    _ModelFitParameterSpec,
-)
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 from erlab.interactive.imagetool.manager._widgets import (
     _TrustedProvenanceReplayCancelled,
@@ -633,11 +633,9 @@ def _released_fit_provenance_data(saved_kind):
 
     import xarray_lmfit
 
+    from erlab._provenance._operations import CorrectWithEdgeOperation
     from erlab.analysis import gold
     from erlab.analysis.fit.models import PolynomialModel
-    from erlab.interactive.imagetool._provenance._operations import (
-        CorrectWithEdgeOperation,
-    )
 
     alpha = np.linspace(-1.0, 1.0, 9)
     energy = np.linspace(-0.5, 0.5, 21)
@@ -698,7 +696,7 @@ def _restore_released_fit_provenance(workspace, current_blob, released_blob):
 
 
 def _save_released_fit_provenance_workspace(manager_context, workspace, saved_kind):
-    from erlab.interactive.imagetool._provenance._code import _FIT_DATASET_MARKER
+    from erlab._provenance._code import _FIT_DATASET_MARKER
 
     operation, released_blob, data, expected = _released_fit_provenance_data(saved_kind)
     with manager_context() as manager:
@@ -1196,7 +1194,7 @@ def test_fit_provenance_approval_releases_old_workspace_after_save_as(
 def test_associated_signed_tool_fit_provenance_survives_same_file_save(
     qtbot, tmp_path, monkeypatch, manager_context, materialize
 ) -> None:
-    from erlab.interactive.imagetool._provenance._code import _FIT_DATASET_MARKER
+    from erlab._provenance._code import _FIT_DATASET_MARKER
 
     operation, released_blob, data, expected = _released_fit_provenance_data("builtin")
     workspace = tmp_path / "associated-fit-input.itws"
@@ -1261,7 +1259,7 @@ def test_associated_signed_tool_fit_provenance_survives_same_file_save(
 def test_provenance_normalization_rolls_back_all_owners_and_revisions(
     monkeypatch, manager_context, failure
 ) -> None:
-    from erlab.interactive.imagetool._provenance._code import _FIT_DATASET_MARKER
+    from erlab._provenance._code import _FIT_DATASET_MARKER
 
     operation, released_blob, data, expected = _released_fit_provenance_data("builtin")
     released_operation = operation.model_copy(

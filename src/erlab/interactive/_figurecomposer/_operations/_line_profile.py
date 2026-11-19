@@ -9,6 +9,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab.interactive.colors
 import erlab.plotting as eplt
+from erlab._provenance._operations import CoarsenOperation, ThinOperation
 from erlab.interactive._figurecomposer._code import (
     _axes_code,
     _axes_sequence_code,
@@ -107,10 +108,6 @@ from erlab.interactive._figurecomposer._ui._line_transform import (
     add_line_transform_controls,
 )
 from erlab.interactive._figurecomposer._ui._operation_editor import StepSection
-from erlab.interactive.imagetool._provenance._operations import (
-    CoarsenOperation,
-    ThinOperation,
-)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Sequence

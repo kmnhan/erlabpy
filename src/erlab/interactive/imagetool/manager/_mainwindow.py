@@ -103,23 +103,21 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
     import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
-    from erlab.interactive._figurecomposer import (
-        FigureAxesSelectionState,
-        FigureOperationState,
-    )
-    from erlab.interactive.imagetool._load_source import _LoadSourceDetails
-    from erlab.interactive.imagetool._mainwindow import ImageTool
-    from erlab.interactive.imagetool._provenance._graph import ResolvedReplayInput
-    from erlab.interactive.imagetool._provenance._model import (
+    from erlab._provenance._files import _LoadSourceDetails
+    from erlab._provenance._model import (
         ScriptInput,
         ScriptInputDataRole,
         ToolProvenanceOperation,
         ToolProvenanceSpec,
         _ProvenanceDisplayRow,
     )
-    from erlab.interactive.imagetool._provenance._operations import (
-        ImageToolSelectionSourceBinding,
+    from erlab._provenance._operations import ImageToolSelectionSourceBinding
+    from erlab.interactive._figurecomposer import (
+        FigureAxesSelectionState,
+        FigureOperationState,
     )
+    from erlab.interactive.imagetool._mainwindow import ImageTool
+    from erlab.interactive.imagetool._provenance._graph import ResolvedReplayInput
     from erlab.interactive.imagetool.manager._dependency import _DependencyStatus
     from erlab.interactive.imagetool.manager._server import (
         _ManagerServer,

@@ -30,10 +30,10 @@ import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._updater_core as manager_updater_core
 import erlab.interactive.imagetool.manager._updater_gui as manager_updater_gui
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
+from erlab._provenance._model import ScriptInput
 from erlab.interactive._options.schema import AppOptions
 from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
 from erlab.interactive.imagetool._frozen_numba_cache import PyInstallerCacheLocator
-from erlab.interactive.imagetool._provenance._model import ScriptInput
 from erlab.interactive.imagetool.manager import load_in_manager
 from erlab.interactive.imagetool.manager._server import (
     AddDataPacket,

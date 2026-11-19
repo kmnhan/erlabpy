@@ -27,7 +27,7 @@ if typing.TYPE_CHECKING:
     import dask.array
     import xarray as xr
 
-    from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
+    from erlab._provenance._model import ToolProvenanceOperation
 
 
 class ArraySlicerState(typing.TypedDict):
@@ -672,10 +672,7 @@ class ArraySlicer(QtCore.QObject):
         self, indexers: Mapping[Hashable, slice]
     ) -> tuple[ToolProvenanceOperation, ...]:
         """Normalize inclusive display bounds into physical data selections."""
-        from erlab.interactive.imagetool._provenance._operations import (
-            IselOperation,
-            SelOperation,
-        )
+        from erlab._provenance._operations import IselOperation, SelOperation
 
         sel_indexers: dict[Hashable, slice] = {}
         isel_indexers: dict[Hashable, slice] = {}
@@ -1446,7 +1443,7 @@ class ArraySlicer(QtCore.QObject):
     def selection_operations(
         self, cursor: int, disp: Sequence[int], *, prefer_qsel: bool = True
     ) -> tuple[ToolProvenanceOperation, ...]:
-        from erlab.interactive.imagetool._provenance._operations import (
+        from erlab._provenance._operations import (
             IselOperation,
             QSelAggregationOperation,
             QSelOperation,
@@ -1467,18 +1464,14 @@ class ArraySlicer(QtCore.QObject):
         return tuple(operations)
 
     def qsel_code(self, cursor: int, disp: Sequence[int]) -> str:
-        from erlab.interactive.imagetool._provenance._model import (
-            operations_expression_code,
-        )
+        from erlab._provenance._model import operations_expression_code
 
         return operations_expression_code(
             self.selection_operations(cursor, disp), "data"
         ).removeprefix("data")
 
     def isel_code(self, cursor: int, disp: Sequence[int]) -> str:
-        from erlab.interactive.imagetool._provenance._model import (
-            operations_expression_code,
-        )
+        from erlab._provenance._model import operations_expression_code
 
         return operations_expression_code(
             self.selection_operations(cursor, disp, prefer_qsel=False), "data"

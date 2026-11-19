@@ -10,8 +10,8 @@ import pydantic
 import xarray as xr
 
 import erlab
-from erlab.interactive.imagetool._provenance._code import _format_selection_expr
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._code import _format_selection_expr
+from erlab._provenance._model import (
     _SORT_COORD_ORDER_DERIVATION_LABEL,
     ConsoleCall,
     ConsoleOperationPattern,

@@ -14,13 +14,13 @@ import pydantic
 import xarray as xr
 
 import erlab
-from erlab.interactive.imagetool._provenance._code import (
+from erlab._provenance._code import (
     _DATASET_MARKER,
     _FIT_DATASET_MARKER,
     _expression_receiver_code,
     _provenance_value_code,
 )
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ConsoleCall,
     ConsoleOperationPattern,
     DerivationEntry,

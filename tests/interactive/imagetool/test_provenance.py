@@ -17,24 +17,11 @@ from pandas.errors import InvalidIndexError
 from pydantic import ValidationError
 
 import erlab
+import erlab._provenance._files as imagetool_load_source
 import erlab.extensions._api as extension_api
-import erlab.interactive.imagetool._load_source as imagetool_load_source
-from erlab.interactive._code_trust import (
-    create_manifest,
-    issue_execution_capability,
-    new_document_trust,
-)
-from erlab.interactive._code_trust._api import _document_trust_after_save
-from erlab.interactive.imagetool._load_source import (
-    _load_provenance_from_file_details,
-    _load_source_details_from_file,
-    _load_source_details_from_provenance,
-    _register_local_callable_loader,
-    _registered_local_callable_loader,
-)
-from erlab.interactive.imagetool._provenance import _code
-from erlab.interactive.imagetool._provenance import _model as provenance_model
-from erlab.interactive.imagetool._provenance._code import (
+from erlab._provenance import _code
+from erlab._provenance import _model as provenance_model
+from erlab._provenance._code import (
     _FIT_DATASET_MARKER,
     _MAPPING_MARKER,
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
@@ -50,28 +37,14 @@ from erlab.interactive.imagetool._provenance._code import (
     _validate_active_name,
     _validate_script_replay_code,
 )
-from erlab.interactive.imagetool._provenance._execution import (
-    _load_file_source_data,
-    _parse_replay_input,
-    _select_replay_input,
-    can_reload_without_trust,
-    execute_replay_graph,
-    file_load_source_status,
-    replay_file_provenance,
-    replay_script_provenance,
-    script_provenance_replayable,
+from erlab._provenance._files import (
+    _load_provenance_from_file_details,
+    _load_source_details_from_file,
+    _load_source_details_from_provenance,
+    _register_local_callable_loader,
+    _registered_local_callable_loader,
 )
-from erlab.interactive.imagetool._provenance._graph import (
-    ReplayGraph,
-    ReplayGraphError,
-    ResolvedReplayInput,
-    SelectedProvenanceScope,
-    compile_replay_graph,
-    emit_replay_code,
-    selected_provenance_code,
-    selected_steps_spec,
-)
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     _OPERATION_TYPES,
     ConsoleCall,
     ConsoleOperationPattern,
@@ -134,7 +107,7 @@ from erlab.interactive.imagetool._provenance._model import (
     strip_partial_operation_groups,
     to_replay_provenance_spec,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AffineCoordOperation,
     AssignAttrsOperation,
     AssignCoord1DOperation,
@@ -187,6 +160,33 @@ from erlab.interactive.imagetool._provenance._operations import (
     TransposeOperation,
     UniformInterpolationOperation,
     _ModelFitParameterSpec,
+)
+from erlab.interactive._code_trust import (
+    create_manifest,
+    issue_execution_capability,
+    new_document_trust,
+)
+from erlab.interactive._code_trust._api import _document_trust_after_save
+from erlab.interactive.imagetool._provenance._execution import (
+    _load_file_source_data,
+    _parse_replay_input,
+    _select_replay_input,
+    can_reload_without_trust,
+    execute_replay_graph,
+    file_load_source_status,
+    replay_file_provenance,
+    replay_script_provenance,
+    script_provenance_replayable,
+)
+from erlab.interactive.imagetool._provenance._graph import (
+    ReplayGraph,
+    ReplayGraphError,
+    ResolvedReplayInput,
+    SelectedProvenanceScope,
+    compile_replay_graph,
+    emit_replay_code,
+    selected_provenance_code,
+    selected_steps_spec,
 )
 from erlab.interactive.imagetool._provenance._trust import (
     provenance_code_payload_normalizer,
@@ -330,7 +330,7 @@ def test_provenance_import_keeps_analysis_targets_lazy() -> None:
         "from erlab.interactive.imagetool import provenance\n"
         "assert 'AverageOperation' not in provenance.__all__\n"
         "assert not hasattr(provenance, 'AverageOperation')\n"
-        "assert 'erlab.interactive.imagetool._provenance._operations' "
+        "assert 'erlab._provenance._operations' "
         "not in sys.modules\n"
         "loaded = sorted("
         "name for name in sys.modules if name.startswith('erlab.analysis.') "
@@ -351,7 +351,7 @@ def test_provenance_import_keeps_analysis_targets_lazy() -> None:
 
 def test_console_operation_lookup_loads_catalog_independently() -> None:
     code = (
-        "from erlab.interactive.imagetool._provenance._model import (\n"
+        "from erlab._provenance._model import (\n"
         "    ConsoleCall, operation_from_console_call,\n"
         ")\n"
         "operation = operation_from_console_call(ConsoleCall(\n"
@@ -401,7 +401,7 @@ def test_public_provenance_constructors_expose_required_value_models() -> None:
 def test_provenance_model_registers_operations_in_fresh_process() -> None:
     code = (
         "import importlib.util\n"
-        "from erlab.interactive.imagetool._provenance._model import (\n"
+        "from erlab._provenance._model import (\n"
         "    FileLoadSource, FileReplayCall, ToolProvenanceSpec, file_load,\n"
         "    full_data, parse_tool_provenance_operation,\n"
         "    parse_tool_provenance_spec, script, selection,\n"
@@ -419,7 +419,7 @@ def test_provenance_model_registers_operations_in_fresh_process() -> None:
         "    ],\n"
         "}\n"
         "parsed = parse_tool_provenance_spec(payload)\n"
-        "from erlab.interactive.imagetool._provenance._operations import (\n"
+        "from erlab._provenance._operations import (\n"
         "    AverageOperation, IselOperation, RenameOperation,\n"
         "    ScriptCodeOperation,\n"
         ")\n"
@@ -468,9 +468,9 @@ def test_script_replay_keeps_unused_aliases_lazy() -> None:
         "issue_execution_capability, new_document_trust\n"
         "from erlab.interactive.imagetool._provenance._execution import "
         "replay_script_provenance\n"
-        "from erlab.interactive.imagetool._provenance._model import "
+        "from erlab._provenance._model import "
         "ScriptInput, script\n"
-        "from erlab.interactive.imagetool._provenance._operations import "
+        "from erlab._provenance._operations import "
         "ScriptCodeOperation\n"
         "data = xr.DataArray(np.arange(2.0), dims=('x',))\n"
         "spec = script(\n"
@@ -8767,7 +8767,7 @@ def test_trusted_script_replay_supports_standard_imports(
             1.0,
         ),
         (
-            "import erlab.interactive.imagetool._provenance._code as exposed\n"
+            "import erlab._provenance._code as exposed\n"
             "derived = data_0 + exposed.np.float64(1.0)",
             1.0,
         ),
@@ -8796,7 +8796,7 @@ def test_explicit_trust_admits_unrestricted_imports(code: str, offset: float) ->
 def test_trusted_script_cannot_replace_the_import_policy() -> None:
     data = xr.DataArray([1.0], dims=("x",))
     poison = _single_input_script(
-        "framework = erlab.interactive.imagetool._provenance._code\n"
+        "framework = erlab._provenance._code\n"
         "framework._SCRIPT_REPLAY_PREBOUND_IMPORTS = {'numpy': framework}\n"
         "import numpy as imported_numpy\n"
         "derived = data_0 + imported_numpy.float64(1.0)"
@@ -10974,9 +10974,7 @@ def test_compatible_python_modules_compose_with_structured_steps(future) -> None
 def test_untrusted_compiler_does_not_inherit_framework_future_flags() -> None:
     import __future__
 
-    from erlab.interactive.imagetool._provenance._code import (
-        _compile_untrusted_script_replay_code,
-    )
+    from erlab._provenance._code import _compile_untrusted_script_replay_code
 
     source = xr.DataArray([1.0, 2.0])
     compiled = _compile_untrusted_script_replay_code("derived = data + 1")

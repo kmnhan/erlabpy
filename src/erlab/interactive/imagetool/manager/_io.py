@@ -18,9 +18,9 @@ import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool._load_source import _extension_loader_identity
+from erlab._provenance._files import _extension_loader_identity
+from erlab._provenance._model import FileDataSelection
 from erlab.interactive.imagetool._mainwindow import ImageTool
-from erlab.interactive.imagetool._provenance._model import FileDataSelection
 from erlab.interactive.imagetool.manager._acquisition_context import (
     ContextIngressSummary,
 )
@@ -40,8 +40,8 @@ class _ExtensionLoaderPublication(typing.Protocol):
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
+    from erlab._provenance._model import ToolProvenanceOperation
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
-    from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
 

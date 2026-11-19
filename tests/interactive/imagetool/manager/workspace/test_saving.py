@@ -29,24 +29,24 @@ import erlab.interactive.imagetool.manager._workspace._state as workspace_state
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.viewer as imagetool_viewer
-from erlab.interactive import _persistence_constants
-from erlab.interactive._figurecomposer import FigureComposerTool, FigureSourceState
-from erlab.interactive._options.schema import AppOptions
-from erlab.interactive.derivative import DerivativeTool
-from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ReplayStep,
     ScriptInput,
     full_data,
     parse_tool_provenance_spec,
     script,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     ImageToolSelectionSourceBinding,
     IselOperation,
     ScriptCodeOperation,
     ShiftFromInputOperation,
 )
+from erlab.interactive import _persistence_constants
+from erlab.interactive._figurecomposer import FigureComposerTool, FigureSourceState
+from erlab.interactive._options.schema import AppOptions
+from erlab.interactive.derivative import DerivativeTool
+from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import ImageToolManager
 from erlab.interactive.imagetool.manager._extensions._models import (
     _WorkspaceScriptRequirement,

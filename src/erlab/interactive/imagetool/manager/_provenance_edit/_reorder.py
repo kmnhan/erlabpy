@@ -9,7 +9,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
-    from erlab.interactive.imagetool._provenance._model import (
+    from erlab._provenance._model import (
         _ProvenanceOperationBlockRef,
         _ProvenanceReorderBlock,
         _ProvenanceReorderSection,

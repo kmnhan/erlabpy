@@ -27,11 +27,26 @@ import erlab.interactive.imagetool.manager._extensions._catalog as extension_cat
 import erlab.interactive.imagetool.manager._extensions._dialogs as extension_dialogs
 import erlab.interactive.imagetool.manager._extensions._execution as extension_execution
 import erlab.interactive.imagetool.manager._io as manager_io
-from erlab.extensions._models import _script_name_key
-from erlab.interactive.imagetool._load_source import (
+from erlab._provenance._files import (
     _load_source_details_from_provenance,
     _resolve_load_func,
 )
+from erlab._provenance._model import (
+    FileDataSelection,
+    FileLoadSource,
+    FileReplayCall,
+    ScriptInput,
+    ToolProvenanceSpec,
+    file_load,
+    full_data,
+    script,
+)
+from erlab._provenance._operations import (
+    ExtensionRoutineOperation,
+    GaussianFilterOperation,
+    ScriptCodeOperation,
+)
+from erlab.extensions._models import _script_name_key
 from erlab.interactive.imagetool._provenance._execution import (
     can_reload_with_trusted_code,
     can_reload_without_trust,
@@ -43,21 +58,6 @@ from erlab.interactive.imagetool._provenance._graph import (
     ReplayGraphError,
     compile_replay_graph,
     emit_replay_code,
-)
-from erlab.interactive.imagetool._provenance._model import (
-    FileDataSelection,
-    FileLoadSource,
-    FileReplayCall,
-    ScriptInput,
-    ToolProvenanceSpec,
-    file_load,
-    full_data,
-    script,
-)
-from erlab.interactive.imagetool._provenance._operations import (
-    ExtensionRoutineOperation,
-    GaussianFilterOperation,
-    ScriptCodeOperation,
 )
 from erlab.interactive.imagetool.manager._extensions import (
     _controller as extension_controller,

@@ -26,10 +26,10 @@ import erlab.interactive.imagetool.manager._workspace._format as workspace_forma
 import erlab.interactive.imagetool.manager._workspace._revisions as workspace_revisions
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
+from erlab._provenance._files import _serialize_loader_kwargs
 from erlab.interactive import _persistence_constants, _qt_state
 from erlab.interactive._code_trust import document_trust_has_trusted_lineage
 from erlab.interactive.imagetool import _serialization
-from erlab.interactive.imagetool._load_source import _serialize_loader_kwargs
 from erlab.interactive.imagetool.manager._widgets import (
     _strip_workspace_modified_placeholder,
 )
@@ -41,8 +41,8 @@ from erlab.interactive.imagetool.manager._wrapper import (
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, MutableMapping
 
+    from erlab._provenance._model import ToolProvenanceSpec
     from erlab.interactive._options.schema import WorkspaceCompressionMode
-    from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
     from erlab.interactive.imagetool.manager._extensions._models import (
         _WorkspaceScriptRequirement,
     )

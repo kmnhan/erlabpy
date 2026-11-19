@@ -18,6 +18,7 @@ import erlab.interactive.imagetool.manager._workspace._figure_repair as figure_r
 import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.utils
+from erlab._provenance._model import FileDataSelection
 from erlab.interactive import _persistence_constants
 from erlab.interactive._figurecomposer import (
     FigureComposerTool,
@@ -27,7 +28,6 @@ from erlab.interactive._figurecomposer import (
     FigureSubplotsState,
 )
 from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._provenance._model import FileDataSelection
 from erlab.interactive.imagetool.manager._figurecomposer import _collection
 from tests.interactive.imagetool.manager.helpers import (
     _exec_generated_code,

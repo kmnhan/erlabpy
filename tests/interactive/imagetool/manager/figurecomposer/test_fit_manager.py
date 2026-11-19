@@ -9,6 +9,7 @@ from matplotlib.figure import Figure
 from qtpy import QtCore, QtWidgets
 
 import erlab
+from erlab._provenance._model import ScriptInput
 from erlab.interactive._figurecomposer import (
     FigureAxesSelectionState,
     FigureComposerTool,
@@ -22,7 +23,6 @@ from erlab.interactive._figurecomposer import (
     FigureSubplotsState,
 )
 from erlab.interactive._figurecomposer._providers import FigureSourceTarget
-from erlab.interactive.imagetool._provenance._model import ScriptInput
 from erlab.interactive.imagetool.manager._figurecomposer import _dialogs
 from tests.interactive.imagetool.manager.helpers import select_child_tool, select_tools
 

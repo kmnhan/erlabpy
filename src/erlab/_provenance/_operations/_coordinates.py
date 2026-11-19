@@ -10,12 +10,12 @@ import numpy as np
 import pydantic
 
 import erlab
-from erlab.interactive.imagetool._provenance._code import (
+from erlab._provenance._code import (
     _TUPLE_MARKER,
     _provenance_numeric_array_code,
     _provenance_value_code,
 )
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ConsoleCall,
     ConsoleOperationPattern,
     ProvenanceHashable,

@@ -26,6 +26,25 @@ from qtpy import PYQT6, QtCore, QtGui, QtTest, QtWidgets
 import erlab.interactive._plot_state
 import erlab.interactive.colors
 import erlab.interactive.utils
+from erlab._provenance._model import (
+    FileDataSelection,
+    FileLoadSource,
+    FileReplayCall,
+    ScriptInput,
+    ToolProvenanceSpec,
+    compose_full_provenance,
+    file_load,
+    full_data,
+    script,
+    selection,
+)
+from erlab._provenance._operations import (
+    ImageToolSelectionSourceBinding,
+    IselOperation,
+    ModelFitOperation,
+    ScriptCodeOperation,
+    _ModelFitParameterSpec,
+)
 from erlab.interactive import _persistence_constants
 from erlab.interactive._code_trust import (
     create_entry,
@@ -43,25 +62,6 @@ from erlab.interactive._file_loaders import (
 )
 from erlab.interactive.imagetool import ImageTool
 from erlab.interactive.imagetool._provenance._execution import rebuild_script_inputs
-from erlab.interactive.imagetool._provenance._model import (
-    FileDataSelection,
-    FileLoadSource,
-    FileReplayCall,
-    ScriptInput,
-    ToolProvenanceSpec,
-    compose_full_provenance,
-    file_load,
-    full_data,
-    script,
-    selection,
-)
-from erlab.interactive.imagetool._provenance._operations import (
-    ImageToolSelectionSourceBinding,
-    IselOperation,
-    ModelFitOperation,
-    ScriptCodeOperation,
-    _ModelFitParameterSpec,
-)
 from erlab.interactive.imagetool._provenance._trust import (
     provenance_operation_code_trust_entries,
 )
@@ -2239,6 +2239,8 @@ def test_fit_dataset_blob_preserves_model_data_and_code_boundary(kind, released)
 
 @pytest.mark.parametrize("consumer", ["figure", "provenance"])
 def test_builtin_fit_result_consumers_need_no_code_approval(qtbot, consumer):
+    from erlab._provenance._model import parse_tool_provenance_spec
+    from erlab._provenance._operations import CorrectWithEdgeOperation
     from erlab.interactive._figurecomposer import (
         FigureComposerTool,
         FigureOperationState,
@@ -2246,12 +2248,6 @@ def test_builtin_fit_result_consumers_need_no_code_approval(qtbot, consumer):
         _rendering,
     )
     from erlab.interactive._figurecomposer._fit_sources import FigureFitSourceSnapshot
-    from erlab.interactive.imagetool._provenance._model import (
-        parse_tool_provenance_spec,
-    )
-    from erlab.interactive.imagetool._provenance._operations import (
-        CorrectWithEdgeOperation,
-    )
     from erlab.interactive.imagetool._provenance._trust import (
         provenance_requires_code_trust,
     )
@@ -6435,10 +6431,8 @@ def _released_tool_fit_input(kind: str):
 
     import xarray_lmfit
 
-    from erlab.interactive.imagetool._provenance._code import _FIT_DATASET_MARKER
-    from erlab.interactive.imagetool._provenance._operations import (
-        CorrectWithEdgeOperation,
-    )
+    from erlab._provenance._code import _FIT_DATASET_MARKER
+    from erlab._provenance._operations import CorrectWithEdgeOperation
 
     fitted = _fit_dataset_with_hint(
         "callable" if kind == "callable" else f"erlab-{kind}"
@@ -6577,10 +6571,10 @@ def test_standalone_tool_normalizes_approved_provenance_before_save(qtbot) -> No
 def test_standalone_fit_child_save_refresh_save_preserves_trust(
     qtbot, tmp_path, auto_update
 ) -> None:
+    from erlab._provenance._operations import NormalizeOperation
     from erlab.interactive._code_trust import document_trust_is_trusted
     from erlab.interactive._code_trust._core import CodeTrustReason
     from erlab.interactive._fit1d import Fit1DTool
-    from erlab.interactive.imagetool._provenance._operations import NormalizeOperation
     from erlab.interactive.imagetool._provenance._trust import (
         provenance_code_trust_entries,
     )
