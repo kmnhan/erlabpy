@@ -383,15 +383,44 @@ class _ResolvedLoadFunc:
             if self.cast_float64:
                 call_expr = f'{call_expr}.astype("float64")'
         else:
-            file_args = [repr(backing.path), f"lambda path: {call_expr}"]
-            if self.selection.kind != "dataarray":
-                container = {
-                    "dataset_variable": "dataset",
-                    "datatree_variable": "tree",
-                    "sequence_index": "arrays",
-                }[self.selection.kind]
-                selected = _file_data_selection_code(container, self.selection)
-                file_args.append(f"select=lambda {container}: {selected}")
+            file_args = [repr(backing.path)]
+            native = (
+                self.kind == "callable"
+                and self.target in _SUPPORTED_CALLABLE_LOADERS
+                and self.selection.kind
+                in {"dataarray", "dataset_variable", "datatree_variable"}
+            )
+            if native:
+                file_args.append(self.loader_expr)
+                if self.kwargs:
+                    options = _provenance_value_code(
+                        _loader_kwargs_for_code(self.kwargs)
+                    )
+                    file_args.append(f"read_kwargs={options}")
+                if self.selection.kind == "dataset_variable":
+                    file_args.append(
+                        f"variable={_provenance_value_code(self.selection.value)}"
+                    )
+                elif self.selection.kind == "datatree_variable":
+                    node, key = typing.cast(
+                        "tuple[str, typing.Hashable]", self.selection.value
+                    )
+                    file_args.extend(
+                        (
+                            f"node_path={node!r}",
+                            f"variable={_provenance_value_code(key)}",
+                        )
+                    )
+            else:
+                file_args.append(f"lambda path: {call_expr}")
+                if self.selection.kind != "dataarray":
+                    container = {
+                        "dataset_variable": "dataset",
+                        "datatree_variable": "tree",
+                        "sequence_index": "arrays",
+                    }[self.selection.kind]
+                    selected = _file_data_selection_code(container, self.selection)
+                    file_args.append(f"select=lambda {container}: {selected}")
             if self.cast_float64:
                 file_args.append('dtype="float64"')
             file_args.extend(

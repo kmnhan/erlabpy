@@ -1375,7 +1375,7 @@ def test_versioned_copy_keeps_unchunked_selected_variable_and_cast_lazy(
         graph, "original", output_name="measured", verify_file=lambda _: True
     )
     assert "measured = erlab.io.read_file_version(\n" in code
-    assert "\n    lambda path: xarray.open_dataset(" in code
+    assert "\n    xarray.open_dataset," in code
     reads = []
     read = H5NetCDFArrayWrapper._getitem
 
@@ -1397,6 +1397,64 @@ def test_versioned_copy_keeps_unchunked_selected_variable_and_cast_lazy(
     path.unlink()
     with pytest.raises(OSError, match="unavailable"):
         result.isel(x=-1).compute()
+
+
+def test_recorded_file_code_distinguishes_none_and_tuple_variable_keys(
+    tmp_path, monkeypatch
+):
+    import dask
+
+    from erlab._provenance import FileLoad, FileVersion
+    from erlab._provenance._model import FileDataSelection, FileReplayCall
+    from erlab.interactive.imagetool._provenance._recorded_code import full_code
+
+    path = tmp_path / "names.nc"
+    values = xr.Dataset({"raw": ("x", [3.0, 4.0]), "clean": ("x", [1.0, 2.0])})
+    values.to_netcdf(path, engine="h5netcdf")
+    version = FileVersion.capture(path)
+    open_dataset = xr.open_dataset
+
+    def restore_keys(path, **kwargs):
+        # NetCDF variable names are strings. Restore the xarray keys that a
+        # previously recorded reader can expose after opening the file.
+        dataset = open_dataset(path, **kwargs)
+        renamed = dataset.rename_vars({"raw": None, "clean": ("counts", "cleaned")})
+        renamed.set_close(dataset.close)
+        return renamed
+
+    graph = ProvenanceGraph()
+    codes = []
+    for entry, key in (("raw", None), ("clean", ("counts", "cleaned"))):
+        call = FileReplayCall(
+            kind="callable",
+            target="xarray.open_dataset",
+            kwargs={"engine": "h5netcdf", "chunks": {}},
+            selection=FileDataSelection(kind="dataset_variable", value=key),
+        )
+        restored = FileReplayCall.model_validate_json(call.model_dump_json())
+        graph.adopt_checkpoint(
+            entry,
+            entry,
+            values[entry].rename(key),
+            file_load=FileLoad(graph.file_source(str(path)), restored),
+            backing=version,
+        )
+        codes.append(
+            full_code(graph, entry, output_name="measured", verify_file=lambda _: True)
+        )
+    monkeypatch.setattr(xr, "open_dataset", restore_keys)
+    arrays = []
+    for code in codes:
+        notebook = {}
+        exec(code, notebook)  # noqa: S102
+        arrays.append(notebook["measured"])
+    raw, clean = arrays
+    assert raw.name is None
+    assert clean.name == ("counts", "cleaned")
+    assert raw.data.name != clean.data.name
+    assert dask.compute(raw.data[1], clean.data[1]) == (4.0, 2.0)
+    raw.close()
+    clean.close()
 
 
 def test_xarray_file_capture_bounds_layout_checks(tmp_path, monkeypatch):

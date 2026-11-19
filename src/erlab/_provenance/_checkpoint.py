@@ -6,6 +6,7 @@ import copy
 import mmap
 import os
 import stat
+import typing
 from dataclasses import dataclass
 
 import numpy as np
@@ -13,6 +14,9 @@ import pandas as pd
 import xarray as xr
 from xarray.core.indexing import PandasIndexingAdapter
 from xarray.indexes import PandasIndex
+
+if typing.TYPE_CHECKING:
+    from collections.abc import Hashable
 
 
 @dataclass(frozen=True)
@@ -179,9 +183,13 @@ def editable_data(data: xr.DataArray) -> xr.DataArray:
     return _own_index_data(data.copy(deep=True), copy_object_chunks=True)
 
 
-def _guard_file_variables(data: xr.DataArray, backing: FileVersion) -> xr.DataArray:
+def _guard_file_variables(
+    data: xr.DataArray, backing: FileVersion, *, storage_key: str | None = None
+) -> xr.DataArray:
     result = data.copy(deep=False)
-    for variable in (result.variable, *(c.variable for c in result.coords.values())):
+    variables: list[tuple[tuple[Hashable, ...], xr.Variable]] = [((), result.variable)]
+    variables.extend(((key,), coord) for key, coord in result.coords.variables.items())
+    for identity, variable in variables:
         if variable._in_memory and not isinstance(
             _buffer_owner(variable.data), mmap.mmap
         ):
@@ -189,16 +197,28 @@ def _guard_file_variables(data: xr.DataArray, backing: FileVersion) -> xr.DataAr
         if variable.chunks is None:
             import dask.array as da
 
-            preferred = variable.encoding.get("preferred_chunks")
-            chunks = (
-                tuple(preferred.get(d, "auto") for d in variable.dims)
-                if preferred
-                else "auto"
-            )
+            preferred = variable.encoding.get("preferred_chunks") or {}
+            name: str | bool = False
+            if storage_key is not None:
+                from dask.base import tokenize
+
+                # xarray chunks={} uses the file layout, or the full extent for
+                # a contiguous variable. Dask's getter can fuse a narrower slice.
+                chunks = tuple(
+                    preferred.get(dim, size)
+                    for dim, size in zip(variable.dims, variable.shape, strict=True)
+                )
+                name = "read-file-version-" + tokenize(storage_key, identity)
+            else:
+                chunks = (
+                    tuple(preferred.get(d, "auto") for d in variable.dims)
+                    if preferred
+                    else "auto"
+                )
             variable.data = da.from_array(
                 _FileVariable(variable, backing),
                 chunks=chunks,
-                name=False,
+                name=name,
                 meta=np.empty((0,) * variable.ndim, dtype=variable.dtype),
             )
         else:

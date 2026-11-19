@@ -124,3 +124,139 @@ def test_versioned_tree_file_can_reopen_after_pickle(tmp_path):
     with pickle.loads(payload) as reopened:
         assert reopened.isel(y=1).compute().item() == 4
     assert str(path.resolve()) not in {f.path for f in psutil.Process().open_files()}
+
+
+@pytest.mark.parametrize("key", [None, ("counts", "cleaned")])
+def test_named_file_variable_preserves_hashable_keys(tmp_path, key) -> None:
+    path = tmp_path / "named.dat"
+    path.touch()
+    data = xr.Dataset({None: ("x", [1, 2]), ("counts", "cleaned"): ("x", [4, 6])})
+    options = asdict(FileVersion.capture(path))
+    with erlab.io.read_file_version(
+        read=lambda _: data, variable=key, **options
+    ) as selected:
+        xr.testing.assert_identical(selected, data[key])
+    with pytest.raises(TypeError, match="select a DataArray"):
+        erlab.io.read_file_version(read=lambda _: data, **options)
+
+
+def test_versioned_named_selection_rejects_incompatible_options(tmp_path):
+    path = tmp_path / "selection.dat"
+    path.touch()
+    options = asdict(FileVersion.capture(path))
+    with pytest.raises(ValueError, match="either select"):
+        erlab.io.read_file_version(
+            **options,
+            read=lambda _: xr.Dataset(),
+            select=lambda ds: ds[None],
+            variable=None,
+        )
+    with pytest.raises(ValueError, match="requires a variable"):
+        erlab.io.read_file_version(
+            **options, read=lambda _: xr.DataTree(), node_path="/scan"
+        )
+    with pytest.raises(TypeError, match="requires a DataTree"):
+        erlab.io.read_file_version(
+            **options, read=lambda _: xr.Dataset(), variable="x", node_path="/"
+        )
+    with pytest.raises(TypeError, match="requires a Dataset"):
+        erlab.io.read_file_version(
+            **options, read=lambda _: xr.DataArray([1]), variable=None
+        )
+
+
+def test_storage_chunk_file_checks_preserve_slices_and_shared_reads(
+    tmp_path, monkeypatch
+):
+    import dask
+    import psutil
+    from xarray.backends.h5netcdf_ import H5NetCDFArrayWrapper
+
+    path = tmp_path / "spectra.nc"
+    values = np.arange(48.0).reshape(6, 8)
+    source = xr.Dataset(
+        {"signal": (("x", "y"), values), "background": (("x", "y"), values + 10)},
+        coords={"weights": (("x", "y"), values * 2)},
+    )
+    encoding = {"signal": {"chunksizes": (2, 4)}, "weights": {"chunksizes": (3, 2)}}
+    source.to_netcdf(path, engine="h5netcdf", encoding=encoding)
+    (source + 100).to_netcdf(
+        path, engine="h5netcdf", group="scan", mode="a", encoding=encoding
+    )
+    version = asdict(FileVersion.capture(path))
+    loader_args = {"engine": "h5netcdf", "chunks": {}}
+
+    def read(loader, variable, *, node_path=None, **kwargs):
+        return erlab.io.read_file_version(
+            **version,
+            read=loader,
+            read_kwargs=loader_args | kwargs,
+            variable=variable,
+            node_path=node_path,
+        )
+
+    signal = read(xr.open_dataset, "signal")
+    same = read(xr.open_dataset, "signal")
+    other = read(xr.open_dataset, "background")
+    group = read(xr.open_dataset, "signal", group="scan")
+    root = read(xr.open_datatree, "signal", node_path="/")
+    child = read(xr.open_datatree, "signal", node_path="/scan")
+    arrays = [signal, same, other, group, root, child]
+    assert signal.chunks == ((2, 2, 2), (4, 4))
+    assert signal.weights.chunks == ((3, 3), (2, 2, 2, 2))
+    assert signal.data.name == same.data.name
+    assert len({a.data.name for a in arrays}) == 5
+
+    reads = []
+    backend_read = H5NetCDFArrayWrapper._getitem
+
+    def count_read(self, key):
+        value = backend_read(self, key)
+        reads.append((self.variable_name, np.asarray(value).nbytes))
+        return value
+
+    monkeypatch.setattr(H5NetCDFArrayWrapper, "_getitem", count_read)
+    cells = [a.data[1, 3] for a in arrays]
+    assert dask.compute(*cells) == (11, 11, 21, 111, 11, 111)
+    assert sorted(reads) == [("background", 8)] + [("signal", 8)] * 4
+    for array in arrays:
+        array.close()
+    assert str(path.resolve()) not in {f.path for f in psutil.Process().open_files()}
+
+    replaced = tmp_path / "replacement.nc"
+    (source + 300).to_netcdf(replaced, engine="h5netcdf")
+    replaced.replace(path)
+    reads.clear()
+    with pytest.raises(OSError, match="has changed"):
+        cells[0].compute()
+    assert reads == []
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"chunks": {}},
+        {"engine": "h5netcdf", "chunks": {"x": 2}},
+        {"engine": "h5netcdf", "chunks": {}, "inline_array": True},
+    ],
+)
+def test_versioned_reader_forwards_other_chunk_settings(tmp_path, monkeypatch, options):
+    path = tmp_path / "options.nc"
+    data = xr.DataArray(np.arange(8), dims="x", name="spectrum")
+    data.to_netcdf(path, engine="h5netcdf", encoding={"spectrum": {"chunksizes": (2,)}})
+    native = xr.open_dataarray
+    calls = []
+
+    def open_array(path, **kwargs):
+        calls.append(kwargs)
+        return native(path, **kwargs)
+
+    monkeypatch.setattr(xr, "open_dataarray", open_array)
+    with erlab.io.read_file_version(
+        read=xr.open_dataarray,
+        read_kwargs=options,
+        **asdict(FileVersion.capture(path)),
+    ) as selected:
+        assert calls == [options]
+        assert selected.chunks == ((2, 2, 2, 2),)
+        xr.testing.assert_identical(selected.compute(), data)

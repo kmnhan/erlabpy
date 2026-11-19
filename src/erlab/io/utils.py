@@ -17,7 +17,7 @@ import os
 import pathlib
 import typing
 import warnings
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 
 import numpy as np
 import numpy.typing as npt
@@ -26,6 +26,7 @@ import xarray as xr
 import erlab
 
 _FileSource = typing.TypeVar("_FileSource")
+_NO_FILE_VARIABLE = object()
 
 
 def _close_file_handles(callbacks: tuple[Callable[[], None], ...]) -> None:
@@ -62,8 +63,11 @@ def _take_file_closer(source: object) -> Callable[[], None] | None:
 
 def read_file_version(
     path: str | os.PathLike[str],
-    read: Callable[[str], _FileSource],
+    read: Callable[..., _FileSource],
     *,
+    read_kwargs: Mapping[str, typing.Any] | None = None,
+    variable: Hashable = _NO_FILE_VARIABLE,
+    node_path: str | None = None,
     select: Callable[[_FileSource], xr.DataArray] | None = None,
     dtype: npt.DTypeLike | None = None,
     device: int,
@@ -75,9 +79,11 @@ def read_file_version(
     """Read the selected array from a recorded version of a local file.
 
     ImageTool's copied Python passes the original file identity and timestamps.
-    The reader receives the absolute path and transfers ownership of its open
-    files. If it opens a Dataset, DataTree or sequence, pass a selection
-    function that returns the desired DataArray. Closing the returned array
+    The reader receives the absolute path and any keyword arguments in
+    ``read_kwargs``. Use ``variable`` to select a Dataset variable, with
+    ``node_path`` to select a DataTree node. For other selections, pass a
+    ``select`` function that returns the desired DataArray. A reader that returns
+    a DataArray needs no selection. Closing the returned array
     releases the opened files. All deferred variables must come from this file.
     They verify its version on access. An optional dtype conversion is applied
     after the file checks are attached.
@@ -93,21 +99,71 @@ def read_file_version(
     """
     from erlab._provenance._checkpoint import FileVersion, _guard_file_variables
 
+    if select is not None and (
+        variable is not _NO_FILE_VARIABLE or node_path is not None
+    ):
+        raise ValueError("Use either select or a named file variable.")
+    if node_path is not None and variable is _NO_FILE_VARIABLE:
+        raise ValueError("A DataTree node path requires a variable name.")
+
     version = FileVersion(
         os.path.abspath(path), device, inode, size, modified_ns, changed_ns
     )
     version.verify()
+    kwargs = dict(read_kwargs or {})
+    storage_key = None
+    chunk_manager = kwargs.get("chunked_array_type")
+    if chunk_manager is None:
+        chunk_manager = xr.get_options().get("chunk_manager", "dask")
+    if (
+        select is None
+        and kwargs.get("chunks") == {}
+        and kwargs.get("engine") in ("h5netcdf", "netcdf4", "scipy")
+        and any(
+            read is opener
+            for opener in (xr.open_dataset, xr.open_dataarray, xr.open_datatree)
+        )
+        and chunk_manager == "dask"
+        and not kwargs.get("from_array_kwargs")
+        and not kwargs.get("inline_array")
+        and not kwargs.get("overwrite_encoded_chunks")
+        and not (kwargs.get("backend_kwargs") or {}).get("overwrite_encoded_chunks")
+    ):
+        from dask.base import tokenize
+
+        # Bind identical reads to one Dask key using the actual public call.
+        # Opening unchunked lets us check the file around each backend slice.
+        selection = () if variable is _NO_FILE_VARIABLE else (variable,)
+        storage_key = tokenize(version, read, kwargs, node_path, selection)
+        kwargs.pop("chunks")
+        if kwargs.get("cache") is None:
+            kwargs["cache"] = False
+
     try:
-        opened = read(version.path)
+        opened = read(version.path, **kwargs)
     except Exception:
         version.verify()
         raise
     close_on_error = _take_file_closer(opened)
     try:
-        data = opened if select is None else select(opened)
+        if node_path is not None and not isinstance(opened, xr.DataTree):
+            raise TypeError("A node path requires a DataTree reader.")
+        if select is not None:
+            data = select(opened)
+        elif variable is _NO_FILE_VARIABLE:
+            data = opened
+        elif isinstance(opened, xr.DataTree):
+            node = opened if node_path is None else opened[node_path]
+            if not isinstance(node, xr.DataTree):
+                raise TypeError("The node path must identify a DataTree node.")
+            data = node.dataset[variable]
+        elif isinstance(opened, xr.Dataset):
+            data = opened[variable]
+        else:
+            raise TypeError("A named file variable requires a Dataset or DataTree.")
         if not isinstance(data, xr.DataArray):
             raise TypeError("The reader must select a DataArray.")
-        result = _guard_file_variables(data, version)
+        result = _guard_file_variables(data, version, storage_key=storage_key)
         if dtype is not None:
             result = result.astype(dtype)
         version.verify()

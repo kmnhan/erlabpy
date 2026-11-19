@@ -11810,7 +11810,7 @@ def test_managed_file_operand_keeps_lazy_checkpoint_and_reloads_origin(
         manager._copy_full_derivation_code()
         file_code = copied[0]
         assert "open_dataset" in file_code
-        assert "['grid']" in file_code
+        assert "variable='grid'" in file_code
         reads.clear()
         copied_grid = _exec_generated_code(file_code, {})["derived"]
         assert "grid" not in reads
