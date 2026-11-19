@@ -1457,6 +1457,20 @@ def test_recorded_file_code_distinguishes_none_and_tuple_variable_keys(
     clean.close()
 
 
+def test_file_replay_imports_without_optional_eager_datatree_loader() -> None:
+    code = textwrap.dedent("""
+        import xarray as xr
+
+        if hasattr(xr, "load_datatree"):
+            del xr.load_datatree
+        from erlab._provenance._files import _SUPPORTED_CALLABLE_LOADERS
+
+        assert _SUPPORTED_CALLABLE_LOADERS["xarray.open_datatree"] is xr.open_datatree
+        assert "xarray.load_datatree" not in _SUPPORTED_CALLABLE_LOADERS
+    """)
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
 def test_xarray_file_capture_bounds_layout_checks(tmp_path, monkeypatch):
     import h5py
 

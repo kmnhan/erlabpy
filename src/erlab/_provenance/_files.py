@@ -74,8 +74,13 @@ _SUPPORTED_CALLABLE_LOADERS: Mapping[str, Callable[..., typing.Any]] = (
             "xarray.open_dataarray": xr.open_dataarray,
             "xarray.load_dataset": xr.load_dataset,
             "xarray.open_dataset": xr.open_dataset,
-            "xarray.load_datatree": xr.load_datatree,
             "xarray.open_datatree": xr.open_datatree,
+            # xarray 2024.10 provides open_datatree but not its eager counterpart.
+            **(
+                {"xarray.load_datatree": xr.load_datatree}
+                if hasattr(xr, "load_datatree")
+                else {}
+            ),
         }
     )
 )
