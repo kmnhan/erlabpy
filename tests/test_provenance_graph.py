@@ -1342,6 +1342,7 @@ def test_preview_reuses_captured_file_kwargs_without_copying_the_array(tmp_path)
 def test_versioned_copy_keeps_unchunked_selected_variable_and_cast_lazy(
     tmp_path, monkeypatch
 ):
+    import psutil
     from xarray.backends.h5netcdf_ import H5NetCDFArrayWrapper
 
     from erlab._provenance import FileLoad, FileVersion
@@ -1390,6 +1391,9 @@ def test_versioned_copy_keeps_unchunked_selected_variable_and_cast_lazy(
     assert reads == []
     xr.testing.assert_identical(result.isel(x=0).compute(), counts[0].astype("float64"))
     assert reads == [("counts", (slice(0, 2, 1),))]
+
+    result.close()
+    assert str(path.resolve()) not in {f.path for f in psutil.Process().open_files()}
     path.unlink()
     with pytest.raises(OSError, match="unavailable"):
         result.isel(x=-1).compute()

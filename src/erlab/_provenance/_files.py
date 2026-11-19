@@ -378,20 +378,32 @@ class _ResolvedLoadFunc:
             lines.append("")
         lines.extend(self.setup_lines)
 
-        call_expr = _file_data_selection_code(call_expr, self.selection)
-        if backing is not None:
-            call_expr = (
-                f"erlab.io.read_file_version({backing.path!r}, "
-                f"lambda path: {call_expr}, "
-                f"device={backing.device}, inode={backing.inode}, size={backing.size}, "
-                f"modified_ns={backing.modified_ns}, changed_ns={backing.changed_ns})"
-            )
+        if backing is None:
+            call_expr = _file_data_selection_code(call_expr, self.selection)
             if self.cast_float64:
-                # Guard an unchunked backend before the cast can read its values.
-                lines.append(f"{assign} = {call_expr}")
-                call_expr = assign
-        if self.cast_float64:
-            call_expr = f'{call_expr}.astype("float64")'
+                call_expr = f'{call_expr}.astype("float64")'
+        else:
+            file_args = [repr(backing.path), f"lambda path: {call_expr}"]
+            if self.selection.kind != "dataarray":
+                container = {
+                    "dataset_variable": "dataset",
+                    "datatree_variable": "tree",
+                    "sequence_index": "arrays",
+                }[self.selection.kind]
+                selected = _file_data_selection_code(container, self.selection)
+                file_args.append(f"select=lambda {container}: {selected}")
+            if self.cast_float64:
+                file_args.append('dtype="float64"')
+            file_args.extend(
+                (
+                    f"device={backing.device}",
+                    f"inode={backing.inode}",
+                    f"size={backing.size}",
+                    f"modified_ns={backing.modified_ns}",
+                    f"changed_ns={backing.changed_ns}",
+                )
+            )
+            call_expr = f"erlab.io.read_file_version({', '.join(file_args)})"
         lines.append(f"{assign} = {call_expr}")
         return "\n".join(lines)
 

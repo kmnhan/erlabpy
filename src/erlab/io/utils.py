@@ -10,11 +10,14 @@ __all__ = [
     "showfitsinfo",
 ]
 
+import contextlib
+import functools
 import importlib.util
 import os
 import pathlib
+import typing
 import warnings
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 
 import numpy as np
 import numpy.typing as npt
@@ -22,11 +25,47 @@ import xarray as xr
 
 import erlab
 
+_FileSource = typing.TypeVar("_FileSource")
+
+
+def _close_file_handles(callbacks: tuple[Callable[[], None], ...]) -> None:
+    with contextlib.ExitStack() as files:
+        for callback in callbacks:
+            files.callback(callback)
+
+
+def _take_file_closer(source: object) -> Callable[[], None] | None:
+    """Transfer xarray's file closers without retaining unrelated variables."""
+    items = (
+        source
+        if isinstance(source, Sequence) and not isinstance(source, (str, bytes))
+        else (source,)
+    )
+    callbacks = []
+    for item in items:
+        owners = item.subtree if isinstance(item, xr.DataTree) else (item,)
+        for owner in owners:
+            if (
+                isinstance(owner, (xr.DataArray, xr.Dataset, xr.DataTree))
+                and owner._close is not None
+            ):
+                # open_dataarray likewise transfers Dataset._close to its result.
+                callbacks.append(owner._close)
+                owner.set_close(None)
+    if not callbacks:
+        return None
+    if len(callbacks) == 1:
+        return callbacks[0]
+
+    return functools.partial(_close_file_handles, tuple(callbacks))
+
 
 def read_file_version(
     path: str | os.PathLike[str],
-    read: Callable[[str], xr.DataArray],
+    read: Callable[[str], _FileSource],
     *,
+    select: Callable[[_FileSource], xr.DataArray] | None = None,
+    dtype: npt.DTypeLike | None = None,
     device: int,
     inode: int,
     size: int,
@@ -36,9 +75,12 @@ def read_file_version(
     """Read the selected array from a recorded version of a local file.
 
     ImageTool's copied Python passes the original file identity and timestamps.
-    The reader receives the absolute path and returns the selected DataArray.
-    All file-backed variables in that array must come from this file.
-    Deferred variables retain their chunks and verify the file again on access.
+    The reader receives the absolute path and transfers ownership of its open
+    files. If it opens a Dataset, DataTree or sequence, pass a selection
+    function that returns the desired DataArray. Closing the returned array
+    releases the opened files. All deferred variables must come from this file.
+    They verify its version on access. An optional dtype conversion is applied
+    after the file checks are attached.
 
     The file identity is specific to its original filesystem. To analyze a copy
     on another machine, open that copy as a new source. To reproduce the original
@@ -56,20 +98,25 @@ def read_file_version(
     )
     version.verify()
     try:
-        data = read(version.path)
+        opened = read(version.path)
     except Exception:
         version.verify()
         raise
-    if not isinstance(data, xr.DataArray):
-        raise TypeError("The reader must select a DataArray.")
+    close_on_error = _take_file_closer(opened)
     try:
+        data = opened if select is None else select(opened)
+        if not isinstance(data, xr.DataArray):
+            raise TypeError("The reader must select a DataArray.")
         result = _guard_file_variables(data, version)
+        if dtype is not None:
+            result = result.astype(dtype)
         version.verify()
-    except BaseException:
-        data.close()
-        raise
-    result.set_close(data.close)
-    return result
+        result.set_close(close_on_error)
+        close_on_error = None
+        return result
+    finally:
+        if close_on_error is not None:
+            close_on_error()
 
 
 def showfitsinfo(path: str | os.PathLike) -> None:  # pragma: no cover
