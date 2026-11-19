@@ -1,344 +1,186 @@
-# ImageTool provenance graph redesign
+# ImageTool provenance redesign
 
-When a source changes, a user needs two answers. Which inputs produced the data on
-screen? Which inputs will Refresh use? Those answers can differ. The graph must
-support both, including after the workspace is saved and reopened.
+## Starting point
 
-## User requirements
+The next implementation is **Interpolate → From ImageTool** through the Manager.
+One operation definition must suffice for all three result placements, historical
+replay, Copy Full Code, and Refresh. Review that workflow before migrating a
+second action.
 
-### Data and operations
+The foundation on this branch is Stage 1 (`7d3f7541`) and Stage 2 (`d7c4329b`),
+rebased onto main `9b62b1e3`. It includes a Qt-free revision graph, ordered input
+bindings, Replace, Refresh, Reload, Auto, and a historical code adapter. The
+live Manager on this base still uses the existing provenance system.
+[Graph and commands](../../src/erlab/_provenance/_graph.py) ·
+[Foundation tests](../../tests/test_provenance_graph.py)
 
-Each real node represents one ImageTool and its DataArray. A provenance operation
-labels a directed edge from each input to the result. An operation with two inputs
-has two edges leading to the same result. The Manager tree, provenance panel, and
-execution all use this graph.
+The preliminary Stage 3 commit `71ee41ee` is preserved on
+`archive/provenance-stage3-71ee41ee`. Consult its tests
+for historical edits, console semantics, and rollback as each workflow is
+migrated. Its plan and validation log are available with
+`git show 71ee41ee:.agents/plans/provenance-redesign.md`. The implementation
+milestones below supersede that log.
 
-There are two special cases. A **file node** represents a file path. A load
-operation connects it to the data that it produced. A **virtual node** represents
-a data state without a corresponding ImageTool. Replay can reconstruct it from
-its incoming operation or read a stored array. For example, after replacing data
-supplied through `qshow()`, the original notebook array must remain available
-to the operations that used it.
+## Required behavior
 
-**Open Child Window** and **Open Top-Level Window** both create a real node with
-the same provenance. Tree placement is presentation metadata. **Replace Current**
-keeps the ImageTool and changes the data it displays. The graph records the
-operation and preserves the earlier state as a virtual node.
+A data node identifies one revision of a DataArray. An ImageTool entry identifies
+one window across replacements. Each named input slot of an applied operation is
+one directed edge into the output revision. Slots have an order, and two slots
+can refer to the same revision. A file node identifies a path. Its outgoing load
+edge records the loader, arguments, and selected data.
 
-### Replacement examples
+- **File load and Replace.** Loading F and replacing its result gives
+  `F → A₀ → A₁`. One window displays A₁. A₀ becomes virtual and its load step
+  remains visible in the history. A virtual notebook source retains the original
+  data when the caller can overwrite its buffer.
+- **Two inputs and Replace.** For `B₁ = B₀ + A₀`, the same B entry moves to B₁.
+  One application records both B₀ and A₀. Opening a child or top-level result
+  instead creates a new entry with those same inputs.
+- **Stale descendant.** Start with A₀ = [10, 20], B₀ = [1, 2], and C₀ = 2 × B₀.
+  Turn Auto off for C. The following is the acceptance example for graph queries,
+  the Manager UI, and later the native workspace format.
 
-1. **File origin.** Load A from file F, then replace A with A′.
+| Action | B displays | C displays | Inputs used by C | Input for next update |
+| --- | --- | --- | --- | --- |
+| Create C | [1, 2] | [2, 4] | B₀ | B₀ |
+| Replace B with B + A | [11, 22] | [2, 4] | B₀ | B₁ |
+| Refresh C | [11, 22] | [22, 44] | B₁ | B₁ |
 
-   ```text
-   On load          F → A
-   After replace    F → A → A′
-   ```
+**Inputs used** and Copy Full Code describe the selected, displayed revision.
+A stale result shows **Inputs for next update** separately, plus its Auto state.
+Refresh follows the entry's current bindings. Reload follows those bindings back
+to their origins, rereads requested files, and honors pinned values. A shared
+producer runs once per request. Auto waits at a stale prerequisite with Auto off.
+An explicit Refresh can update those prerequisites. A missing input or file
+identifies the affected source and the action available to the user.
 
-   There are three graph nodes and one ImageTool. A is now virtual. The provenance
-   panel for A′ folds the load and replacement steps into its history.
+## Implementation decisions
 
-2. **Two independent ImageTools.** Replace B with the result of an operation that
-   reads both B and A.
-
-   ```text
-   Before           A     B
-   After replace    B → B′ ← A
-   ```
-
-   The Manager still has two ImageTools. They display A and B′. The two arrows
-   describe one calculation, and B is a virtual input to it.
-
-3. **A derived result with Auto off.** Start with B → C and an independent A.
-   Replace B as in the second example. A solid arrow below records an input that
-   was used. A dotted arrow shows a source for the next refresh.
-
-   ```text
-   Before           B → C          A
-
-   After replace    B → C          C still displays the result made from B
-                    B → B′ ← A     B′ is the new value in B's ImageTool
-                    B′ ⇢ C         Refresh will use B′
-
-   After refresh    B′ → C′        C's ImageTool now displays C′
-   ```
-
-   Auto controls when C updates. Until a refresh succeeds, C must still explain
-   the result made from B. With Auto enabled, the same calculation can run
-   automatically.
-
-Reload walks upstream to a file, a virtual node with stored source data, or a
-real node without an ancestor. It then evaluates the required operations.
-Refresh re-evaluates affected operations from updated inputs.
-
-### ToolWindows and Figure Composer
-
-A ToolWindow such as dtool, goldtool, or ktool is a persistent editor attached
-to its sources. Publishing an ImageTool creates a data node connected by edges
-to the ImageTools used in the calculation. The editor itself stays outside the
-data graph. It can remain associated with one or more output operations. A change
-in its effective parameters can make an output stale even when the input array is
-current.
-
-Figure Composer has its own tab and figure recipes. A figure can use an ImageTool
-or a ToolWindow such as ftool directly as a source. Figure composition creates no
-data provenance edge.
-
-### Visible behavior and resource use
-
-Users must be able to predict an action from what the GUI shows. For a stale
-result, show what produced it, what has changed, what Refresh will use, and
-whether Auto is enabled. If a file or input is unavailable, identify it and show
-how the user can proceed. A user should never have to infer an input policy from
-tree placement, the lifetime of a window, or the presence of a cache.
-
-Graph operations must stay fast in large workspaces and during frequent data
-updates. Preserve data needed for replay and restoration. Bound the memory and
-disk used by superseded results, temporary calculations, and duplicate payloads.
-
-## Proposed implementation choices and six-stage plan
-
-The examples above define the required behavior. Stages 1 and 2 implement the
-graph and its commands. The later stages describe the planned integration.
-
-### 1. Graph model outside Qt
-
-| Record | Responsibility |
+| Owner | Decision |
 | --- | --- |
-| Data revision | Identifies one immutable DataArray value and records its producing application, if any. An optional checkpoint holds the data. The revision is virtual when no ImageTool entry displays it. |
-| File source | Identifies a file. The load edge owns the loader, arguments, and selected array or region. |
-| Operation application | Records the operation, the parameters actually used, and the exact input node for each ordered, named slot. Each slot gives one edge. |
-| Refresh recipe | Describes the operation and input bindings to use on the next evaluation. An editor can change the recipe while the applied record remains available. |
-| ImageTool entry | Keeps a stable ID across replacement and points to the current revision. Owns the Auto setting and tree placement. |
+| Operation definition | Produce one description of a public numerical call with ordered operand roles, effective arguments, and execution settings. Runtime resolves its operands to arrays and invokes the call. Notebook generation renders the same call with bound Python names. |
+| Applied operation | Bind each operand to the exact revision consumed. Retain those bindings for the lifetime of the result. Historical replay and Copy Full Code traverse these edges. |
+| ImageTool entry | Own the displayed revision, pending recipe, Auto, and placement. A pending input follows an entry, pins a revision, or rebuilds an earlier producer. Replacing a derived B with smooth(B) can therefore rebuild its original crop when the crop's source changes. |
+| Manager and Qt | Capture the user's operand and parameter choices once. Ask the graph to evaluate and publish. Render graph queries for rows, input roles, badges, editors, and command availability. Display parent and order come from entry placement. Window and ToolWindow registries provide widget identity and lifetime. |
 
-Reuse the typed operations for execution and Python generation. Preserve input
-roles in operations such as `B.interp_like(A)` and input order in concatenation,
-including when two slots use the same node. Validate IDs, slots, and acyclic
-recorded dependencies without starting a Manager or importing Qt into the model.
+Start with the smallest call representation needed by interpolation. Use an
+existing public xarray or ERLab operation when it implements the full semantics.
+Where validation, sorting, or numerical ordering needs extra logic, put that
+logic in one Qt-free public numerical function and use the same function from
+both paths. Notebook output must run on named inputs in a plain Python process.
+The present `Application.apply()` and `Application.code()` delegate to separately
+written implementations. Reusing that pair as-is leaves the original source of
+disagreement in place. [Applied operation](../../src/erlab/_provenance/_records.py)
 
-### 2. Replace, reload, and refresh
+A live calculation accepts the selected input revisions, their next bindings,
+and the operation. It produces the value that the window installs. A source
+command accepts a file or external array. An explicit import can accept an
+existing value with its saved history. Keep those interfaces distinct. Capture
+before asynchronous work. Recheck the affected revisions and destination before
+commit. A rejected, cancelled, or superseded installation preserves the last
+successful graph and window state, including dependent states and undo history.
 
-Give each refresh input one of three bindings. It can follow an ImageTool entry,
-use a pinned revision, or re-evaluate an earlier producing step. The third case
-matters when B was already derived. If `B = crop(A)` and B is replaced with
-`smooth(B)`, a later change to A should run the crop and then smooth its result.
-Validate live bindings for cycles separately. Using a pinned C to replace B is
-valid even if C follows B. Making both ImageTools follow each other would give
-Refresh a cycle.
+The existing format can serve an unmigrated reader through an explicit projection
+at its boundary. For a migrated workflow, trace each remaining legacy call to its
+specific consumer. Its saved recipe cannot choose an operand or recreate history
+for a live command. A closure or rename must preserve access to a recorded input
+through its revision, a verified file, or an identified checkpoint.
 
-| Command | Graph behavior |
+During the transition, register each source entry once. A public replacement
+or watched update advances that same entry. When an existing result first
+crosses from the old system, import its evidenced lineage once. If only the
+value survives, identify that checkpoint in the inspector. Subsequent graph-owned
+updates advance the entry directly. Reconstructing it from a window spec on
+selection or Refresh would give the same result two owners.
+
+## First milestone — Interpolate from another ImageTool
+
+1. **Characterize the current action.** Use a pair of named 2-D arrays with
+   different coordinates and an analytic source, for example
+   `B(y, x) = 10*y + 2*x` on x = [0, 1, 2], y = [0, 1]. Give A the same y
+   and x = [0.5, 1.5]. Linear interpolation yields [[1, 3], [11, 13]].
+   Drive the actual dialog. Keep the existing tests for all matching dimensions,
+   selected dimensions, linear/nearest, filtered input, coordinate validation,
+   and the sorted-source memory optimization. Run these assertions on the base
+   before switching the writer. Record any pre-existing failures.
+   [Manager cases](../../tests/interactive/imagetool/manager/test_mainwindow.py) ·
+   [Interpolation kernels and code tests](../../tests/interactive/imagetool/test_provenance.py)
+2. **Define and bind the calculation once.** B supplies the displayed `data`
+   slot. A supplies the displayed `target` slot. The target grid comes from A's
+   coordinates. Store the choice of all or selected dimensions, the method,
+   and effective settings in the operation. Both execution and exported code
+   must preserve the behavior of the public calculation, including axis order,
+   labeled coordinates, the result name, and lazy data. Already sorted inputs
+   avoid a full sorting copy. Exercise a descending source and a dimension whose
+   name needs mapping syntax. The Qt-free test must execute the emitted Python
+   on independent arrays. Keep sorting and coordinate selection in the shared
+   numerical call. The Python renderer substitutes names and renders arguments.
+3. **Replace the live publication path.** Register the two source entries at
+   ingress. Capture their revisions at submission. If a consumed view is
+   filtered or transposed, include that transformation in its history. Route
+   Child, Top-Level, and Replace through the same evaluation and installation
+   transaction. Child and Top-Level differ only in placement. Replace keeps B's
+   entry and gives the result B's prior revision as its recorded input. Reject
+   a cycle in the next bindings before modifying a window. Stage 2's
+   `add_source()` takes an eager checkpoint and its evaluator copies operands.
+   Test through the Manager with a versioned lazy target whose coordinates are
+   available and whose intensity payload counts reads. Account separately for
+   chunks the target viewer needs to draw its own slice. Registration must
+   preserve laziness. Inspecting provenance and interpolating onto the target
+   grid must add zero target intensity reads.
+   Check for redundant full copies of already-owned eager inputs, and verify
+   that the producer can reuse a mutable source buffer after acceptance.
+   [Current dialog](../../src/erlab/interactive/imagetool/dialogs.py)
+4. **Run the complete history.** Use the public Manager or viewer action for
+   source changes and the actual Copy Full Code and Refresh actions. With Auto
+   off, publish C and change only A's x
+   to [0.25, 1.75]. C and its executed Copy Full Code must still give
+   [[1, 3], [11, 13]] on A₀'s grid. The inspector identifies A₀ as used and A₁
+   for the next update. Refresh yields [[0.5, 3.5], [10.5, 13.5]] on A₁'s grid.
+   Repeat with only B changed to catch swapped roles. Compare values, dimensions,
+   coordinates, dtype, name, and attributes against independently constructed
+   DataArrays. While C is stale and A's window now displays A₁, reopen C's
+   recorded step. The editor must restore B₀ and A₀'s grid. Unchanged Apply
+   preserves C₀ and its next bindings. Repeat after closing the target window.
+   Exercise a superseded submission and a failed window install. Check the
+   original A/B/C example for a follower of a replaced B.
+5. **Prove the old decisions are gone.** Remove the precomputation, separate
+   `_multi_input_operation_provenance()` call, and per-placement publication
+   from `InterpolationDialog._accept_manager_target()`. Make the migrated editor
+   read its recorded target and primary input from the application. Retire the
+   live use of `_interpolation_named_input_spec()`, which reconstructs the input
+   from row scope and tree parent. Preserve Custom Grid, Uniform Interpolation,
+   standalone use, and the shared helpers their callers still need.
+   [Current editor](../../src/erlab/interactive/imagetool/manager/_provenance_edit/_controller.py)
+
+**Completion evidence.** Show the one operation definition, the common submission
+and publication path, the removed decisions, and the end-to-end test results.
+Make the old spec unavailable or deliberately misleading *before registration
+and submission*. Creation, inspection, copied Python, and Refresh must still
+use the selected inputs. Verify a single numerical evaluation per publication.
+If a second interpolation-specific algorithm or source-selection rule is still
+needed for one of those actions, resolve that design issue before the next
+workflow.
+
+## Subsequent milestones
+
+| Work | Evidence for completion |
 | --- | --- |
-| Replace | Protect irreplaceable input values, evaluate the operation, then publish its record and move the existing entry to the new revision together. Invalidate dependents that follow the entry. |
-| Reload | For a live row, use its refresh bindings and rebuild the required inputs from their origins. Honor fixed inputs. Perform each requested file read even when a cached result exists. |
-| Refresh | Use the current bound inputs and effective settings. Process stale prerequisites in dependency order. Auto schedules eligible results. |
-| Historical replay and Copy Full Code | Use the applied parameters and recorded input revisions of the selected result. Exact restoration requires a checkpoint or a verifiable original source. |
+| Remaining Manager commands | Migrate file and notebook ingress, watched updates, transforms and batch actions, display filters, metadata, and paste one workflow at a time. Show the removed decision and exercise the normal UI. Include rejected watched updates, transpose → duplicate → filter, shared historical edits, and multi-window rollback. Grouped edits restore the full group from any member. Unchanged Apply preserves its revision. A changed group updates only the selected branch. |
+| Console | A window handle is live. A calculated result retains its inputs. The public `.data` is an independent editable snapshot. Item assignment records an edit. Assigning a plain DataArray creates an owned checkpoint. Assigning a recorded result preserves its provenance. Check ordinary functions, saved methods, repeated operands, the supplied `xr.concat` and `era.transform.rotate` aliases, and `tools.apply` for separately imported callables. Unsupported writes explain the snapshot/edit/assign route. Use the approved console behavior matrix from the prototype plan, lines 233–289. |
+| Operation and worker execution | Require one numerical definition for each migrated operation. For affine coordinates, cancelling ±21.2 offsets must preserve four distinct float32 coordinates in copied Python. For extensions, bind the script version, input revision and effective settings at submission. Exercise import-time `keep_attrs` in copied code and across consecutive submissions with different settings. Change broadcasting after a lazy result is published and compute its chunks. These four cases failed on the prototype. Preserve chunking and keep the caller's options isolated. |
+| ToolWindows and Figure Composer | Model a ToolWindow as an editor attached to durable output recipes. In ktool, changing a conversion offset makes its output stale, restoring the offset clears that cause, and toggling the zone overlay leaves the output current. Replay after editor close. Check several fit outputs and out-of-order completion. A figure may reference ftool before ftool publishes an ImageTool. Figure composition creates no data edge. |
+| Native workspace and resource use | Save shared records once by ID and restore the graph before constructing windows. Save and reopen the stale C example, then check displayed data, both input revisions, Auto, copied code, and Refresh. Repeat a grouped historical edit. Protect mutable input buffers, coordinates, and metadata before the producer can reuse them. Keep file-backed lazy inputs sliceable and verify their source version on use. Measure reachable bytes across refresh/save/reopen and file size after compaction. Measure cursor-event gaps during growing acquisition, filtering, Auto, and publication against the same workload on main. |
+| One-way migration | After the native round trip passes, import representative older workspaces. Translate evidenced file origins, inputs, steps, placement, and checkpoints. Keep a value with incomplete history as an identified checkpoint and preserve recoverable descriptions. Preserve stored-code trust checks. Switch the default reader and writer after verifying the fixtures and remove superseded live compatibility paths. |
 
-For stale C, both commands follow the input shown for its next update. Refresh
-uses the available B′. Refresh can read a file when a step it must run is a
-file load. Reload also rebuilds current followed entries, so it rebuilds B′
-from its origins and then recalculates C. Each pinned input keeps its exact
-revision. The command preview lists the entries and earlier steps to rebuild, the
-file loads to run, and the current and pinned revisions to use. It also identifies
-other entries affected by publication. Previewing a command does not read a file.
-When a file is missing, Reload identifies the path and the displayed revision
-that is still available.
+Throughout the migration, preserve lazy inspection and the indexed propagation
+tests for chains, shared producers, and unrelated entries. Run a representative
+catalog operation and its generated code with Qt imports blocked. Use one Qt
+binding locally and cover binding-sensitive Manager and ToolWindow behavior
+under both PyQt6 and PySide6 in CI. At each handoff, record the tested revision,
+the workflow it covers, and the first unresolved case.
 
-When a followed entry and an earlier step request the same producer, the planner
-shares one calculation if both bindings use the same stored recipe snapshot or
-it can establish equivalence from the settings. Both slots then record the same
-revision. A shared file load appears once in the command preview. Each new
-Reload reads the requested files again.
-
-For example, submitting the same captured recipe for `isel(x=indices)` through
-`set_recipe()` shares one selection and one result revision. This also applies
-when the recipe comes from `graph.entry()`. Recipe construction captures the
-operation and its bindings. Accessing an editable operation or file call detaches
-its settings so that a caller can change them without changing a stored revision.
-Submitting that editable copy or constructing an independent array indexer can
-produce a separate evaluation. The planner does not scan or hash array contents.
-
-Auto waits for stale prerequisites. If B has Auto off and C has Auto on, C waits
-until B is refreshed. Explicitly refreshing C updates stale prerequisites in the
-same request. After a successful publication, Auto schedules eligible followers
-as separate refresh requests. A host can defer these requests to coalesce updates.
-Graph commands return the revision displayed when the command finishes.
-If an input changes during an Auto refresh, the graph discards the superseded
-attempt and queues the latest inputs for the next pass. With a deferred scheduler
-each pass yields to the host. A failure on current inputs leaves the entry stale
-with an error until another change or an explicit retry.
-
-Stage data and its provenance together. Check that the input revisions and
-requested settings are still current before publishing. A failed, cancelled, or
-superseded run leaves the last successful result available.
-
-#### First Qt-free acceptance test
-
-Use `test_replace_preserves_recorded_input_until_refresh` as the first test.
-A plain Python graph fixture supplies the DataArrays that would normally enter
-through `qshow()`.
-
-Start with A₀ = [10, 20] and B₀ = [1, 2]. Create C₀ = 2 × B₀ and turn Auto off
-for C. Replace B with B₁ = B₀ + A₀, then explicitly refresh C.
-
-| Point | B displays | C displays | Input used for displayed C | Input for next refresh | C state |
-| --- | --- | --- | --- | --- | --- |
-| Before replace | B₀ [1, 2] | C₀ [2, 4] | B₀ | B₀ | Current |
-| After replace | B₁ [11, 22] | C₀ [2, 4] | B₀ | B₁ | Stale |
-| After refresh | B₁ [11, 22] | C₁ [22, 44] | B₁ | B₁ | Current |
-
-Assert the values and revision IDs at each point. The three ImageTool entries keep
-their IDs. B₁ has one producing application with inputs B₀ and A₀. After Replace,
-release or overwrite the caller's B₀ buffer and verify that the virtual B₀ still
-resolves to [1, 2]. After Refresh, C₁ records B₁ as its sole input. Add separate
-cases for the derived B above, a failed refresh, and shared file input evaluated
-once per request.
-
-### 3. Manager tree and commands
-
-Make the tree a projection with one row per ImageTool entry and stable references
-for display parent and order. Show every input in the provenance panel, including
-sources elsewhere in the tree. Fold virtual steps for reading while keeping
-shared ancestors accessible. Drive badges, action availability, and the recorded
-and next inputs from graph queries.
-
-Route file and notebook ingress, watched updates, dialogs, paste, and console
-results through the same graph commands. Record a selection or filter as a step
-when a calculation consumes the displayed subset. Editing a shared historical step
-creates a revised branch for the selected result. Test that child and top-level
-placement give identical lineage, that stale C shows both inputs, and that its
-copied Python reproduces the displayed result.
-
-### 4. ToolWindow editors and figure sources
-
-Bind the editor to durable output recipes by output ID. Compare effective settings
-per output. In ktool, changing a conversion offset makes the converted output
-stale. Restoring the offset before refresh clears that cause. Toggling the
-Brillouin-zone overlay leaves the converted output current. Closing the editor
-must still allow replay of its published operation.
-
-Next cover a fitting tool with several outputs and asynchronous completion. Publish
-the completed fit with the inputs and settings it used. Verify that an older fit
-cannot overwrite a newer result. Exercise a figure that references ftool before
-ftool has published an ImageTool. Test the Manager and ToolWindow paths under
-both PyQt6 and PySide6.
-
-### 5. Workspace storage and performance
-
-Save shared graph records once and refer to them by ID from entries, editor
-recipes, and figures. Save entry placement and needed checkpoints. Restore the
-graph before constructing windows. Repeat the first acceptance test with an
-actual `.itws` save and reopen **while C is stale**.
-Check C's displayed data, recorded input, next input, Auto setting, and copied
-Python before refreshing. Preserve stored-code trust checks when replaying.
-
-Begin measuring graph cost in stage 1. Extend the checks to the GUI and workspace
-as those stages become available.
-
-- Index dependents by source. Count node visits on a long chain and on a diamond
-  in which two paths share an ancestor. Add an unrelated branch and verify that
-  an update visits only its prerequisites and affected descendants.
-  Evaluate a shared producer once per request. Reading provenance and status must
-  leave lazy arrays uncomputed.
-- Measure slice response time during repeated updates to a growing acquisition
-  grid, including filtering and publication. Record a baseline on the same data
-  and hardware. Coalesce superseded work and check that interaction remains usable
-  while updates run. Set timing thresholds from measurements.
-- Protect an authoritative copy when the last reproducible input would otherwise
-  be lost. Keep required checkpoints reachable from live entries, retained history,
-  stale results, pins, and in-flight work. Release temporary references on success,
-  failure, and cancellation. Distinguish a stored source from an evictable cache.
-- Hold the retained history fixed and repeat refresh, save, and reopen. Measure
-  live array bytes and reachable workspace payloads. Share identical stored
-  payloads where safe. Check physical file size after compaction separately from
-  reachable payload size. Growth should correspond to retained results and their
-  metadata.
-
-### 6. Migration
-
-Build the one-way importer last, after the new format passes its own round trip.
-Translate explicit operations, file origins, input and output bindings, placement,
-and checkpoints. If only a value survives, keep it as a checkpointed root with
-any descriptive history that can be recovered. Infer data edges only from evidence
-of a calculation. Check legacy fixtures and representative workspaces before the
-default reader and writer switch.
-
-## Handoff for the next chat
-
-- **Starting point.** The main checkout inspected for this note was at `93d75f30`.
-  The separate branch `dev-provenance-recipe-foundation` at `a1576d8e` contains
-  typed graph code and an earlier four-stage plan in `.agents/plans/provenance.md`.
-  That plan uses operation nodes. Compare candidate code from it against the
-  requirements here for data nodes and operation edges.
-- **Stage 1.** Commit `cc603569` on `dev-provenance-redesign` contains the
-  Qt-free graph. Its acceptance test passes with Qt imports blocked. The
-  tests also cover a replaced derived input, a failed refresh, a file load shared
-  by two branches, and code generation for a concatenation with repeated inputs.
-  The graph executes synchronous requests on its owner thread. The caller supplies
-  the file reader. [Graph](../../src/erlab/_provenance/_graph.py) ·
-  [Tests](../../tests/test_provenance_graph.py)
-- **Graph cost.** Replacing the source of a 1,100-step chain visited each affected
-  entry once, including both branches and their shared result. Refresh evaluated
-  each stale step once. An independent branch received no visits. Repeated file
-  refreshes kept one checkpoint for the current file value and one for an
-  explicitly retained earlier result until its owner released it.
-- **Pending producer edits.** Replace now records the displayed input and keeps
-  its edited recipe for Refresh. The result stays stale until Refresh runs that
-  recipe. Regression tests cover repeated replacement, redirected sources, and
-  pins on virtual inputs.
-- **Stage 2.** The working tree on `dev-provenance-redesign`, based on `cc603569`,
-  implements Reload, command previews, Auto scheduling, and cancellation. In the
-  file-backed acceptance case, Refresh of stale C uses B′ on screen. Reload reads
-  the changed file once, rebuilds B, and records the rebuilt revision as C's input.
-  A failed or superseded request publishes none of its prepared revisions.
-- **Review fixes.** Auto preserves newer work through consecutive supersessions.
-  The request planner tracks a producing step across successive revisions and
-  shares its result across equivalent bindings. Workspace storage in stage 5
-  will need to retain that producer identity.
-- **Historical Python.** Copy Full Code walks the recorded revisions of the
-  selected result. Notebook names identify exact checkpoint inputs. To emit a
-  file read, the caller must verify the recorded version of the file source.
-  Generated extension calls check the recorded script hash. The code adapter uses
-  the existing ImageTool emitter. [Recorded code](../../src/erlab/interactive/imagetool/_provenance/_recorded_code.py)
-- **Next case.** In stage 3, route Open Child Window and Open Top-Level Window
-  through the graph. Check that the two entries have identical lineage and
-  different tree placement. Use the graph's command preview to explain Refresh
-  and Reload for a stale row before wiring the actions.
-- **Later in the rewrite.** Move the provenance operation implementations and
-  their Python generation helpers out of the Qt package. Verify a catalog
-  operation can execute and emit Python with Qt imports blocked.
-
-The initial stage 1 checks passed from the repository root with the `ml` extra installed
-and `ERLAB_TEST_DATA_DIR` set to a local `erlabpy-data` checkout. Both Qt runs
-passed 178 tests.
-
-```sh
-uv run ruff format .
-uv run ruff check --fix .
-uv run mypy src
-uv run python -m scripts.ci_test_groups --check-partition
-for binding in pyqt6 pyside6; do
-    QT_API="$binding" PYTEST_QT_API="$binding" uv run pytest -q \
-        tests/test_provenance_graph.py \
-        tests/interactive/imagetool/manager/workspace/test_store.py \
-        tests/interactive/imagetool/test_module_split.py::test_provenance_layers_load_in_one_direction
-done
-```
-
-After the pending recipe fix, Ruff, mypy, and the partition check passed again.
-Running `uv run pytest -q tests/test_provenance_graph.py` with the same two
-binding settings passed all 19 graph tests in each run.
-
-Stage 2 and its review fixes passed the same Ruff, mypy, and partition checks.
-The local PyQt6 run passed 1,115 tests after the recipe sharing fix. Use one
-binding locally for graph changes and leave the binding matrix to CI.
-
-```sh
-QT_API=pyqt6 PYTEST_QT_API=pyqt6 uv run pytest -q \
-    tests/test_provenance_graph.py \
-    tests/interactive/imagetool/test_replay_graph.py \
-    tests/interactive/imagetool/test_provenance.py \
-    tests/interactive/imagetool/manager/workspace/test_store.py \
-    tests/interactive/imagetool/test_module_split.py::test_provenance_layers_load_in_one_direction
-```
-
-At each handoff, record the branch, revision, exact checks run, and first remaining
-case.
+On the rebased foundation, 767 tests passed under PyQt6 across the graph,
+ImageTool replay, workspace revision/checkpoint, and interpolation selections.
+The CI partition, Ruff, and mypy checks passed. The next implementation starts
+with the interpolation fixture above.
