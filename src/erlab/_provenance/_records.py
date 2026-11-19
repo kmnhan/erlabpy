@@ -7,6 +7,7 @@ import keyword
 import typing
 from dataclasses import dataclass, field
 
+from erlab._provenance._checkpoint import editable_data
 from erlab._provenance._settings import ExecutionSettings
 
 if typing.TYPE_CHECKING:
@@ -217,7 +218,7 @@ class Application:
             # Legacy operations and callbacks can write into any operand.
             # Repeated uses of the same revision share one isolated copy.
             isolated = {
-                node: values[node].copy(deep=True)
+                node: editable_data(values[node])
                 for node in dict.fromkeys(node for _, node in self.inputs)
             }
             if others:

@@ -1444,6 +1444,55 @@ def test_snapshots_own_mutable_members_of_pandas_coordinates(graph, layout):
         assert saved.coords.keys() == incoming.coords.keys()
 
 
+@pytest.mark.parametrize("replace_source", [False, True])
+def test_mutating_repeated_operand_preserves_source_and_sibling(graph, replace_source):
+    from dataclasses import field
+
+    from erlab._provenance._operations import IselOperation
+
+    @dataclass(frozen=True)
+    class Label:
+        name: str
+        notes: list[str] = field(compare=False)
+
+    class EditNotes:
+        def input_slots(self):
+            return ("other",)
+
+        def apply_with_inputs(self, data, inputs):
+            other = inputs["other"]
+            assert other is data
+            other.values[0]["notes"].append("edited")
+            other.x.values[0].notes.append("edited")
+            other.x.attrs["notes"].append("edited")
+            other.x.encoding["notes"].append("edited")
+            return data
+
+    incoming = xr.DataArray(
+        np.array([{"notes": []}], dtype=object),
+        dims="x",
+        coords={"x": [Label("sample", [])]},
+    )
+    incoming.x.attrs["notes"] = []
+    incoming.x.encoding["notes"] = []
+    source = graph.add_source("A", incoming)
+    sibling = graph.derive(
+        "B", Recipe.bind(IselOperation(kwargs={"x": slice(None)}), Follow("A"))
+    )
+    recipe = Recipe.bind(EditNotes(), Follow("A"), other=Follow("A"))
+    result = graph.replace("A", recipe) if replace_source else graph.derive("C", recipe)
+    assert graph.revision(result).producer.inputs == (
+        ("data", source),
+        ("other", source),
+    )
+    for revision, notes in ((result, ["edited"]), (source, []), (sibling, [])):
+        array = graph.data(revision)
+        assert array.values[0]["notes"] == notes
+        assert array.x.values[0].notes == notes
+        assert array.x.attrs["notes"] == notes
+        assert array.x.encoding["notes"] == notes
+
+
 def test_unversioned_source_and_public_reads_isolate_mutable_buffers(graph, tmp_path):
     import dask.array as da
     from dask import delayed
