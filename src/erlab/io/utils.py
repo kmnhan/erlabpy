@@ -4,6 +4,7 @@ __all__ = [
     "get_files",
     "load_hdf5",
     "open_hdf5",
+    "read_file_version",
     "save_as_hdf5",
     "save_as_netcdf",
     "showfitsinfo",
@@ -13,13 +14,62 @@ import importlib.util
 import os
 import pathlib
 import warnings
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 import numpy as np
 import numpy.typing as npt
 import xarray as xr
 
 import erlab
+
+
+def read_file_version(
+    path: str | os.PathLike[str],
+    read: Callable[[str], xr.DataArray],
+    *,
+    device: int,
+    inode: int,
+    size: int,
+    modified_ns: int,
+    changed_ns: int,
+) -> xr.DataArray:
+    """Read the selected array from a recorded version of a local file.
+
+    ImageTool's copied Python passes the original file identity and timestamps.
+    The reader receives the absolute path and returns the selected DataArray.
+    All file-backed variables in that array must come from this file.
+    Deferred variables retain their chunks and verify the file again on access.
+
+    The file identity is specific to its original filesystem. To analyze a copy
+    on another machine, open that copy as a new source. To reproduce the original
+    result after a file changes, supply an independent checkpoint of its data.
+
+    Raises
+    ------
+    OSError
+        If the path is missing or the file version has changed.
+    """
+    from erlab._provenance._checkpoint import FileVersion, _guard_file_variables
+
+    version = FileVersion(
+        os.path.abspath(path), device, inode, size, modified_ns, changed_ns
+    )
+    version.verify()
+    try:
+        data = read(version.path)
+    except Exception:
+        version.verify()
+        raise
+    if not isinstance(data, xr.DataArray):
+        raise TypeError("The reader must select a DataArray.")
+    try:
+        result = _guard_file_variables(data, version)
+        version.verify()
+    except BaseException:
+        data.close()
+        raise
+    result.set_close(data.close)
+    return result
 
 
 def showfitsinfo(path: str | os.PathLike) -> None:  # pragma: no cover

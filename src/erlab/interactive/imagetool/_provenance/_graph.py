@@ -56,6 +56,7 @@ from erlab._provenance._model import (
 if typing.TYPE_CHECKING:
     import xarray as xr
 
+    from erlab._provenance import FileVersion
     from erlab._provenance._operations import ScriptCodeOperation
 
 
@@ -745,6 +746,7 @@ def _add_file_load_node(
     load_code: str | None,
     active_name: str,
     key: str | None = None,
+    backing: FileVersion | None = None,
 ) -> str:
     if _is_extension_loader_source(load_source):
         setup_code = None
@@ -774,6 +776,7 @@ def _add_file_load_node(
             "active_name": active_name,
             "load_source": load_source,
             "load_code": load_code,
+            **({"backing": backing} if backing is not None else {}),
         },
     )
 
@@ -3550,6 +3553,7 @@ def emit_replay_code(
                 return candidate
             suffix += 1
 
+    versioned_files = set()
     for node in graph.nodes:
         if node.kind == "setup":
             continue
@@ -3557,6 +3561,8 @@ def emit_replay_code(
             continue
         name = names[node.key]
         if node.kind == "file_load":
+            if node.payload.get("backing") is not None:
+                versioned_files.add(name)
             if _is_extension_loader_node(node):
                 from erlab._provenance._files import _extension_loader_load_code
 
@@ -3565,6 +3571,7 @@ def emit_replay_code(
                     node.payload["load_source"],
                     assign=name,
                     loader_expression=f"{module_name}.{function_name}",
+                    backing=node.payload.get("backing"),
                 )
                 append_code(code, group_imports=True)
                 continue
@@ -3941,11 +3948,14 @@ def emit_replay_code(
             code,
             generated_copy_names=generated_copy_names,
             protected_names=required_public_bindings
-            | set(extension_script_bindings.values()),
+            | set(extension_script_bindings.values())
+            | versioned_files,
             compact_temporaries=not graph.display,
             code_analyzer=code_analyzer,
         ),
     )
+    if versioned_files:
+        cleaned_code = _format_long_call_assignments(cleaned_code)
     return "\n\n".join(part for part in (module_prologue, cleaned_code) if part)
 
 

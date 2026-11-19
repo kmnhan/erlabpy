@@ -49,11 +49,13 @@ class FileVersion:
             observed = FileVersion.capture(self.path)
         except (OSError, ValueError) as exc:
             raise OSError(
-                f"Recorded input {self.path!r} is unavailable. Restore the file."
+                f"Recorded input {self.path!r} is unavailable. Restore the file or "
+                "use a saved checkpoint of the original data."
             ) from exc
         if self != observed:
             raise OSError(
-                f"Recorded input {self.path!r} has changed. Reload its source."
+                f"Recorded input {self.path!r} has changed. Use a saved checkpoint of "
+                "the original data, or reload its source to use the current file."
             )
 
 
@@ -177,8 +179,6 @@ def editable_data(data: xr.DataArray) -> xr.DataArray:
 
 
 def _guard_file_variables(data: xr.DataArray, backing: FileVersion) -> xr.DataArray:
-    import dask.array as da
-
     result = data.copy(deep=False)
     for variable in (result.variable, *(c.variable for c in result.coords.values())):
         if variable._in_memory and not isinstance(
@@ -186,6 +186,8 @@ def _guard_file_variables(data: xr.DataArray, backing: FileVersion) -> xr.DataAr
         ):
             continue
         if variable.chunks is None:
+            import dask.array as da
+
             preferred = variable.encoding.get("preferred_chunks")
             chunks = (
                 tuple(preferred.get(d, "auto") for d in variable.dims)

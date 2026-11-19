@@ -837,6 +837,8 @@ def test_full_code_uses_recorded_inputs_and_verified_file_or_checkpoint(file_gra
     assert len(reads) == 1
 
     xr.DataArray([100, 200]).to_netcdf(path, engine="h5netcdf")
+    with pytest.raises(OSError, match="has changed"):
+        exec(code, {"sample": graph.data(a0)})  # noqa: S102
     with pytest.raises(ReplayGraphError, match=f0):
         full_code(
             graph,
@@ -847,6 +849,8 @@ def test_full_code_uses_recorded_inputs_and_verified_file_or_checkpoint(file_gra
         )
     # The historical Python still works when the original file is gone.
     path.unlink()
+    with pytest.raises(OSError, match="unavailable"):
+        exec(code, {"sample": graph.data(a0)})  # noqa: S102
     with pytest.raises(ReplayGraphError, match=f0):
         full_code(
             graph,
@@ -1335,6 +1339,62 @@ def test_preview_reuses_captured_file_kwargs_without_copying_the_array(tmp_path)
     assert graph.data(c).item() == 2
 
 
+def test_versioned_copy_keeps_unchunked_selected_variable_and_cast_lazy(
+    tmp_path, monkeypatch
+):
+    from xarray.backends.h5netcdf_ import H5NetCDFArrayWrapper
+
+    from erlab._provenance import FileLoad, FileVersion
+    from erlab._provenance._model import FileDataSelection, FileReplayCall
+    from erlab.interactive.imagetool._provenance._recorded_code import full_code
+
+    path = tmp_path / "counts.nc"
+    counts = xr.DataArray(np.arange(12, dtype=np.int16), dims="x", name="counts")
+    dataset = xr.Dataset({"counts": counts, "other": counts * 3})
+    dataset.to_netcdf(
+        path, engine="h5netcdf", encoding={"counts": {"chunksizes": (2,)}}
+    )
+    version = FileVersion.capture(path)
+    call = FileReplayCall(
+        kind="callable",
+        target="xarray.open_dataset",
+        kwargs={"engine": "h5netcdf"},
+        selection=FileDataSelection(kind="dataset_variable", value="counts"),
+        cast_float64=True,
+    )
+    graph = ProvenanceGraph()
+    graph.adopt_checkpoint(
+        "source",
+        "original",
+        counts.astype("float64"),
+        file_load=FileLoad(graph.file_source(str(path)), call),
+        backing=version,
+    )
+    code = full_code(
+        graph, "original", output_name="measured", verify_file=lambda _: True
+    )
+    assert "measured = erlab.io.read_file_version(\n" in code
+    assert "\n    lambda path: xarray.open_dataset(" in code
+    reads = []
+    read = H5NetCDFArrayWrapper._getitem
+
+    def read_chunk(self, key):
+        reads.append((self.variable_name, key))
+        return read(self, key)
+
+    monkeypatch.setattr(H5NetCDFArrayWrapper, "_getitem", read_chunk)
+    notebook = {}
+    exec(code, notebook)  # noqa: S102
+    result = notebook["measured"]
+    assert result.dtype == np.float64
+    assert reads == []
+    xr.testing.assert_identical(result.isel(x=0).compute(), counts[0].astype("float64"))
+    assert reads == [("counts", (slice(0, 2, 1),))]
+    path.unlink()
+    with pytest.raises(OSError, match="unavailable"):
+        result.isel(x=-1).compute()
+
+
 def test_xarray_file_capture_bounds_layout_checks(tmp_path, monkeypatch):
     import h5py
 
@@ -1356,7 +1416,11 @@ def test_xarray_loader_does_not_pin_only_the_container_of_multifile_data(
 ):
     import h5py
 
+    from erlab._provenance import FileLoad
     from erlab._provenance._files import _capture_loader_file
+    from erlab._provenance._model import FileDataSelection, FileReplayCall
+    from erlab.interactive.imagetool._provenance._graph import ReplayGraphError
+    from erlab.interactive.imagetool._provenance._recorded_code import full_code
 
     path = tmp_path / "container.h5"
     other = tmp_path / "values.h5"
@@ -1382,8 +1446,28 @@ def test_xarray_loader_does_not_pin_only_the_container_of_multifile_data(
     assert backing is None
     with xr.open_dataset(path, **kwargs) as ds:
         revision = graph.add_source("A", ds["values"], backing=backing)
+    call = FileReplayCall(
+        kind="callable",
+        target="xarray.open_dataset",
+        kwargs=kwargs,
+        selection=FileDataSelection(kind="dataset_variable", value="values"),
+    )
+    graph.adopt_checkpoint(
+        "file",
+        "old_file",
+        graph.data(revision),
+        file_load=FileLoad(graph.file_source(str(path)), call),
+    )
+    with pytest.raises(ReplayGraphError, match="Supply a notebook name"):
+        full_code(graph, "old_file", output_name="sample", verify_file=lambda _: True)
+    code = full_code(
+        graph, "old_file", output_name="sample", source_names={"old_file": "saved"}
+    )
     with h5py.File(path, "r+") as f:
         f["values"][:] = values + 2
+    namespace = {"saved": graph.data("old_file")}
+    exec(code, namespace)  # noqa: S102
+    np.testing.assert_equal(namespace["sample"].values, values)
     np.testing.assert_equal(graph.data(revision).values, values)
 
 

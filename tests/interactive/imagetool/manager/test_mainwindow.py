@@ -11647,14 +11647,16 @@ def test_managed_file_operand_keeps_lazy_checkpoint_and_reloads_origin(
         name="grid",
     )
     path = tmp_path / "grid.h5"
-    grid.to_netcdf(path, engine="h5netcdf", encoding={"grid": {"chunksizes": (2, 4)}})
+    grid.to_dataset().to_netcdf(
+        path, engine="h5netcdf", encoding={"grid": {"chunksizes": (2, 4)}}
+    )
     with manager_context() as manager:
         option = "io/dask/compute_threshold"
         previous = erlab.interactive.options[option]
         request.addfinalizer(lambda: erlab.interactive.options.set(option, previous))
         erlab.interactive.options[option] = 0
         handler = _MultiFileHandler(
-            manager, [path], xr.open_dataarray, {"engine": "h5netcdf", "chunks": {}}
+            manager, [path], xr.open_dataset, {"engine": "h5netcdf", "chunks": {}}
         )
         with qtbot.waitSignal(handler.sigFinished, timeout=10000):
             handler.start()
@@ -11662,7 +11664,9 @@ def test_managed_file_operand_keeps_lazy_checkpoint_and_reloads_origin(
         node = manager._node_for_target(0)
 
         sample = itool((2 * grid).rename("sample"), manager=False, execute=False)
-        manager.add_imagetool(sample, show=False)
+        sample_node = manager._node_for_target(
+            manager.add_imagetool(sample, show=False)
+        )
         dialog = imagetool_dialogs.InterpolationDialog(sample.slicer_area)
         qtbot.addWidget(dialog)
         dialog.target_tabs.setCurrentIndex(1)
@@ -11694,15 +11698,40 @@ def test_managed_file_operand_keeps_lazy_checkpoint_and_reloads_origin(
         monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)
         manager._set_metadata_node(node)
         manager._copy_full_derivation_code()
-        assert "open_dataarray" in copied[0]
-        copied_grid = _exec_generated_code(copied[0], {})["derived"]
-        xr.testing.assert_identical(copied_grid, grid)
+        file_code = copied[0]
+        assert "open_dataset" in file_code
+        assert "['grid']" in file_code
+        reads.clear()
+        copied_grid = _exec_generated_code(file_code, {})["derived"]
+        assert "grid" not in reads
+        xr.testing.assert_identical(copied_grid.isel(x=0, y=0).compute(), grid[0, 0])
+        assert reads.count("grid") == 1
+
+        result = manager._child_node(sample_node._childtool_indices[-1])
+        manager._set_metadata_node(result)
+        monkeypatch.setattr(
+            QtWidgets.QInputDialog, "getText", lambda *args, **kwargs: ("sample", True)
+        )
+        manager._copy_full_derivation_code()
+        result_code = copied[1]
+        reads.clear()
+        namespace = {"sample": (2 * grid).rename("sample")}
+        expected = result.data_for_role("displayed").compute()
+        xr.testing.assert_identical(
+            _exec_generated_code(result_code, namespace)["interpolated"], expected
+        )
+        assert "grid" not in reads
 
         changed_path = tmp_path / "changed.h5"
         (grid + 2).rename("grid").to_netcdf(changed_path, engine="h5netcdf")
         changed_path.replace(path)
         with pytest.raises(OSError, match="has changed"):
             values.compute()
+        with pytest.raises(OSError, match=r"has changed.*checkpoint"):
+            _exec_generated_code(result_code, namespace)
+        with pytest.raises(OSError, match="has changed"):
+            copied_grid.isel(x=-1, y=-1).compute()
+        xr.testing.assert_identical(result.data_for_role("displayed"), expected)
 
         def check_unavailable(dialog: QtWidgets.QMessageBox) -> None:
             assert str(path) in dialog.text()

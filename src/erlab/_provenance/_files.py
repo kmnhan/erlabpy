@@ -354,13 +354,17 @@ class _ResolvedLoadFunc:
             cast_float64=self.cast_float64,
         )
 
-    def load_code(self, file_path: Path, *, assign: str) -> str | None:
+    def load_code(
+        self, file_path: Path, *, assign: str, backing: FileVersion | None = None
+    ) -> str | None:
         """Return user-facing Python that reloads the same selected file data."""
         if self.selection.kind == "parsed_index" or not self.loader_expr:
             return None
 
         imports = list(self.imports)
-        call_args = self._call_args(file_path)
+        call_args = self._call_args(file_path, recorded=backing is not None)
+        if backing is not None:
+            imports.append("import erlab")
         if self.kind == "extension_loader" and any(
             "np." in argument for argument in call_args
         ):
@@ -375,15 +379,27 @@ class _ResolvedLoadFunc:
         lines.extend(self.setup_lines)
 
         call_expr = _file_data_selection_code(call_expr, self.selection)
+        if backing is not None:
+            call_expr = (
+                f"erlab.io.read_file_version({backing.path!r}, "
+                f"lambda path: {call_expr}, "
+                f"device={backing.device}, inode={backing.inode}, size={backing.size}, "
+                f"modified_ns={backing.modified_ns}, changed_ns={backing.changed_ns})"
+            )
+            if self.cast_float64:
+                # Guard an unchunked backend before the cast can read its values.
+                lines.append(f"{assign} = {call_expr}")
+                call_expr = assign
         if self.cast_float64:
             call_expr = f'{call_expr}.astype("float64")'
         lines.append(f"{assign} = {call_expr}")
         return "\n".join(lines)
 
-    def _call_args(self, file_path: Path) -> list[str]:
+    def _call_args(self, file_path: Path, *, recorded: bool = False) -> list[str]:
         """Return loader call arguments, using compact scan-number syntax when safe."""
+        path_expr = "path" if recorded else repr(str(file_path))
         if self.kind == "extension_loader":
-            call_args = [f"pathlib.Path({str(file_path)!r})"]
+            call_args = [f"pathlib.Path({path_expr})"]
             call_args.extend(
                 f"{name}={_provenance_value_code(value)}"
                 for name, value in _loader_kwargs_for_code(self.kwargs).items()
@@ -392,12 +408,12 @@ class _ResolvedLoadFunc:
         kwargs_str = _format_call_kwargs(self.kwargs)
         scan_call_args = (
             _scan_number_load_call_args(file_path, self.loader_name, self.kwargs)
-            if self.loader_name is not None
+            if self.loader_name is not None and not recorded
             else None
         )
         if scan_call_args is not None:
             return scan_call_args
-        call_args = [repr(str(file_path))]
+        call_args = [path_expr]
         if kwargs_str:
             call_args.append(kwargs_str)
         return call_args
@@ -641,6 +657,7 @@ def _extension_loader_load_code(
     *,
     assign: str,
     loader_expression: str,
+    backing: FileVersion | None = None,
 ) -> str:
     """Build one structured file load from an existing script binding."""
     replay_call = typing.cast("FileReplayCall", load_source.replay_call)
@@ -659,7 +676,9 @@ def _extension_loader_load_code(
         extension_source_hash=typing.cast("str", replay_call.source_hash),
         extension_capability_id=typing.cast("str", replay_call.capability_id),
     )
-    code = resolved.load_code(pathlib.Path(load_source.path), assign=assign)
+    code = resolved.load_code(
+        pathlib.Path(load_source.path), assign=assign, backing=backing
+    )
     if code is None:
         raise ValueError("extension loaders do not support parsed-index selections")
     return code

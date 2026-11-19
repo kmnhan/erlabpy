@@ -6452,7 +6452,7 @@ def load_data(path: Path) -> xr.DataArray:
 def test_recorded_code_requires_the_applied_extension_version(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from erlab._provenance import FileLoad, ProvenanceGraph
+    from erlab._provenance import FileLoad, FileVersion, ProvenanceGraph
     from erlab.interactive.imagetool._provenance._recorded_code import full_code
 
     script_path = tmp_path / "loader.py"
@@ -6476,11 +6476,15 @@ def test_recorded_code_requires_the_applied_extension_version(
         capability_id="load_data",
         selection=FileDataSelection(kind="dataarray"),
     )
-    graph = ProvenanceGraph(
-        read_file=lambda source, call: erlab.extensions.load_script(
+
+    def read_file(source, call):
+        version = FileVersion.capture(source.path)
+        module = erlab.extensions.load_script(
             script_path, expected_source_hash=call.source_hash
-        ).load_data(pathlib.Path(source.path))
-    )
+        )
+        return module.load_data(pathlib.Path(source.path)), version
+
+    graph = ProvenanceGraph(read_file=read_file)
     revision = graph.derive("scan", FileLoad(graph.file_source(str(data_path)), call))
 
     def copy_code():
@@ -6495,6 +6499,12 @@ def test_recorded_code_requires_the_applied_extension_version(
     xr.testing.assert_identical(
         _exec_generated_code(code)["scan"], graph.data(revision)
     )
+    data_path.write_text("6")
+    with pytest.raises(OSError, match="has changed"):
+        _exec_generated_code(code)
+    data_path.write_text("5")
+    revision = graph.reload("scan")
+    code = copy_code()
     script_path.write_text(script_path.read_text() + "# edited\n")
     with pytest.raises(erlab.extensions.ExtensionImportError, match="expected hash"):
         _exec_generated_code(code)

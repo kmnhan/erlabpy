@@ -8,8 +8,9 @@ import typing
 import unicodedata
 from dataclasses import replace
 
-from erlab._provenance import Application, FileLoad
+from erlab._provenance import Application, FileLoad, FileVersion
 from erlab._provenance._files import (
+    _capture_loader_file,
     _deserialize_loader_kwargs,
     _registered_local_callable_loader,
     _resolve_load_func,
@@ -31,7 +32,9 @@ if typing.TYPE_CHECKING:
     from erlab._provenance import DataRevision, ProvenanceGraph
 
 
-def _add_recorded_file(graph: ReplayGraph, revision_id: str, load: FileLoad) -> None:
+def _add_recorded_file(
+    graph: ReplayGraph, revision_id: str, load: FileLoad, backing: FileVersion
+) -> None:
     call = load.call
     source = FileLoadSource(
         path=load.source.path,
@@ -54,7 +57,7 @@ def _add_recorded_file(graph: ReplayGraph, revision_id: str, load: FileLoad) -> 
         )
         if resolved is not None:
             code = replace(resolved, cast_float64=call.cast_float64).load_code(
-                pathlib.Path(load.source.path), assign="data"
+                pathlib.Path(load.source.path), assign="data", backing=backing
             )
         if code is None:
             raise ReplayGraphError(
@@ -69,6 +72,7 @@ def _add_recorded_file(graph: ReplayGraph, revision_id: str, load: FileLoad) -> 
         load_code=code,
         active_name="data",
         key=revision_id,
+        backing=backing,
     )
 
 
@@ -95,7 +99,7 @@ def full_code(
 
     Supply notebook names for checkpointed origins by revision ID. Emit a file
     read only when the caller verifies that the recorded source can reproduce that
-    revision. The file must still be that version when the notebook code runs.
+    revision. A versioned source is also checked when the notebook reads it.
     """
     output_name = _notebook_name(output_name)
     names = {key: _notebook_name(name) for key, name in (source_names or {}).items()}
@@ -143,17 +147,29 @@ def full_code(
                     f"Supply a notebook name for checkpointed revision {key!r} "
                     f"(file {producer.source.path!r})."
                 )
+                if verify_file is None:
+                    raise ReplayGraphError(unavailable)
+                backing = node.backing
+                if backing is None:
+                    # A caller can verify an older checkpoint by content.
+                    # Bind that check to the file the notebook will reopen.
+                    call = producer.call
+                    if call.kind == "callable":
+                        backing = _capture_loader_file(
+                            producer.source.path,
+                            _registered_local_callable_loader(call.target),
+                            _deserialize_loader_kwargs(call.kwargs),
+                        )
+                if backing is None:
+                    raise ReplayGraphError(unavailable)
                 try:
-                    if node.backing is not None:
-                        node.backing.verify()
-                    verified = verify_file is not None and verify_file(
-                        copy.deepcopy(node)
-                    )
+                    backing.verify()
+                    if not verify_file(copy.deepcopy(node)):
+                        raise ReplayGraphError(unavailable)
+                    backing.verify()
                 except OSError as exc:
                     raise ReplayGraphError(unavailable) from exc
-                if not verified:
-                    raise ReplayGraphError(unavailable)
-                _add_recorded_file(replay, key, producer)
+                _add_recorded_file(replay, key, producer, backing)
             else:
                 raise ReplayGraphError(
                     f"Supply a notebook name for checkpointed revision {key!r} "
