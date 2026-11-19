@@ -3242,17 +3242,17 @@ class ImageSlicerArea(QtWidgets.QWidget):
         ):
             return self._fetch_for_provenance_reload(), {}
         if self._direct_reloadable():
-            kwargs: dict[str, typing.Any] = {
-                "file_path": self._file_path,
-                "load_func": self._load_func,
-            }
+            kwargs: dict[str, typing.Any] = {"file_path": self._file_path}
             if self._file_path is not None and self._load_func is not None:
                 version = _capture_loader_file(
                     self._file_path, self._load_func[0], self._load_func[1]
                 )
                 if version is not None:
                     kwargs["_file_backing"] = version
-            return self._fetch_for_reload(), kwargs
+            data = self._fetch_for_reload()
+            # Fetching resolves a saved positional selection against the opened file.
+            kwargs["load_func"] = self._load_func
+            return data, kwargs
         if self._provenance_reloadable():
             return self._fetch_for_provenance_reload(), {}
         raise RuntimeError("Data cannot be reloaded")
