@@ -91,16 +91,16 @@ def _checked_chunk(block: np.ndarray, *, backing: FileVersion) -> np.ndarray:
 class _FileVariable:
     """Expose an unchunked xarray backend to Dask without loading the variable."""
 
-    def __init__(self, variable: xr.Variable, backing: FileVersion) -> None:
-        self.variable = variable.copy(deep=False)
+    def __init__(self, source: typing.Any, backing: FileVersion) -> None:
+        self.variable = source
         self.backing = backing
-        self.shape = variable.shape
-        self.dtype = variable.dtype
-        self.ndim = variable.ndim
+        self.shape = source.shape
+        self.dtype = source.dtype
+        self.ndim = source.ndim
 
     def __getitem__(self, key: tuple[slice, ...]) -> np.ndarray:
         self.backing.verify()
-        return _checked_chunk(self.variable[key].values, backing=self.backing)
+        return _checked_chunk(np.asarray(self.variable[key]), backing=self.backing)
 
 
 def _owned_categories(values: pd.Categorical) -> pd.Categorical:
@@ -199,8 +199,6 @@ def _guard_variable(
     variable: xr.Variable,
     backing: FileVersion,
     storage_key: str | None = None,
-    *,
-    auto_chunks: bool = False,
 ) -> None:
     if variable._in_memory and not isinstance(_buffer_owner(variable.data), mmap.mmap):
         return
@@ -219,16 +217,8 @@ def _guard_variable(
                 preferred.get(dim, size)
                 for dim, size in zip(variable.dims, variable.shape, strict=True)
             )
-            if auto_chunks:
-                from dask.array.core import normalize_chunks
-                from dask.base import tokenize
-
-                chunks = normalize_chunks(
-                    "auto", variable.shape, dtype=variable.dtype, previous_chunks=chunks
-                )
-                storage_key = tokenize(storage_key, chunks)
         array = da.from_array(
-            _FileVariable(variable, backing),
+            _FileVariable(variable.copy(deep=False), backing),
             chunks=chunks,
             name=False if storage_key is None else "read-file-version-" + storage_key,
             meta=np.empty((0,) * variable.ndim, dtype=variable.dtype),
@@ -253,7 +243,6 @@ def _guard_file_variables(
     storage_key: str | None = None,
     node_path: str = "/",
     data_key: tuple[Hashable, ...] = (),
-    auto_chunks: bool = False,
 ) -> xr.DataArray:
     if storage_key is not None:
         from dask.base import tokenize
@@ -268,7 +257,6 @@ def _guard_file_variables(
             variable,
             backing,
             tokenize(storage_key, node_path, key) if storage_key is not None else None,
-            auto_chunks=auto_chunks,
         )
     return result
 
@@ -311,6 +299,13 @@ def _native_file_options(
     if kwargs["engine"] not in ("h5netcdf", "netcdf4", "scipy"):
         return kwargs, None
     token = tokenize(backing, read, kwargs)
+    if kwargs.get("chunks") == "auto":
+        from erlab._provenance._file_chunks import _VersionedDaskManager
+
+        return {
+            **kwargs,
+            "chunked_array_type": _VersionedDaskManager(backing, token),
+        }, token
     native = {**kwargs, "chunks": None}
     if native.get("cache") is None:
         native["cache"] = False
@@ -335,31 +330,6 @@ def _file_variables(
             yield node_path, (name,), variable
 
 
-def _open_file_for_chunks(
-    read: Callable[..., typing.Any],
-    path: str | os.PathLike[str],
-    kwargs: Mapping[str, typing.Any],
-    backing: FileVersion | None,
-) -> tuple[typing.Any, str | None]:
-    options, token = _native_file_options(read, kwargs, backing)
-    opened = read(path, **options)
-    if token is not None and kwargs.get("chunks") == "auto":
-        # xarray has release-specific chunk estimates for object and cftime
-        # arrays. Use the original reader for the entire mixed file.
-        try:
-            numeric = all(
-                variable.dtype.kind in "biufc" and variable.ndim and all(variable.shape)
-                for _, _, variable in _file_variables(opened)
-            )
-        except BaseException:
-            opened.close()
-            raise
-        if not numeric:
-            opened.close()
-            return read(path, **{**kwargs, "engine": options["engine"]}), None
-    return opened, token
-
-
 def _read_versioned_file(
     read: Callable[..., typing.Any],
     path: str | os.PathLike[str],
@@ -367,7 +337,10 @@ def _read_versioned_file(
     backing: FileVersion | None,
 ) -> typing.Any:
     """Guard variables in a native file before exposing its container to ImageTool."""
-    opened, token = _open_file_for_chunks(read, path, kwargs, backing)
+    options, token = _native_file_options(read, kwargs, backing)
+    opened = read(
+        backing.path if token is not None and backing is not None else path, **options
+    )
     if token is None or backing is None:
         return opened
     from dask.base import tokenize
@@ -378,7 +351,6 @@ def _read_versioned_file(
                 variable,
                 backing,
                 tokenize(token, node_path, key),
-                auto_chunks=kwargs.get("chunks") == "auto",
             )
         backing.verify()
     except BaseException:

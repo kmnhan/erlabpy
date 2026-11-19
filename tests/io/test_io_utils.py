@@ -302,7 +302,8 @@ def test_versioned_file_default_uses_actual_engine_in_task_keys(tmp_path, monkey
     assert guessed == [str(path)] * 3
 
 
-def test_versioned_tree_uses_default_engine_without_aliasing_groups(tmp_path):
+@pytest.mark.parametrize("chunks", [{}, "auto"])
+def test_versioned_tree_uses_default_engine_without_aliasing_groups(tmp_path, chunks):
     import dask
 
     from erlab._provenance._checkpoint import _read_versioned_file
@@ -312,7 +313,7 @@ def test_versioned_tree_uses_default_engine_without_aliasing_groups(tmp_path):
     ds.to_netcdf(path, engine="h5netcdf")
     (ds + 100).to_netcdf(path, engine="h5netcdf", group="scan", mode="a")
     backing = FileVersion.capture(path)
-    options = {"chunks": {}}
+    options = {"chunks": chunks}
     with (
         _read_versioned_file(xr.open_datatree, path, options, backing) as live,
         erlab.io.read_file_version(
@@ -390,8 +391,8 @@ def test_automatic_file_chunks_match_native_layout_and_task_identity(
     assert names[0][1] != names[1][1]
 
 
-def test_automatic_file_chunks_delegate_whole_mixed_dataset(tmp_path):
-    from erlab._provenance._checkpoint import _open_file_for_chunks
+def test_automatic_file_chunks_open_mixed_dataset_once(tmp_path, monkeypatch):
+    from erlab._provenance._checkpoint import _read_versioned_file
 
     path = tmp_path / "mixed.h5"
     ds = xr.Dataset({"counts": ("x", [1, 2]), "labels": ("x", ["small", "large"])})
@@ -399,9 +400,40 @@ def test_automatic_file_chunks_delegate_whole_mixed_dataset(tmp_path):
     options = {"engine": "h5netcdf", "chunks": "auto"}
     version = FileVersion.capture(path)
     with xr.open_dataset(path, **options) as expected:
-        source, token = _open_file_for_chunks(xr.open_dataset, path, options, version)
-        with source:
-            assert token is None
-            assert source.counts.data.name == expected.counts.data.name
-            assert source.labels.data.name == expected.labels.data.name
+        read = xr.open_dataset
+        opened = []
+
+        def record(filename, **kwargs):
+            opened.append(filename)
+            return read(filename, **kwargs)
+
+        monkeypatch.setattr(xr, "open_dataset", record)
+        with _read_versioned_file(xr.open_dataset, path, options, version) as source:
+            assert opened == [str(path)]
+            assert source.counts.chunks == expected.counts.chunks
+            assert source.labels.chunks == expected.labels.chunks
             xr.testing.assert_identical(source.compute(), expected.compute())
+
+
+def test_automatic_file_chunks_use_native_calendar_handling(tmp_path):
+    import re
+
+    from erlab._provenance._checkpoint import _read_versioned_file
+
+    pytest.importorskip("cftime")
+    path = tmp_path / "calendar.nc"
+    data = xr.Dataset({"time": ("x", np.arange(12)), "counts": ("x", np.arange(12.0))})
+    data.time.attrs.update(units="days since 2000-01-01", calendar="360_day")
+    data.to_netcdf(path, engine="h5netcdf")
+    version = FileVersion.capture(path)
+    options = {"engine": "h5netcdf", "chunks": "auto"}
+    try:
+        native = xr.open_dataset(path, **options)
+    except NotImplementedError as exc:
+        # Old Dask does not estimate automatic chunk sizes for object arrays.
+        with pytest.raises(NotImplementedError, match=re.escape(str(exc))):
+            _read_versioned_file(xr.open_dataset, path, options, version)
+        return
+    with native, _read_versioned_file(xr.open_dataset, path, options, version) as live:
+        assert live.time.chunks == native.time.chunks
+        xr.testing.assert_identical(live.compute(), native.compute())

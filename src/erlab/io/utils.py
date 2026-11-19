@@ -100,7 +100,7 @@ def read_file_version(
     from erlab._provenance._checkpoint import (
         FileVersion,
         _guard_file_variables,
-        _open_file_for_chunks,
+        _native_file_options,
     )
 
     if select is not None and (
@@ -114,11 +114,11 @@ def read_file_version(
         os.path.abspath(path), device, inode, size, modified_ns, changed_ns
     )
     version.verify()
-    kwargs = read_kwargs or {}
+    options, token = _native_file_options(
+        read, read_kwargs or {}, version if select is None else None
+    )
     try:
-        opened, token = _open_file_for_chunks(
-            read, version.path, kwargs, version if select is None else None
-        )
+        opened = read(version.path, **options)
     except Exception:
         version.verify()
         raise
@@ -149,7 +149,6 @@ def read_file_version(
             storage_key=token,
             node_path=node_path or "/",
             data_key=data_key,
-            auto_chunks=kwargs.get("chunks") == "auto",
         )
         if dtype is not None:
             result = result.astype(dtype)
