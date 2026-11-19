@@ -2152,6 +2152,7 @@ class _ManagedWindowNode(QtCore.QObject):
         *,
         primary_checkpoint_required: bool = True,
         graph_owned: bool = False,
+        displayed_data: xr.DataArray | None = None,
     ) -> str:
         """Capture an exact input independently of this window's lifetime."""
         token = self.snapshot_token_for_role(data_role)
@@ -2190,8 +2191,13 @@ class _ManagedWindowNode(QtCore.QObject):
                 data_role == "source" or not self.slicer_area.has_active_filter
             ):
                 backing = self.slicer_area._file_backing
+            data = (
+                self._finalize_script_input_data(displayed_data)
+                if displayed_data is not None and data_role == "displayed"
+                else self.data_for_role(data_role)
+            )
             revision_id = self.manager._provenance_revisions.add(
-                self.data_for_role(data_role),
+                data,
                 spec,
                 backing=backing,
                 graph_owned=graph_owned,
@@ -2300,13 +2306,15 @@ class _ManagedWindowNode(QtCore.QObject):
         self.manager._operations.changed(self)
         self._schedule_snapshot_token_refresh(defer_refresh=defer_refresh)
 
-    def _advance_displayed_snapshot_token(self, *, defer_refresh: bool = False) -> None:
+    def _advance_displayed_snapshot_token(
+        self, *, defer_refresh: bool = False, displayed_data: xr.DataArray | None = None
+    ) -> None:
         if self._suspend_snapshot_token_updates:
             return
         self._invalidate_info_text_cache()
         self._invalidate_preview_image_cache()
         self._snapshot_token = uuid.uuid4().hex
-        self.manager._operations.changed(self)
+        self.manager._operations.changed(self, displayed_data=displayed_data)
         self._schedule_snapshot_token_refresh(defer_refresh=defer_refresh)
 
     def _advance_source_snapshot_token(self, *, defer_refresh: bool = False) -> None:
@@ -3420,7 +3428,16 @@ class _ManagedWindowNode(QtCore.QObject):
                 return
             self.clear_pending_workspace_payload()
         self.manager._mark_node_data_dirty(self.uid)
-        self._advance_displayed_snapshot_token(defer_refresh=True)
+        # ImageSlicerArea has already restored the public layout for this signal.
+        self._advance_displayed_snapshot_token(
+            defer_refresh=True,
+            displayed_data=(
+                parent_data
+                if isinstance(parent_data, xr.DataArray)
+                and self.pending_workspace_payload is None
+                else None
+            ),
+        )
         if self._suspend_descendant_signal_propagation:
             return
         if not isinstance(parent_data, xr.DataArray):

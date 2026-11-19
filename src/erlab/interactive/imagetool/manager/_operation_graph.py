@@ -94,12 +94,16 @@ class _ManagedOperations:
         self._placements: dict[str, _Placement] = {}
         self._installing: set[str] = set()
 
-    def observe(self, node: _ManagedWindowNode) -> None:
+    def observe(
+        self, node: _ManagedWindowNode, *, displayed_data: xr.DataArray | None = None
+    ) -> None:
         """Bind a legacy displayed value once to its captured revision."""
         uid = node.uid
         if uid in self._installing or self._tokens.get(uid) == node.snapshot_token:
             return
-        revision = node.revision_id_for_role("displayed", graph_owned=True)
+        revision = node.revision_id_for_role(
+            "displayed", graph_owned=True, displayed_data=displayed_data
+        )
         store = self.manager._provenance_revisions
         file_load = None
         backing = None
@@ -158,9 +162,11 @@ class _ManagedOperations:
     def installing(self, uid: str) -> bool:
         return uid in self._installing
 
-    def changed(self, node: _ManagedWindowNode) -> None:
+    def changed(
+        self, node: _ManagedWindowNode, *, displayed_data: xr.DataArray | None = None
+    ) -> None:
         if node.uid in self.graph:
-            self.observe(node)
+            self.observe(node, displayed_data=displayed_data)
 
     def _release_unused_inputs(self, uids: set[str]) -> None:
         for uid in uids:

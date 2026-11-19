@@ -730,3 +730,56 @@ def test_wrapper_source_data_replaced_uses_parent_fallback(
         assert len(propagated) == 1
         assert propagated[0][0] == wrapper.uid
         xr.testing.assert_identical(propagated[0][1], updated)
+
+
+@pytest.mark.parametrize("case", ["ordinary", "filtered", "promoted_1d", "no_array"])
+def test_graph_captures_the_signaled_public_data(manager_context, monkeypatch, case):
+    from erlab._provenance._operations import NormalizeOperation
+
+    arr = xr.DataArray(
+        np.arange(12.0).reshape(4, 3) + 1,
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0, 3.0, 7.0], "y": [0.0, 1.0, 2.0]},
+        attrs={"sample": ["original"]},
+        name="test",
+    )
+    if case == "promoted_1d":
+        arr = arr.isel(y=0, drop=True)
+    with manager_context() as manager:
+        tool = itool(arr, manager=False, execute=False)
+        index = manager.add_imagetool(tool, show=False, source_input_ndim=arr.ndim)
+        node = manager._node_for_target(index)
+        operations = manager._operations
+        operations.observe(node)
+        previous = operations.graph.current_revision(node.uid)
+        requested = []
+        data_for_role = node.data_for_role
+
+        def record(role, **kwargs):
+            requested.append(role)
+            return data_for_role(role, **kwargs)
+
+        monkeypatch.setattr(node, "data_for_role", record)
+        if case == "filtered":
+            tool.slicer_area.apply_filter_operation(
+                NormalizeOperation(dims=("x",), mode="min"), emit_edited=True
+            )
+        elif case == "no_array":
+            node._handle_source_data_replaced(None)
+        else:
+            manager._data_replace(
+                [(arr + 3).assign_attrs(arr.attrs).rename(arr.name)], [index]
+            )
+
+        key = operations.graph.current_revision(node.uid)
+        assert key != previous
+        assert requested.count("displayed") == (1 if case == "no_array" else 0)
+        expected = data_for_role("displayed")
+        stored = operations.graph.data(key)
+        xr.testing.assert_identical(stored, expected)
+        if case == "promoted_1d":
+            assert stored.attrs["_erlab_promoted_from_1d_source"]
+        if case == "filtered":
+            assert not stored.equals(data_for_role("source"))
+        expected.values[:] = -123
+        xr.testing.assert_identical(operations.graph.data(key), stored)
