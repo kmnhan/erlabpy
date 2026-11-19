@@ -2,6 +2,7 @@ import datetime
 import hashlib
 import json
 import logging
+import os
 import pathlib
 import shutil
 import subprocess
@@ -5312,6 +5313,196 @@ def test_manager_workspace_replace_load_failure_uses_clean_file_backup(
         assert manager.ntools == 1
         xarray.testing.assert_equal(manager.get_imagetool(0).slicer_area._data, data)
         assert not manager.is_workspace_modified
+
+
+@pytest.mark.parametrize(
+    "source_state", ["available", "missing_before", "moved_during", "modified_during"]
+)
+def test_workspace_replace_backs_up_shared_pending_images(
+    monkeypatch, tmp_path, manager_context, source_state
+) -> None:
+    source = tmp_path / "imported.itws"
+    incoming = tmp_path / "broken.itws"
+    data = xr.DataArray(
+        np.arange(25.0).reshape(5, 5),
+        coords={"x": np.arange(5), "y": np.arange(5)},
+        name="saved",
+    )
+    with manager_context() as manager:
+        tool = itool(data, manager=False, execute=False)
+        manager.add_imagetool(tool, show=False)
+        tool.hide()
+        saver = manager._workspace_controller.saving
+        monkeypatch.setattr(saver, "_workspace_compression_mode", lambda: "none")
+        saver._save_workspace_document(source)
+        manager.remove_all_tools()
+        original_group = _current_workspace_payload_path(source)
+        with h5py.File(source, "r+") as doc:
+            alternate = doc.create_group("alias")
+            for name, dataset in doc[original_group].items():
+                alternate[name] = dataset
+            alternate.attrs.update(doc[original_group].attrs)
+            alternate.attrs["row_setting"] = "stored in alternate group"
+        loader = manager._workspace_controller.loading
+        for _ in range(2):
+            assert loader._load_workspace_file(
+                source, replace=False, associate=False, mark_dirty=True, select=False
+            )
+        nodes = tuple(manager._tool_graph.root_wrappers.values())
+        assert len(nodes) == 2
+        payload = nodes[0].pending_workspace_memory_payload
+        assert payload is not None
+        assert nodes[1].pending_workspace_memory_payload == payload
+        expected = {}
+        for idx, node in enumerate(nodes):
+            node.name = f"image-{idx}"
+            node.note = f"note-{idx}"
+            expected[node.uid] = (
+                node.index,
+                node.name,
+                node.note,
+                node.snapshot_token,
+                node.current_revision_id,
+            )
+        # A pending row can inherit its window settings from the stored object.
+        nodes[1].set_pending_workspace_memory_payload(source, "alias")
+        payloads = {node.uid: node.pending_workspace_memory_payload for node in nodes}
+        with h5py.File(incoming, "w") as doc:
+            doc.attrs["imagetool_workspace_schema_version"] = 4
+            doc.create_group("0")
+        capturing = False
+        signal_reads = []
+        getitem = h5py.Dataset.__getitem__
+
+        def record_read(dataset, key, *args, **kwargs):
+            if (
+                capturing
+                and dataset.name.rsplit("/", 1)[-1]
+                == _persistence_constants.ITOOL_DATA_NAME
+            ):
+                signal_reads.append(dataset.name)
+            return getitem(dataset, key, *args, **kwargs)
+
+        monkeypatch.setattr(h5py.Dataset, "__getitem__", record_read)
+
+        def reject_materialization(*args, **kwargs):
+            pytest.fail(
+                "Replace constructed a pending window while capturing its backup"
+            )
+
+        monkeypatch.setattr(
+            loader.pending,
+            "_materialize_pending_workspace_payload",
+            reject_materialization,
+        )
+        moved = tmp_path / "moved.itws"
+        if source_state == "missing_before":
+            source.rename(moved)
+            with pytest.raises(FileNotFoundError):
+                loader._load_workspace_file(
+                    incoming,
+                    replace=True,
+                    associate=True,
+                    mark_dirty=False,
+                    select=False,
+                )
+            assert tuple(manager._tool_graph.root_wrappers.values()) == nodes
+            lock = workspace_storage._acquire_workspace_document_lock(incoming)
+            lock.unlock()
+            return
+        recover = loader._recoverable_pending_images
+        if source_state == "available":
+            # Exercise the Windows content comparison on all test hosts.
+            monkeypatch.setattr(
+                loader,
+                "_recoverable_pending_images",
+                lambda backup, tree, **kwargs: recover(
+                    backup, tree, compare_contents=True
+                ),
+            )
+        capture = loader._workspace_replace_backup_for_load
+
+        def change_after_capture(*args):
+            nonlocal capturing
+            capturing = True
+            try:
+                backup = capture(*args)
+            finally:
+                capturing = False
+            if source_state == "moved_during":
+                source.rename(moved)
+            elif source_state == "modified_during":
+                info = source.stat()
+                with h5py.File(source) as doc:
+                    signal = doc[original_group][_persistence_constants.ITOOL_DATA_NAME]
+                    assert signal.id.get_create_plist().get_nfilters() == 0
+                    offset = (
+                        signal.id.get_offset()
+                        if signal.chunks is None
+                        else signal.id.get_chunk_info_by_coord((0, 0)).byte_offset
+                    )
+                    value = np.array(-999, dtype=signal.dtype).tobytes()
+                with source.open("r+b") as stream:
+                    stream.seek(offset)
+                    stream.write(value)
+                with h5py.File(source) as doc:
+                    assert (
+                        doc[original_group][_persistence_constants.ITOOL_DATA_NAME][
+                            0, 0
+                        ]
+                        == -999
+                    )
+                os.utime(source, ns=(info.st_atime_ns, info.st_mtime_ns))
+                changed = source.stat()
+                assert (changed.st_ino, changed.st_size, changed.st_mtime_ns) == (
+                    info.st_ino,
+                    info.st_size,
+                    info.st_mtime_ns,
+                )
+            return backup
+
+        monkeypatch.setattr(
+            loader, "_workspace_replace_backup_for_load", change_after_capture
+        )
+        with pytest.raises(ValueError, match="No workspace windows"):
+            loader._load_workspace_file(
+                incoming, replace=True, associate=True, mark_dirty=False, select=False
+            )
+        assert len(signal_reads) == 1
+        assert set(manager._tool_graph.nodes) == set(expected)
+        monkeypatch.undo()
+        for uid, (index, name, note, token, revision) in expected.items():
+            restored = manager._node_for_target(index)
+            assert (
+                restored.uid,
+                restored.name,
+                restored.note,
+                restored.snapshot_token,
+                restored.current_revision_id,
+            ) == (uid, name, note, token, revision)
+            if source_state == "available":
+                assert restored.imagetool is None
+                assert restored.pending_workspace_memory_payload == payloads[uid]
+                if payloads[uid] == (source, "alias"):
+                    assert (
+                        restored.pending_workspace_payload_attrs["row_setting"]
+                        == "stored in alternate group"
+                    )
+            else:
+                assert restored.imagetool is not None
+            xr.testing.assert_identical(
+                manager.get_imagetool(index).slicer_area._data, data.rename(name)
+            )
+        if source_state != "available":
+            left, right = (
+                manager.get_imagetool(node.index).slicer_area._data for node in nodes
+            )
+            assert not np.shares_memory(left.values, right.values)
+        assert manager.is_workspace_modified
+    # The external document and the failed target must both release their locks.
+    for path in (source, incoming):
+        lock = workspace_storage._acquire_workspace_document_lock(path)
+        lock.unlock()
 
 
 def test_manager_workspace_replace_load_failure_keeps_dirty_memory_backup(

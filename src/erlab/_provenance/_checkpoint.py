@@ -34,7 +34,11 @@ class FileVersion:
     def capture(cls, path: str | os.PathLike[str]) -> FileVersion:
         """Capture the version before opening the array or scheduling any reads."""
         path = os.path.abspath(path)
-        info = os.stat(path)
+        return cls.from_stat(path, os.stat(path))
+
+    @classmethod
+    def from_stat(cls, path: str, info: os.stat_result) -> FileVersion:
+        """Capture the version at an absolute path from its open file handle."""
         if not stat.S_ISREG(info.st_mode):
             raise ValueError(
                 f"A versioned provenance input needs a regular file: {path}"
