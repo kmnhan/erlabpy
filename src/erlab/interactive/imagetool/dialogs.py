@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import functools
 import math
 import operator
 import traceback
@@ -3029,12 +3030,15 @@ class InterpolationDialog(DataTransformDialog):
         target_layout = QtWidgets.QVBoxLayout(target_page)
         from erlab.interactive.imagetool.manager._source_selector import (
             ManagerSourceSelector,
+            _DeferredSourceEligibility,
         )
 
         manager, target = self._manager_target()
         target_layout.addWidget(QtWidgets.QLabel("ImageTool"))
         self.target_tool_selector = ManagerSourceSelector(
-            manager, eligibility=self._target_candidate_error, parent=self
+            manager,
+            eligibility=_DeferredSourceEligibility(self._target_eligibility),
+            parent=self,
         )
         target_layout.addWidget(self.target_tool_selector)
         self.all_coords_check = QtWidgets.QCheckBox("All matching coordinates")
@@ -3162,12 +3166,8 @@ class InterpolationDialog(DataTransformDialog):
             coord = np.arange(self._source_data.sizes[dim], dtype=np.float64)
         self.coord_widget.set_reference_coord(coord)
 
-    def _candidate_data(
-        self,
-        manager: ImageToolManager,
-        uid: str,
-        source_data: xr.DataArray,
-    ) -> xr.DataArray:
+    @staticmethod
+    def _current_target_node(manager: ImageToolManager, uid: str) -> _ManagedWindowNode:
         node = manager._tool_graph.nodes.get(uid)
         if node is None or not node.is_imagetool:
             raise ValueError("The selected target ImageTool is no longer available.")
@@ -3176,15 +3176,32 @@ class InterpolationDialog(DataTransformDialog):
             "missing",
         }:
             raise ValueError("The selected target ImageTool is not current.")
-        target_data = node.data_for_role("displayed", owner_node=node)
+        return node
+
+    def _target_coordinates_error(
+        self, source_data: xr.DataArray, target_data: xr.DataArray
+    ) -> str | None:
         matching = self._matching_dimensions(source_data, target_data)
         if not matching:
-            raise ValueError("The ImageTools have no matching dimension coordinates.")
+            return "The ImageTools have no matching dimension coordinates."
         if all(
             self._coordinate_error(source_data, target_data, dim) is not None
             for dim in matching
         ):
-            raise ValueError("The ImageTools have no usable matching coordinates.")
+            return "The ImageTools have no usable matching coordinates."
+        return None
+
+    def _candidate_data(
+        self,
+        manager: ImageToolManager,
+        uid: str,
+        source_data: xr.DataArray,
+    ) -> xr.DataArray:
+        node = self._current_target_node(manager, uid)
+        target_data = node.data_for_role("displayed", owner_node=node)
+        error = self._target_coordinates_error(source_data, target_data)
+        if error is not None:
+            raise ValueError(error)
         return target_data
 
     @staticmethod
@@ -3205,17 +3222,40 @@ class InterpolationDialog(DataTransformDialog):
             return str(exc)
         return None
 
-    def _target_candidate_error(self, node: _ManagedWindowNode) -> str | None:
+    def _target_eligibility(self) -> Callable[[_ManagedWindowNode], str | None]:
         manager, target = self._manager_target()
         if manager is None or target is None or self.is_batch_mode:
-            return "Select a target from an individual ImageTool in Manager."
+            return lambda _node: (
+                "Select a target from an individual ImageTool in Manager."
+            )
         try:
-            if node.uid == manager._node_for_target(target).uid:
-                return "Select another ImageTool as the interpolation target."
-            self._candidate_data(manager, node.uid, self._source_data)
-        except (LookupError, OSError, RuntimeError, TypeError, ValueError) as exc:
-            return str(exc)
-        return None
+            source_uid = manager._node_for_target(target).uid
+        except LookupError as exc:
+            message = str(exc)
+            return lambda _node: message
+        coordinate_error = functools.partial(
+            self._target_coordinates_error, self._source_data
+        )
+        check_pending = (
+            manager._workspace_controller.loading.pending._pending_coordinate_check(
+                coordinate_error
+            )
+        )
+
+        def check(node: _ManagedWindowNode) -> str | None:
+            try:
+                if node.uid == source_uid:
+                    return "Select another ImageTool as the interpolation target."
+                self._current_target_node(manager, node.uid)
+                if node.pending_workspace_memory_payload is not None:
+                    return check_pending(node)
+                return coordinate_error(
+                    node.data_for_role("displayed", owner_node=node)
+                )
+            except (LookupError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                return str(exc)
+
+        return check
 
     def _target_data(self) -> xr.DataArray:
         uid = self.target_tool_selector.current_uid

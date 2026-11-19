@@ -45,6 +45,7 @@ from erlab._provenance._model import (
 from erlab._provenance._operations import (
     AffineCoordOperation,
     AssignAttrsOperation,
+    AssignCoordsOperation,
     AssignScalarCoordOperation,
     DropScalarCoordsOperation,
     GaussianFilterOperation,
@@ -9915,6 +9916,115 @@ def test_manager_interpolation_dialog_placements_and_cycles(
         cycle_dialog.accept()
         assert warnings == [True]
         assert cycle_dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+
+
+def test_manager_interpolation_chooser_reads_each_pending_view_on_demand(
+    qtbot, manager_context, monkeypatch, tmp_path
+) -> None:
+    from erlab.interactive._persistence_constants import ITOOL_DATA_NAME
+    from erlab.interactive.imagetool.manager._workspace import (
+        _arrays as workspace_arrays,
+    )
+    from tests.interactive.imagetool.manager.workspace._support import (
+        _current_workspace_payload_attrs,
+        _current_workspace_payload_path,
+    )
+
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        coords={"x": [0, 1, 2], "y": [10, 20, 30, 40]},
+        name="scan",
+    )
+    target = data.rename({"y": "other"}).isel(x=[0, 2])
+    with manager_context() as manager:
+        tool = itool(data, manager=False, execute=False)
+        source_index = manager.add_imagetool(tool, show=False)
+        target_index = manager.add_imagetool(
+            itool(target, manager=False, execute=False), show=False
+        )
+        path = tmp_path / "chooser.itws"
+        manager._workspace_controller.saving._save_workspace_document(path)
+        payload = _current_workspace_payload_path(path, str(target_index))
+        attrs = _current_workspace_payload_attrs(path, str(target_index))
+        manager._remove_imagetool(target_index)
+        filter_op = AssignCoordsOperation(coord_name="x", values=["low", "high"])
+        filtered = dict(
+            attrs,
+            itool_state=json.dumps(
+                dict(
+                    json.loads(attrs["itool_state"]),
+                    filter_operation=filter_op.model_dump(mode="json"),
+                )
+            ),
+        )
+        loader = manager._workspace_controller.loading
+        nodes = []
+        for row_attrs in (
+            attrs,
+            dict(attrs, itool_name="renamed"),
+            filtered,
+            filtered,
+            attrs,
+        ):
+            index = loader.pending._register_pending_workspace_imagetool(
+                xr.Dataset(attrs=row_attrs),
+                parent_target=None,
+                node_path=None,
+                kwargs={},
+                pending_workspace_memory_payload=(path, payload),
+                loaded_targets_by_uid=None,
+            )
+            nodes.append(manager._node_for_target(index))
+        nodes[-1]._set_source_state("stale")
+        opened = []
+        open_dataset = workspace_arrays.open_workspace_dataset
+
+        def track_open(*args, **kwargs):
+            opened.append(args[:2])
+            return open_dataset(*args, **kwargs)
+
+        monkeypatch.setattr(workspace_arrays, "open_workspace_dataset", track_open)
+        dialog = imagetool_dialogs.InterpolationDialog(tool.slicer_area)
+        qtbot.addWidget(dialog)
+        selector = dialog.target_tool_selector
+        assert not opened
+        assert selector.candidate_uids == (nodes[0].uid, nodes[1].uid)
+        assert len(opened) == 3
+        assert all(not node._workspace_reference_datasets for node in nodes)
+        nodes[0]._set_source_state("unavailable")
+        nodes[-1]._set_source_state("fresh")
+        legacy = tmp_path / "legacy.itws"
+        target.to_dataset(name=ITOOL_DATA_NAME).assign_attrs(
+            itool_state=filtered["itool_state"]
+        ).to_netcdf(legacy, group="image", engine="h5netcdf")
+        nodes[2].set_pending_workspace_memory_payload(
+            legacy, "image", payload_attrs=None
+        )
+        nodes[3].set_pending_workspace_memory_payload(legacy, "image", payload_attrs={})
+        selector.refresh()
+        assert selector.candidate_uids == (nodes[1].uid, nodes[3].uid, nodes[-1].uid)
+        assert len(opened) == 6
+        dialog.target_tabs.setCurrentIndex(1)
+        legacy.rename(tmp_path / "moved.itws")
+        selector._accept_source(nodes[3].uid)
+        assert selector.current_uid is None
+        assert nodes[3].uid not in selector.candidate_uids
+        selector._accept_source(nodes[1].uid)
+        with qtbot.waitSignal(selector.refreshed, timeout=1000):
+            selector._accept_source(nodes[1].uid)
+        dialog.accept()
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+        child = manager._node_for_target(source_index)._childtool_indices[-1]
+        xr.testing.assert_identical(
+            manager._child_node(child).data_for_role("source"), data.interp(x=target.x)
+        )
+        assert all(node.imagetool is None for node in nodes)
+        assert all(
+            not node._workspace_reference_datasets
+            for node in nodes
+            if node is not nodes[1]
+        )
 
 
 def test_manager_interpolation_dialog_workspace_reload_and_target_refresh(
