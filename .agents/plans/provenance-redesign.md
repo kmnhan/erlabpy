@@ -43,13 +43,15 @@ matches a slot or notebook name. The operation type registered by installed
 code determines the callable. The saved record contains its stable type and
 fields. The call description is derived from those fields.
 
-For example, this is the entire proposed numerical definition for the existing
-concatenation operation. `call` and `slot` illustrate the interface.
+For example, this is the proposed binding for the existing concatenation
+operation. In this sketch, `Call` and `InputRef` are plain records. Constructing
+them performs no calculation.
 
 ```python
 def invocation(self):
-    arrays = [slot("data"), *(slot(name) for name in self.input_slots())]
-    return call(xr.concat, arrays, **self.kwargs)
+    names = ("data", *self.input_slots())
+    arrays = [InputRef(name) for name in names]
+    return Call(function=xr.concat, args=(arrays,), kwargs=self.kwargs)
 ```
 
 If the bindings are A₀, B₀, A₀, execution passes those three arrays to
@@ -78,6 +80,31 @@ its existing public-behavior examples to the shared test described below. A
 future built-in of the same form supplies only its definition and fixtures.
 [Operation catalog](../../src/erlab/interactive/imagetool/_provenance/_operations) ·
 [Operation registration and serialization](../../src/erlab/interactive/imagetool/_provenance/_model.py)
+
+### Python readability is an acceptance criterion
+
+Centralize the meaning of inputs, execution, and publication in
+`erlab._provenance`. Keep numerical algorithms in their natural domain modules
+and UI choices in ordinary Qt code. Use explicit parameters, named functions,
+normal imports, and small typed records where they clarify ownership. A few
+similar lines of UI wiring are acceptable. Each abstraction must remove a real
+decision that callers would otherwise have to repeat.
+
+For built-in operations, reject expression strings passed as arguments, overloaded
+operators used to construct a hidden language, caller-frame inspection, runtime
+monkey-patching, and generating Python text to execute the live calculation.
+Stored user programs have their own explicit execution and trust boundary.
+If a port needs branching, write a normal Python function with that branching.
+If a backend has a genuinely different calling convention, use a small named
+adapter with a direct call.
+
+Review a representative port and its emitted notebook Python next to the
+equivalent handwritten calculation. A reviewer must be able to follow the inputs,
+the actual callable, its result, and its publication using ordinary Python
+control flow. The exported code should be something a user could write with the
+public API. A port that needs a private language or obscures these steps fails
+review even if the tests pass. [Repository code contracts](../../AGENTS.md#code-contracts) ·
+[Generated-code conventions](../generated-code.md)
 
 ## Where inputs and execution come from
 
@@ -182,6 +209,43 @@ Paired timing and peak-memory measurements are pending for the new framework.
 [Graph tests](../../tests/test_provenance_graph.py) ·
 [Pending previews](../../tests/interactive/imagetool/manager/workspace/test_pending_preview.py) ·
 [Workspace storage](../../tests/interactive/imagetool/manager/workspace/test_storage.py)
+
+## Finding and retiring the old paths
+
+The operation registry covers *what* can run. To find *who else decides*,
+trace the code in both directions during the framework milestone. Use that
+inventory to check the command and query interfaces before migrating callers.
+
+1. Start at user and API entry points. Follow actions, Qt signals, notebook and
+   server ingress, ToolWindow and worker callbacks, workspace restore, and
+   clipboard and code export through to the displayed or returned result.
+   Trace read paths too, including enabled states, badges, and historical editors.
+2. Work backward from where managed data is installed or replaced, dependencies
+   are chosen, specs are read or written, and code is replayed or emitted.
+   Search the repository beyond the provenance packages. Follow delegates and
+   plugin callbacks to their callers. This direction also catches an action that
+   changes an array without mentioning provenance.
+3. Reconcile the two lists. For each distinct route, record the entry point,
+   the decision and its current owner, its destination in the new design, and
+   the public-behavior test. Group aliases only after verifying that they reach
+   the same decision. Keep this short migration map in the plan or change under
+   review. It is a work list and has no role in runtime dispatch.
+
+The rebased foundation contains these two examples of independent decisions.
+
+| Route | Current decision | Evidence needed to retire it |
+| --- | --- | --- |
+| Reload from an ImageTool or from the Manager | The viewer also checks availability and can choose a direct loader or its local provenance. | For a managed row, exercise both actions with a viable but conflicting local loader. Check that each action uses the graph-selected origin once and explains unavailability consistently. Exercise standalone Reload separately. [Viewer reload paths](../../src/erlab/interactive/imagetool/viewer.py) |
+| Paste Provenance Steps | The edit controller branches on tree parent and displayed source spec to choose how to apply the pasted step. | Paste the same metadata edit into stale child and top-level results. Both must use the old displayed values, copy those values, and refresh from the new binding. [Paste controller](../../src/erlab/interactive/imagetool/manager/_provenance_edit/_controller.py) |
+
+For each migrated route, drive its real entry point with the legacy decision
+disabled or contradicted *before* the action. Assert the expected data, recorded
+inputs, and next bindings. Delete the old decision or name the remaining
+standalone, import, or export consumer. Extend the existing dependency tests
+with a narrow check for retired legacy entry points so a new caller cannot
+quietly reintroduce them. Before switching the default, repeat the reverse
+search and account for every remaining legacy decision and managed writer.
+[Existing module-boundary tests](../../tests/interactive/imagetool/test_module_split.py)
 
 ## Manager integration
 
