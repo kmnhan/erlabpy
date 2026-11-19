@@ -206,6 +206,22 @@ single-dot sibling imports. The `__init__.pyi` files read by
   implementation is on the local `dev-provenance-extension-candidate` branch.
   Its measured time and memory costs keep this milestone open.
 
+### Verification of the integration
+
+The complete PyQt6 run on `3c337ad8` passed 11,767 tests and skipped 14.
+One test failed. Restoring an old Dataset selection and reloading it kept the
+numerical selection index in the window state. Commit `ac288957` installs
+the variable name resolved by the actual load. All 616 tests in the viewer
+module then passed. Twelve related file and Reload cases passed under both
+Qt bindings. The source-capture change passed 2,271 Manager, workspace and
+interactive utility tests with five skips.
+
+The experimental branch passed 919 extension, graph, replay and clipboard
+tests under each Qt binding. A minimal frozen macOS arm64 executable used the
+Manager startup sequence and reproduced both an eager result and three deferred
+chunks in a child process. The full standalone GUI bundle and other operating
+systems still need separate checks.
+
 ### Operation and replay inventory
 
 The [porting inventory](../../tests/interactive/imagetool/provenance_ports.csv)
@@ -288,6 +304,26 @@ peak memory on the same Manager workload. Keep its performance work open.
 [Graph tests](../../tests/test_provenance_graph.py) ·
 [Pending previews](../../tests/interactive/imagetool/manager/workspace/test_pending_preview.py) ·
 [Workspace storage](../../tests/interactive/imagetool/manager/workspace/test_storage.py)
+
+### Pending windows and live inputs
+
+A real workspace test on the ordinary integration used 1,000 and 10,000 pending
+rows and one active interpolation. Each of four Refresh commands ran the
+interpolation once, produced the expected data, and opened zero unrelated
+datasets. Opening details for a pending row read its coordinates and its
+16 × 16 preview. The other rows stayed unloaded.
+
+Opening the interpolation target chooser still reads coordinates for every
+pending candidate. At 1,000 rows this took 6.30 s on main and 6.55 s on the
+redesign. Both versions exceeded 70 s at 10,000 rows. The chooser kept the
+windows unloaded. Future selector work should measure dataset opens as well
+as window creation.
+
+Replacing both inputs during cursor activity exposed a second conversion to
+public array layout during graph capture. The Manager now reuses the array
+from the source-change signal and applies the same ownership and metadata
+rules. Across 24 replacements it removed 24 conversions under each Qt binding.
+Both versions still made the 24 copies needed to protect those input revisions.
 
 ### Extension measurements
 
