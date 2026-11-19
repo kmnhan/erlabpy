@@ -106,6 +106,23 @@ public API. A port that needs a private language or obscures these steps fails
 review even if the tests pass. [Repository code contracts](../../AGENTS.md#code-contracts) ·
 [Generated-code conventions](../generated-code.md)
 
+**Imports.** Use explicit absolute imports in implementation and test `.py`
+files touched by the rewrite. Prefer `import erlab` for public APIs exposed
+through `lazy_loader`, and resolve the qualified callable when the operation
+needs it. For private dependencies, import from the owning module by its full
+name. Keep type-only dependencies under `typing.TYPE_CHECKING` where appropriate.
+Qt adapters import top-level modules from `qtpy`, such as
+`from qtpy import QtCore, QtWidgets`. The provenance core must import and run
+with Qt blocked. Preserve Ruff's import sorting and the cold-import tests.
+[Repository import conventions](../../AGENTS.md#code-contracts) ·
+[Qt code standards](../../docs/source/contributing/development.md#code-standards)
+
+Run `prek run absolute-package-imports --all-files` for package code. Run
+`uv run ruff check --select TID252 --config 'lint.flake8-tidy-imports.ban-relative-imports="all"'`
+with the affected rewrite test file paths as arguments. This also catches
+single-dot sibling imports. The `__init__.pyi` files read by
+`lazy_loader.attach_stub` use its required relative export declarations.
+
 ## Where inputs and execution come from
 
 - **Arrays and files.** An incoming array establishes a source revision. A file
