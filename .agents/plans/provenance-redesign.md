@@ -225,14 +225,27 @@ The file-copy and extension-loader regressions also passed under PySide6.
 The experimental branch passed 919 extension, graph, replay and clipboard
 tests under each Qt binding. A minimal frozen macOS arm64 executable used the
 Manager startup sequence and reproduced both an eager result and three deferred
-chunks in a child process. The full standalone GUI bundle and other operating
-systems still need separate checks.
+chunks in a child process. A subsequent test at `229a98a8` built the full
+macOS arm64 Manager app with the release spec and a non-editable install.
+The packaged Manager loaded a file through IPC, queued both extensions, and
+replayed their saved applications. The worker saw the recorded setting at
+import, invocation and deferred evaluation. Eager and chunked results matched
+the expected values and attributes. The Manager and worker both exited.
+Windows and Intel macOS remain unverified.
 
 After the file and chooser changes, 860 experimental extension, graph, replay
 and I/O tests passed under PyQt6. All 81 graph tests then passed with the
 final numeric ownership optimization. The resulting combined selection passed
 861 tests under PySide6. Both branches passed Ruff, mypy, import checks, the
 test partition check and the HTML documentation build.
+
+At `2364f80a`, the file, replay and clipboard selection passed 644 tests
+under each Qt binding. The experimental branch at `7ec66d52` passed 951
+tests per binding with the Manager extension suite included. The workspace
+suite passed 1,517 tests with five skips per binding on the initial rollback
+change. The final rollback-specific selection passed again after restricting
+capture to restorable branches. Both integrated branches passed Ruff, package
+import checks, mypy, the test partition check and the HTML documentation build.
 
 ### Operation and replay inventory
 
@@ -325,6 +338,26 @@ interpolation once, produced the expected data, and opened zero unrelated
 datasets. Opening details for a pending row read its coordinates and its
 16 × 16 preview. The other rows stayed unloaded.
 
+A separate save and reopen test kept two inputs, one interpolated child and
+1,000 hidden rows with shared data. Across six cycles per revision, median
+save and reopen times were 0.97 s and 18.25 s on main and 0.93 s and 17.19 s
+at `1e12fdbe`. Both stored 5,888 array bytes in 12 distinct datasets. Each
+compacted file occupied about 7.34 MiB with its per-row metadata. Median
+reopen peak RSS was 586 MiB on main and 585 MiB on the integration. Both
+released all fixture file handles when the Manager closed.
+
+Replacing an unassociated, dirty, or same-file document uses a separate
+rollback backup. Its earlier serializer opened one window per pending image.
+With 1,000 shared rows the run reached 3.42 GiB RSS and was stopped after
+9 min 12 s. The revised backup reads shared HDF5 variables once, keeps the
+per-row settings and can restore the captured arrays if their file changes.
+At `38995b85`, a 1,000-row replacement completed in 21.00 s with a
+14.67 MiB peak RSS increase. It read 2,304 array bytes and opened zero
+pending windows. The 128-row case took 1.65 s and 5.08 MiB. On pre-redesign
+main the same case took 24.00 s and 674.83 MiB. The native writer shares a
+complete set of variables. Imported layouts that share only some variables
+still require independent reads.
+
 The interpolation chooser reads coordinates on demand. Rows that reference the
 same saved payload and equivalent displayed coordinates share one eligibility
 check per pass. With 10,000 differently named, unfiltered rows referencing one
@@ -355,6 +388,55 @@ as `target`. The median tile read took 6.36 ms on main and 7.31 ms on the
 integration. Traced peak memory fell by about 1 MiB for both interpolation
 workloads and rose by about 16 KiB for the selected tile.
 
+Copied file selections now transfer the open Dataset, DataTree or sequence to
+the returned DataArray. Calling `close()` on 16 results from 16 files released
+all 16 file descriptors while the notebook still held the arrays. The earlier
+export at `6c3545e7` retained all 16 until the arrays were dropped. Both
+unchunked and chunked reads passed this check.
+
+At `873afce6`, selecting one float64 cell in newly copied code requested eight
+logical bytes. The file used 8 KiB HDF5 chunks. Two paired comparisons with
+pre-redesign main measured 6.21 versus 7.14 ms for a complete tile and
+6.19 versus 7.16 ms for a cell. Coordinate-only interpolation read no target
+signal values and took 7.11 versus 6.58 ms. The verified reader distinguishes
+variables and DataTree nodes even if both nodes use the same variable name.
+Both the notebook exporter and its emitted code ran on xarray 2024.10.0 and
+Dask 2024.4.1 at `1c1989cd`. A joint computation returned the correct value
+from each group.
+
+Four further process pairs compared the original Manager at `9b62b1e3`
+with the integrated code at `38995b85`. Eager interpolation took 7.82 and
+6.82 ms, respectively. The paired median difference for a tile was −0.08 ms
+(range −0.32 to +0.97). For a cell it was +0.54 ms (−0.17 to +0.97).
+Both returned eight logical bytes for a cell. Traced peak allocation for
+the integration was 2.0 KiB higher for the cell and about 1 MiB lower
+for both interpolations.
+
+The live and notebook readers at `160a75c2` install the version check before
+Dask constructs native xarray storage chunks or eligible automatic chunks.
+A 16.25 GiB logical float32 file was larger than the host's 16 GiB of RAM.
+Both the live viewer and executed notebook read 264,196 bytes for its
+257 × 257 plane. With storage chunks, the previous live reader had requested
+67,634,176 bytes for the same plane. Metadata, previews and publishing the
+interpolation read zero signal values. Before the redesign, publishing that
+result requested an eager load of all 16.25 GiB, which the harness stopped.
+
+The built-in chunked HDF5 filter uses automatic chunking. With its default
+128 MiB Dask setting, both the old and new renderers requested 877,205,520
+signal bytes to open the viewer. A subsequent plane took 16 reads and returned
+264,196 bytes. The new reader preserved the same normalized chunks across
+two Dask size settings, retained no file handles after closing, and kept
+different DataTree groups distinct on the minimum supported dependencies.
+At `2364f80a`, xarray selects the automatic chunk sizes and opens mixed-type
+files once. For a 128-variable file containing a string variable, three
+paired runs measured 1.4–3.1% more CPU and 53,656 more bytes of peak traced
+Python allocation than an unchecked native xarray open. Copying one selected
+variable from a 128-variable file took 155.03 ms on the integration and
+155.44 ms on the earlier checked reader at `873afce6`.
+Non-native readers and arbitrary already-built Dask arrays keep their original
+task graphs and verify the file after each block. A narrow slice of those
+arrays can still read the full intersecting chunks.
+
 The callback ownership benchmark compared mutable and numeric indexes at
 `d86aa722` and `e5ae4297`.
 With 32 mutable Python index labels, a correct derivation took 309 µs and
@@ -369,6 +451,28 @@ graph at `d7c4329b`, the integrated numeric derivations took about 9–13 µs
 more CPU and 0.9–1.0 KiB more peak allocation. The two implementations each
 retained 64 traced bytes after closing the complete graph. Stage 2 also let
 the mutable callback change the caller's original index.
+
+### Eager source ownership
+
+On a 64 MiB signal with a 16 MiB auxiliary coordinate, both main and the
+integration copied each buffer once when first recording an interpolation
+input. Metadata inspection, plane selection and two repeat submissions made
+no additional full-buffer copies. The saved revision remained correct when
+the producer immediately overwrote its buffers. The live source window
+could show the new data under the old revision token. With an accepted filter,
+its displayed values could stay fixed while the auxiliary coordinate changed.
+Refresh then used the earlier revision.
+
+Giving the unfiltered live window another private array preserved both the
+original display and its history when the producer wrote again. A trial took
+12 ms and added 80.06 MiB RSS for these two buffers. Pointing the window at
+the historical array allowed a direct write to `slicer_area.data.values`
+to change history. The private-copy trial did not meet the memory criterion.
+On the macOS test host, POSIX shared memory rejected a private mapping.
+An unlinked file allowed independent writes. Creating its mappings took
+78–135 ms, used 80 MiB of filesystem space and required another 80 MiB of
+physical memory after the viewer overwrote all values. The writable viewer
+interfaces and their ownership need a decision before this case can pass.
 
 ### Extension measurements
 
