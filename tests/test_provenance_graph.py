@@ -1886,7 +1886,8 @@ def test_checkpoint_reuses_only_immutable_numeric_values():
         assert source.attrs == {"groups": [1]}
 
 
-def test_public_read_detaches_objects_in_deferred_results(graph):
+@pytest.mark.parametrize("structured", [False, True])
+def test_public_read_detaches_objects_in_deferred_results(graph, structured):
     import dask.array as da
     from dask import delayed
 
@@ -1896,15 +1897,21 @@ def test_public_read_detaches_objects_in_deferred_results(graph):
 
         def apply(self, data):
             # One durable delayed task can hand out the same Python objects.
-            values = np.array([{"scan": [data.item()]}], dtype=object)
+            values = (
+                np.array([([data.item()],)], dtype=[("scan", object)])
+                if structured
+                else np.array([{"scan": [data.item()]}], dtype=object)
+            )
             return xr.DataArray(
-                da.from_delayed(delayed(lambda: values)(), shape=(1,), dtype=object)
+                da.from_delayed(
+                    delayed(lambda: values)(), shape=(1,), dtype=values.dtype
+                )
             )
 
     graph.add_source("A", xr.DataArray(12))
     revision = graph.derive("B", Recipe.bind(DeferredObjects(), Follow("A")))
     graph.data(revision).values[0]["scan"].clear()
-    assert graph.data(revision).values[0] == {"scan": [12]}
+    assert graph.data(revision).values[0]["scan"] == [12]
 
 
 @pytest.mark.parametrize("size", [1000, 10000])

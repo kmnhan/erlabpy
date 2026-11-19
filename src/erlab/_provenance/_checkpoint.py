@@ -115,13 +115,16 @@ def _owned_index(index: pd.Index) -> pd.Index:
     return type(index)(values, name=index.name)
 
 
-def _own_index_data(data: xr.DataArray) -> xr.DataArray:
+def _own_index_data(
+    data: xr.DataArray, *, copy_object_chunks: bool = False
+) -> xr.DataArray:
     """Detach pandas index members and xarray's linked coordinate metadata."""
     variable = data.variable
     coordinates = data.coords.variables
-    has_objects = variable.dtype.kind == "O"
+    # Dask blocks with structured dtypes may also contain Python objects.
+    has_objects = variable.dtype.kind in {"O", "V"}
     for coord in coordinates.values():
-        has_objects |= coord.dtype.kind == "O"
+        has_objects |= coord.dtype.kind in {"O", "V"}
         if isinstance(coord, xr.IndexVariable):
             # Xarray recreates coordinate variables from their index and reuses
             # nested metadata even when the DataArray copy requests deep=True.
@@ -132,6 +135,12 @@ def _own_index_data(data: xr.DataArray) -> xr.DataArray:
     if not has_objects:
         return data
     for item in (variable, *coordinates.values()):
+        if copy_object_chunks and item.chunks is not None and item.dtype.hasobject:
+            # Dask's final NumPy copy of a computed object array is shallow.
+            array = item.data
+            item.data = array.map_blocks(
+                copy.deepcopy, dtype=array.dtype, meta=array._meta
+            )
         if item.dtype.kind != "O" or isinstance(item, xr.IndexVariable):
             continue
         if isinstance(item.dtype, pd.CategoricalDtype):
@@ -167,15 +176,7 @@ def _own_index_data(data: xr.DataArray) -> xr.DataArray:
 
 def editable_data(data: xr.DataArray) -> xr.DataArray:
     """Give the caller independent values, coordinates, and nested metadata."""
-    result = _own_index_data(data.copy(deep=True))
-    for variable in (result.variable, *(c.variable for c in result.coords.values())):
-        if variable.chunks is not None and variable.dtype.hasobject:
-            # Dask's final NumPy copy of a computed object array is shallow.
-            array = variable.data
-            variable.data = array.map_blocks(
-                copy.deepcopy, dtype=array.dtype, meta=array._meta
-            )
-    return result
+    return _own_index_data(data.copy(deep=True), copy_object_chunks=True)
 
 
 def _guard_file_variables(data: xr.DataArray, backing: FileVersion) -> xr.DataArray:
