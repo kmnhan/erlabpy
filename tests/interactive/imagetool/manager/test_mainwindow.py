@@ -109,8 +109,7 @@ from erlab.interactive.imagetool.manager._widgets import (
     _WorkspacePropertiesDialog,
     _WorkspacePropertiesState,
 )
-
-from .helpers import (
+from tests.interactive.imagetool.manager.helpers import (
     _exec_generated_code,
     activate_widget_shortcut,
     assert_nonempty_tooltip,
@@ -11288,3 +11287,564 @@ def test_manager_output_itool_auto_update_can_be_disabled_from_auto_badge(
         qtbot.wait_until(lambda: child.source_state == "fresh", timeout=5000)
         qtbot.wait_until(lambda: output_node.source_state == "stale", timeout=5000)
         xr.testing.assert_identical(fetch(output_uid), refreshed_output)
+
+
+@pytest.mark.parametrize("placement", ["nest", "detach", "replace"])
+def test_graph_interpolation_uses_historical_grid_until_refresh(
+    qtbot, manager_context, monkeypatch, placement
+) -> None:
+    grid = xr.DataArray(
+        np.zeros((2, 2)),
+        dims=("x", "y"),
+        coords={"x": [0.25, 1.5], "y": [0.0, 1.0]},
+        name="grid",
+    )
+    spectrum = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0, 2.0], "y": [0.0, 1.0]},
+        name="spectrum",
+    )
+    new_grid = grid.assign_coords(x=[0.75, 1.25])
+    expected = spectrum.interp_like(grid)
+    with manager_context() as manager:
+
+        def add(value):
+            index = manager.add_imagetool(
+                itool(value, manager=False, execute=False), show=False
+            )
+            return manager._node_for_target(index)
+
+        source = add(spectrum)
+        target = add(grid)
+        graph = manager._operations.graph
+        # Contradict the previous input chooser before the user submits the command.
+        from unittest.mock import Mock
+
+        old_chooser = Mock(return_value=full_data(RenameOperation(name="wrong")))
+        monkeypatch.setattr(manager, "_multi_input_operation_provenance", old_chooser)
+        dialog = imagetool_dialogs.InterpolationDialog(source.slicer_area)
+        qtbot.addWidget(dialog)
+        dialog.target_tabs.setCurrentIndex(1)
+        dialog.target_tool_selector.set_current_uid(target.uid)
+        dialog.launch_mode_combo.setCurrentIndex(
+            dialog.launch_mode_combo.findData(placement)
+        )
+        dialog.accept()
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+        old_chooser.assert_not_called()
+        if placement == "nest":
+            uid = source._childtool_indices[0]
+        elif placement == "detach":
+            uid = manager._node_for_target(2).uid
+        else:
+            uid = source.uid
+        node = manager._node_for_target(uid)
+        original = graph.current_revision(uid)
+        used = dict(graph.revision(original).producer.inputs)
+        assert used["target"] == graph.current_revision(target.uid)
+        assert graph.entry(uid).parent_id == (
+            source.uid if placement == "nest" else None
+        )
+        xr.testing.assert_identical(node.data_for_role("source"), expected)
+        target.slicer_area.replace_source_data(new_grid)
+        qtbot.wait_until(lambda: graph.is_stale(uid))
+        current = graph.current_revision(target.uid)
+        assert dict(graph.next_inputs(uid))["target"] == current != used["target"]
+        # History, editing and copying must describe the displayed application.
+        node._provenance_spec = full_data(RenameOperation(name="wrong"))
+        manager._set_metadata_node(node)
+        assert not manager.next_inputs_box.isHidden()
+        assert current[:8] in manager.next_inputs_text.text()
+        used_rows = manager._details_panel._current_derivation_display_rows(node)[
+            0
+        ].children
+        assert used["target"][:8] in used_rows[1].entry.label
+        assert not manager.update_auto_check.isChecked()
+
+        from erlab.interactive.imagetool.manager._console import ToolsNamespace
+
+        sources = {}
+
+        def name_checkpoint(key, _reserved):
+            name = next(slot for slot, rev in used.items() if key == rev)
+            sources[name] = ToolsNamespace(manager).checkpoint(key)
+            return name
+
+        copied = []
+        monkeypatch.setattr(manager._details_panel, "_checkpoint_name", name_checkpoint)
+        monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)
+        manager._copy_full_derivation_code()
+        xr.testing.assert_identical(
+            _exec_generated_code(copied[0], sources)["interpolated"], expected
+        )
+
+        inspected = []
+
+        def inspect_edit(editor):
+            inspected.append(editor._target_data())
+            xr.testing.assert_identical(editor._source_data, spectrum)
+            editor.method_combo.setCurrentText("nearest")
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        monkeypatch.setattr(imagetool_dialogs.InterpolationDialog, "exec", inspect_edit)
+        item = next(
+            manager.metadata_derivation_list.topLevelItem(index)
+            for index in range(manager.metadata_derivation_list.topLevelItemCount())
+            if manager.metadata_derivation_list.topLevelItem(index)
+            .text(0)
+            .startswith("Interpolate Like(")
+        )
+        manager.metadata_derivation_list.setCurrentItem(item)
+        manager._edit_selected_derivation_step()
+        xr.testing.assert_identical(inspected[0], grid)
+        xr.testing.assert_identical(
+            node.data_for_role("source"), spectrum.interp_like(grid, method="nearest")
+        )
+        assert graph.is_stale(uid)
+        assert graph.revision(graph.current_revision(uid)).producer.inputs == tuple(
+            used.items()
+        )
+        manager._set_metadata_node(node)
+        manager.refresh_revision_button.click()
+        assert not graph.is_stale(uid)
+        xr.testing.assert_identical(
+            node.data_for_role("source"),
+            spectrum.interp_like(new_grid, method="nearest"),
+        )
+        assert (
+            dict(graph.revision(graph.current_revision(uid)).producer.inputs)["target"]
+            == current
+        )
+
+
+def test_manager_graph_replace_and_refresh_arithmetic(
+    manager_context, monkeypatch
+) -> None:
+    from erlab._provenance._calls import Call, CallOperation, InputRef
+
+    # Keep the two numerical fixtures local to this test's registry.
+    monkeypatch.setattr(
+        provenance_model, "_OPERATION_TYPES", dict(provenance_model._OPERATION_TYPES)
+    )
+
+    class ScaleByTwo(CallOperation):
+        op: typing.Literal["test_manager_scale"] = "test_manager_scale"
+
+        def invocation(self):
+            return Call.function(np.multiply, args=(InputRef("data"), 2))
+
+        def derivation_label(self):
+            return "Multiply by two"
+
+    class AddArrays(CallOperation):
+        op: typing.Literal["test_manager_add"] = "test_manager_add"
+
+        def input_slots(self):
+            return ("other",)
+
+        def invocation(self):
+            return Call.function(np.add, args=(InputRef("data"), InputRef("other")))
+
+        def derivation_label(self):
+            return "Add arrays"
+
+    def window(array):
+        return itool(array, manager=False, execute=False)
+
+    def values(x, y):
+        return xr.DataArray(
+            [[x, y], [x, y]], dims=("x", "y"), coords={"x": [0.0, 1.0], "y": [0.0, 1.0]}
+        )
+
+    a, b = values(10.0, 20.0), values(1.0, 2.0)
+    with manager_context() as manager:
+        first = manager._node_for_target(manager.add_imagetool(window(a), show=False))
+        second = manager._node_for_target(manager.add_imagetool(window(b), show=False))
+        ops = manager._operations
+        graph = ops.graph
+        result = ops.submit(
+            ScaleByTwo(),
+            {"data": second.uid},
+            placement="nest",
+            make_window=window,
+            output_name="twice",
+        )
+        b0 = graph.current_revision(second.uid)
+        c0 = graph.current_revision(result)
+        xr.testing.assert_identical(graph.data(c0), values(2.0, 4.0))
+        ops.submit(
+            AddArrays(),
+            {"data": second.uid, "other": first.uid},
+            placement="replace",
+            make_window=window,
+            output_name="total",
+        )
+        b1 = graph.current_revision(second.uid)
+        assert graph.revision(b1).producer.inputs == (
+            ("data", b0),
+            ("other", graph.current_revision(first.uid)),
+        )
+        xr.testing.assert_identical(second.data_for_role("source"), values(11.0, 22.0))
+        b.values[:] = -1
+        assert graph.revision(c0).producer.inputs == (("data", b0),)
+        assert graph.next_inputs(result) == (("data", b1),)
+        node = manager._node_for_target(result)
+        manager._set_metadata_node(node)
+        namespace = {}
+
+        def source_name(key, _reserved):
+            assert key == b0
+            namespace["original_b"] = graph.data(key)
+            return "original_b"
+
+        copied = []
+        monkeypatch.setattr(manager._details_panel, "_checkpoint_name", source_name)
+        monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)
+        with xr.set_options(keep_attrs=False):
+            manager._copy_full_derivation_code()
+            exec(copied[0], namespace)  # noqa: S102
+        xr.testing.assert_identical(namespace["twice"], values(2.0, 4.0))
+        manager.refresh_revision_button.click()
+        xr.testing.assert_identical(node.data_for_role("source"), values(22.0, 44.0))
+        assert graph.revision(graph.current_revision(result)).producer.inputs == (
+            ("data", b1),
+        )
+
+
+def test_copy_full_code_preserves_cancelling_float32_coordinate_offsets(
+    qtbot, manager_context, monkeypatch
+):
+    source = xr.DataArray(
+        np.arange(8.0).reshape(2, 4),
+        dims=("x", "y"),
+        coords={"x": [0, 1], "y": np.arange(4, dtype=np.float32) * 1e-6, "ref": 21.2},
+        name="sample",
+    )
+    with manager_context() as manager:
+        tool = itool(source, manager=False, execute=False)
+        manager.add_imagetool(tool, show=False)
+        tool.set_provenance_spec(
+            provenance_model.script(
+                start_label="Sample",
+                seed_code="derived = sample",
+                active_name="derived",
+            )
+        )
+        dialog = imagetool_dialogs.AssignCoordsDialog(tool.slicer_area)
+        qtbot.addWidget(dialog)
+        dialog.restore_transform_operation(
+            AffineCoordOperation(
+                coord_name="y",
+                scale=1,
+                offset=21.2,
+                offset_coord="ref",
+                offset_coord_sign=-1,
+            )
+        )
+        dialog.launch_mode_combo.setCurrentIndex(
+            dialog.launch_mode_combo.findData("detach")
+        )
+        dialog.accept()
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+        published = manager.get_imagetool(1).slicer_area.data
+        np.testing.assert_array_equal(published.y.values, source.y.values)
+        node = manager._node_for_target(1)
+        manager.tree_view.clearSelection()
+        select_tools(manager, [1])
+        manager._update_info(uid=node.uid)
+        copied = []
+        monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)
+        manager._copy_full_derivation_code()
+        namespace = _exec_generated_code(copied[0], {"sample": source.copy(deep=True)})
+        replayed = [
+            array
+            for name, array in namespace.items()
+            if name != "sample" and isinstance(array, xr.DataArray)
+        ]
+        assert len(replayed) == 1
+        assert replayed[0].y.dtype == np.float32
+        xr.testing.assert_identical(replayed[0], published)
+
+
+def test_manager_failed_graph_install_restores_prerequisites(
+    manager_context, monkeypatch
+) -> None:
+    def window(array):
+        return itool(array, manager=False, execute=False)
+
+    source = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0, 2.0], "y": [0.0, 1.0, 2.0, 3.0]},
+    )
+    grid = source.isel(x=[0, 2], y=[0, 2])
+    with manager_context() as manager:
+        data_uid = manager._node_for_target(
+            manager.add_imagetool(window(source), show=False)
+        ).uid
+        grid_node = manager._node_for_target(
+            manager.add_imagetool(window(grid), show=False)
+        )
+        ops = manager._operations
+
+        def interpolate(source_uid):
+            return ops.submit(
+                InterpolationFromInputOperation(),
+                {"data": source_uid, "target": grid_node.uid},
+                placement="detach",
+                make_window=window,
+                output_name="interpolated",
+            )
+
+        first = interpolate(data_uid)
+        second = interpolate(first)
+        grid_node.slicer_area.replace_source_data(
+            grid.assign_coords(x=[0.25, 1.75], y=[0.5, 2.5])
+        )
+        assert ops.graph.is_stale(first)
+        assert ops.graph.is_stale(second)
+        revisions = [ops.graph.current_revision(uid) for uid in (first, second)]
+        captured = manager._provenance_revisions.revision_ids
+
+        def reject_data(*_args, **_kwargs):
+            raise ValueError("Viewer rejected the update")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                manager._node_for_target(second),
+                "replace_with_detached_data",
+                reject_data,
+            )
+            with pytest.raises(ValueError, match="Viewer rejected"):
+                ops.graph.refresh(second)
+        assert manager._provenance_revisions.revision_ids == captured
+        for uid, revision in zip((first, second), revisions, strict=True):
+            assert ops.graph.current_revision(uid) == revision
+            assert ops.graph.is_stale(uid)
+            node = manager._node_for_target(uid)
+            assert node.current_revision_id == revision
+            xr.testing.assert_identical(
+                node.data_for_role("source"), ops.graph.data(revision)
+            )
+        ops.update(second)
+        assert not ops.graph.is_stale(first)
+        assert not ops.graph.is_stale(second)
+
+
+def test_managed_file_operand_keeps_lazy_checkpoint_and_reloads_origin(
+    qtbot, manager_context, tmp_path, monkeypatch, request, accept_dialog
+) -> None:
+    from xarray.backends.h5netcdf_ import H5NetCDFArrayWrapper
+
+    from erlab._provenance import FileLoad
+    from erlab.interactive.imagetool.manager._io import _MultiFileHandler
+
+    grid = xr.DataArray(
+        np.arange(48.0).reshape(6, 8),
+        dims=("x", "y"),
+        coords={"x": np.arange(6.0), "y": np.arange(8.0)},
+        name="grid",
+    )
+    path = tmp_path / "grid.h5"
+    grid.to_netcdf(path, engine="h5netcdf", encoding={"grid": {"chunksizes": (2, 4)}})
+    with manager_context() as manager:
+        option = "io/dask/compute_threshold"
+        previous = erlab.interactive.options[option]
+        request.addfinalizer(lambda: erlab.interactive.options.set(option, previous))
+        erlab.interactive.options[option] = 0
+        handler = _MultiFileHandler(
+            manager, [path], xr.open_dataarray, {"engine": "h5netcdf", "chunks": {}}
+        )
+        with qtbot.waitSignal(handler.sigFinished, timeout=10000):
+            handler.start()
+        assert handler.loaded == [path]
+        node = manager._node_for_target(0)
+
+        sample = itool((2 * grid).rename("sample"), manager=False, execute=False)
+        manager.add_imagetool(sample, show=False)
+        dialog = imagetool_dialogs.InterpolationDialog(sample.slicer_area)
+        qtbot.addWidget(dialog)
+        dialog.target_tabs.setCurrentIndex(1)
+        dialog.target_tool_selector.set_current_uid(node.uid)
+
+        reads = []
+        read_chunk = H5NetCDFArrayWrapper._getitem
+
+        def record(self, key):
+            reads.append(self.variable_name)
+            return read_chunk(self, key)
+
+        monkeypatch.setattr(H5NetCDFArrayWrapper, "_getitem", record)
+        # The displayed file binding was captured at open. An obsolete local
+        # loader and spec must not choose either the submitted or reloaded data.
+        node.slicer_area._load_func = None
+        node.set_displayed_provenance(None)
+        dialog.accept()
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+        graph = manager._operations.graph
+        old = graph.current_revision(node.uid)
+        assert "grid" not in reads
+        assert isinstance(graph.revision(old).producer, FileLoad)
+        assert graph.data(old).chunks is not None
+        values = graph.data(old)
+        xr.testing.assert_identical(values.isel(x=0).compute(), grid.isel(x=0))
+
+        copied = []
+        monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)
+        manager._set_metadata_node(node)
+        manager._copy_full_derivation_code()
+        assert "open_dataarray" in copied[0]
+        copied_grid = _exec_generated_code(copied[0], {})["derived"]
+        xr.testing.assert_identical(copied_grid, grid)
+
+        changed_path = tmp_path / "changed.h5"
+        (grid + 2).rename("grid").to_netcdf(changed_path, engine="h5netcdf")
+        changed_path.replace(path)
+        with pytest.raises(OSError, match="has changed"):
+            values.compute()
+
+        def check_unavailable(dialog: QtWidgets.QMessageBox) -> None:
+            assert str(path) in dialog.text()
+            assert "has changed" in dialog.text()
+            assert "Refresh" in dialog.text()
+            dialog.accept()
+
+        accept_dialog(manager._copy_full_derivation_code, accept_call=check_unavailable)
+        node.slicer_area.reload()
+        new = graph.current_revision(node.uid)
+        assert new != old
+        assert graph.revision(new).backing == node.slicer_area._file_backing
+        assert node.slicer_area._file_path == path
+        xr.testing.assert_identical(node.data_for_role("displayed").compute(), grid + 2)
+        path.unlink()
+        assert not node.slicer_area.reloadable
+        assert str(path) in node.slicer_area._reload_unavailable_reason()
+
+
+def test_manager_repeated_graph_refresh_releases_superseded_payloads(
+    manager_context,
+) -> None:
+    def window(array):
+        return itool(array, manager=False, execute=False)
+
+    grid = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0, 2.0], "y": [0.0, 1.0, 2.0, 3.0]},
+    )
+    with manager_context() as manager:
+        data = manager._node_for_target(manager.add_imagetool(window(grid), show=False))
+        target = manager._node_for_target(
+            manager.add_imagetool(window(grid.isel(x=[0, 2])), show=False)
+        )
+        ops = manager._operations
+        result = ops.submit(
+            InterpolationFromInputOperation(),
+            {"data": data.uid, "target": target.uid},
+            placement="detach",
+            make_window=window,
+            output_name="interpolated",
+        )
+        store = manager._provenance_revisions
+        node = manager._node_for_target(result)
+        # A different owner can keep an immutable checkpoint for its own use.
+        claimed = node.revision_id_for_role("source")
+        original = store.resolve_data(claimed)
+        previous = ops.graph.current_revision(result)
+        for cycle in range(8):
+            target.slicer_area.replace_source_data(
+                grid.isel(x=[0, 2]).assign_coords(x=[cycle / 100, 2.0])
+            )
+            ops.update(result)
+            if previous != claimed:
+                assert previous not in store
+            # A still-claimed historical result retains the first target and source.
+            assert len(store.revision_ids) == 5
+            previous = ops.graph.current_revision(result)
+        xr.testing.assert_identical(store.resolve_data(claimed), original)
+        manager.remove_imagetool(node.index)
+        assert not ops.graph.entry_ids
+        assert not ops.graph.revision_ids
+
+
+def test_graph_interpolation_incompatible_reload_choices(
+    qtbot, manager_context, accept_dialog, monkeypatch
+) -> None:
+    source_data = xr.DataArray(
+        np.arange(12.0).reshape(4, 3),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0, 2.0, 3.0], "y": [0.0, 1.0, 2.0]},
+        name="source",
+    )
+    grid = source_data.isel(x=[0, 2], y=[0, 2])
+    changed = grid.assign_coords(x=[0.5, 1.5])
+    with manager_context() as manager:
+
+        def add(array):
+            index = manager.add_imagetool(
+                itool(array, manager=False, execute=False), show=False
+            )
+            return manager._node_for_target(index)
+
+        source, target = add(source_data), add(grid)
+        dialog = imagetool_dialogs.InterpolationDialog(source.slicer_area)
+        qtbot.addWidget(dialog)
+        dialog.target_tabs.setCurrentIndex(1)
+        dialog.target_tool_selector.set_current_uid(target.uid)
+        dialog.launch_mode_combo.setCurrentIndex(
+            dialog.launch_mode_combo.findData("detach")
+        )
+        dialog.accept()
+        output = manager._node_for_target(2)
+        graph = manager._operations.graph
+        original = graph.current_revision(output.uid)
+        target.slicer_area.replace_source_data(changed)
+        rebuilt = source_data.interp_like(changed)
+
+        evaluations = []
+        evaluate = graph._evaluate_step
+
+        def count(result, binding, step, producer_id):
+            evaluations.append(binding)
+            return evaluate(result, binding, step, producer_id)
+
+        monkeypatch.setattr(graph, "_evaluate_step", count)
+
+        def reload_with(label):
+            evaluations.clear()
+
+            def choose(message):
+                assert "different coordinates" in message.text()
+                assert "x" in message.detailedText()
+                next(
+                    button for button in message.buttons() if button.text() == label
+                ).click()
+
+            accept_dialog(output.slicer_area.reload, accept_call=choose)
+            assert len(evaluations) == 1
+
+        before = set(graph.entry_ids)
+        reload_with("Cancel")
+        assert set(graph.entry_ids) == before
+        assert graph.current_revision(output.uid) == original
+        assert graph.is_stale(output.uid)
+
+        reload_with("Open as New")
+        (fork,) = set(graph.entry_ids) - before
+        assert graph.entry(fork).parent_id is None
+        assert graph.current_revision(output.uid) == original
+        xr.testing.assert_identical(
+            output.data_for_role("source"), source_data.interp_like(grid)
+        )
+        xr.testing.assert_identical(
+            manager._node_for_target(fork).data_for_role("source"), rebuilt
+        )
+
+        reload_with("Replace and Reset View")
+        assert set(graph.entry_ids) == before | {fork}
+        assert graph.current_revision(output.uid) != original
+        xr.testing.assert_identical(output.data_for_role("source"), rebuilt)
+        target.slicer_area.replace_source_data(grid)
+        assert graph.is_stale(fork)
+        assert graph.is_stale(output.uid)

@@ -15,6 +15,7 @@ import erlab
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.utils
+from erlab._provenance import ProvenanceGraph
 from erlab._provenance._files import _register_local_callable_loader
 from erlab._provenance._model import (
     FileLoadSource,
@@ -296,6 +297,7 @@ def _fake_edit_controller(
     manager = QtWidgets.QWidget()
     manager.__dict__.update(
         _metadata_node_uid=metadata_uid,
+        _operations=types.SimpleNamespace(graph=ProvenanceGraph()),
         _provenance_revisions=revisions,
         _tool_graph=types.SimpleNamespace(nodes=graph_nodes),
         _selected_imagetool_targets=lambda: selected_targets,

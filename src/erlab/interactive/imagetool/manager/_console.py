@@ -1833,6 +1833,10 @@ class ToolsNamespace:
             return manager
         raise LookupError("Parent was destroyed")
 
+    def checkpoint(self, revision_id: str) -> xr.DataArray:
+        """Return an independent copy of a recorded graph input for notebook replay."""
+        return self._manager._operations.graph.data(revision_id)
+
     @property
     def selected_data(self) -> list[xr.DataArray]:
         """Current DataArrays from selected root or child ImageTools."""

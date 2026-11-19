@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import builtins
-import copy
 import importlib
 import pathlib
 import typing
@@ -123,11 +122,13 @@ def _execute_replay_graph(
     on_value: Callable[[str, xr.DataArray], None] | None = None,
 ) -> xr.DataArray:
     values: dict[str, xr.DataArray] = {}
-    live_values: dict[int, xr.DataArray] = {}
+    live_values: list[xr.DataArray] = []
     remaining_uses = Counter(parent for node in graph.nodes for parent in node.parents)
 
     def record_value(node: ReplayNode, data: xr.DataArray) -> None:
         values[node.key] = data
+        if node.kind == "live_input":
+            live_values.append(data)
         if on_value is not None:
             on_value(node.key, data)
         for parent in node.parents:
@@ -151,10 +152,7 @@ def _execute_replay_graph(
             continue
         elif node.kind == "live_input":
             live = typing.cast("xr.DataArray", node.payload["data"])
-            key = id(live)
-            if key not in live_values:
-                live_values[key] = live.copy(deep=False)
-            data = live_values[key]
+            data = live.copy(deep=False)
         elif node.kind == "relay" or node.kind == "source_view":
             data = values[node.parents[0]].copy(deep=False)
         elif node.kind == "operation":
@@ -236,10 +234,12 @@ def _execute_replay_graph(
                 for attr in target.split(".")[1:]:
                     value = getattr(value, attr)
                 namespace[alias] = value
-            # Copy all bindings together so two names for the same operand
-            # share an isolated array, including its values and mutable metadata.
-            bindings = {name: values[key] for name, key in node.payload["bindings"]}
-            namespace.update(copy.deepcopy(bindings))
+            shared_inputs = node.payload.get("shared_inputs", {})
+            for name, key in node.payload["bindings"]:
+                if name in shared_inputs:
+                    namespace[name] = namespace[shared_inputs[name]]
+                else:
+                    namespace[name] = values[key].copy(deep=True)
             for compiled in compiled_codes:
                 exec(compiled, namespace, namespace)  # noqa: S102
             active_name = typing.cast("str", node.payload["active_name"])
@@ -266,7 +266,9 @@ def _execute_replay_graph(
     if graph.output_key is None:
         raise ReplayGraphError("Replay graph has no output")
     output = values[graph.output_key]
-    if any(_shares_array_memory(output, live) for live in live_values.values()):
+    if (cache is not None and graph.output_key in cache) or any(
+        _shares_array_memory(output, live) for live in live_values
+    ):
         return output.copy(deep=True)
     return output
 

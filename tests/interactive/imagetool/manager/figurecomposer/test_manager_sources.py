@@ -19,16 +19,15 @@ from erlab.interactive._figurecomposer import (
 )
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager._figurecomposer import _dialogs
+from tests.interactive.imagetool.manager.figurecomposer._common import (
+    _materialized_figure_tool,
+    _render_figure_composer_rgba,
+    _SourcePickerDummyTool,
+)
 from tests.interactive.imagetool.manager.helpers import (
     _exec_generated_code,
     select_child_tool,
     select_tools,
-)
-
-from ._common import (
-    _materialized_figure_tool,
-    _render_figure_composer_rgba,
-    _SourcePickerDummyTool,
 )
 
 if typing.TYPE_CHECKING:

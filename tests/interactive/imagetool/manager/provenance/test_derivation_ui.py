@@ -74,8 +74,7 @@ from tests.interactive.imagetool.manager.helpers import (
     select_metadata_rows,
     select_tools,
 )
-
-from ._common import (
+from tests.interactive.imagetool.manager.provenance._common import (
     _add_file_replay_tool,
     _authorize_execution,
     _fake_edit_controller,

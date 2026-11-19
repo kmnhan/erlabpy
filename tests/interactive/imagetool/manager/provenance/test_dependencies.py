@@ -67,8 +67,7 @@ from tests.interactive.imagetool.manager.helpers import (
     set_transform_launch_mode,
     trigger_menu_action,
 )
-
-from ._common import (
+from tests.interactive.imagetool.manager.provenance._common import (
     _authorize_execution,
     _seed_fit2d_param_results,
     _set_selection_point,

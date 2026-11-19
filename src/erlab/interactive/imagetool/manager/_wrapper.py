@@ -2015,6 +2015,9 @@ class _ManagedWindowNode(QtCore.QObject):
         self,
     ) -> ToolProvenanceSpec | None:
         if self.imagetool is not None:
+            recorded = self.manager._operations.displayed_spec(self)
+            if recorded is not None:
+                return recorded
             return self.slicer_area.displayed_provenance_spec(self.provenance_spec)
         return self.provenance_spec
 
@@ -2131,6 +2134,10 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def restore_current_revision_id(self, revision_id: str | None) -> None:
         """Bind a saved checkpoint without reading its data or running its recipe."""
+        if revision_id is not None and not self.manager._operations.installing(
+            self.uid
+        ):
+            self.manager._provenance_revisions.claim_graph_inputs(None, revision_id)
         self._current_revision_id = revision_id
         self._revision_ids_by_role.clear()
         if revision_id is not None:
@@ -2144,16 +2151,25 @@ class _ManagedWindowNode(QtCore.QObject):
         data_role: ScriptInputDataRole,
         *,
         primary_checkpoint_required: bool = True,
+        graph_owned: bool = False,
     ) -> str:
         """Capture an exact input independently of this window's lifetime."""
         token = self.snapshot_token_for_role(data_role)
         cached = self._revision_ids_by_role.get(data_role)
         if cached is not None and cached[0] == token:
+            if not graph_owned and not self.manager._operations.installing(self.uid):
+                self.manager._provenance_revisions.claim_graph_inputs(None, cached[1])
             return cached[1]
         if data_role == "displayed" and token == self.source_snapshot_token:
             source = self._revision_ids_by_role.get("source")
             if source is not None and source[0] == token:
                 self._revision_ids_by_role[data_role] = source
+                if not graph_owned and not self.manager._operations.installing(
+                    self.uid
+                ):
+                    self.manager._provenance_revisions.claim_graph_inputs(
+                        None, source[1]
+                    )
                 return source[1]
         with self.manager._workspace_controller.local_provenance_change():
             base_spec = self.provenance_spec
@@ -2169,9 +2185,16 @@ class _ManagedWindowNode(QtCore.QObject):
                 if normalized != base_spec:
                     self.set_displayed_provenance(normalized, advance_snapshot=False)
             spec = self.provenance_for_role(data_role)
+            backing = None
+            if self.imagetool is not None and (
+                data_role == "source" or not self.slicer_area.has_active_filter
+            ):
+                backing = self.slicer_area._file_backing
             revision_id = self.manager._provenance_revisions.add(
                 self.data_for_role(data_role),
                 spec,
+                backing=backing,
+                graph_owned=graph_owned,
                 source_owner_uid=self.uid,
                 primary_revision_id=(
                     self._current_revision_id if data_role == "source" else None
@@ -2274,6 +2297,7 @@ class _ManagedWindowNode(QtCore.QObject):
         token = uuid.uuid4().hex
         self._snapshot_token = token
         self._source_snapshot_token = token
+        self.manager._operations.changed(self)
         self._schedule_snapshot_token_refresh(defer_refresh=defer_refresh)
 
     def _advance_displayed_snapshot_token(self, *, defer_refresh: bool = False) -> None:
@@ -2282,6 +2306,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._invalidate_info_text_cache()
         self._invalidate_preview_image_cache()
         self._snapshot_token = uuid.uuid4().hex
+        self.manager._operations.changed(self)
         self._schedule_snapshot_token_refresh(defer_refresh=defer_refresh)
 
     def _advance_source_snapshot_token(self, *, defer_refresh: bool = False) -> None:
@@ -2316,12 +2341,20 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @property
     def source_state(self) -> _source_state_type:
+        graph = self.manager._operations.graph
+        if graph.has_recipe(self.uid):
+            if graph.auto_error(self.uid) is not None:
+                return "unavailable"
+            return "stale" if graph.is_stale(self.uid) else "fresh"
         if self.tool_window is not None:
             return self.tool_window.source_state
         return self._source_state
 
     @property
     def source_auto_update(self) -> bool:
+        graph = self.manager._operations.graph
+        if graph.has_recipe(self.uid):
+            return graph.entry(self.uid).auto
         if self.tool_window is not None:
             return self.tool_window.source_auto_update
         return self._source_auto_update
@@ -2349,6 +2382,8 @@ class _ManagedWindowNode(QtCore.QObject):
         advance_snapshot: bool = True,
         replay_source_data: xr.DataArray | None = None,
     ) -> None:
+        if not self.manager._operations.installing(self.uid):
+            self.manager._provenance_revisions.claim_graph_inputs(provenance_spec)
         with self.manager._workspace_controller.local_provenance_change():
             self._provenance_spec = self._normalize_provenance(
                 parse_tool_provenance_spec(provenance_spec), replay_source_data
@@ -2747,6 +2782,45 @@ class _ManagedWindowNode(QtCore.QObject):
         finally:
             self._suspend_snapshot_token_updates = previous
 
+    def _undo_data_installation(self) -> Callable[[], None]:
+        """Retain the references needed to undo a pending graph installation."""
+        source, state = self.slicer_area.persistence_data_and_state()
+        owners = self._provenance_owner_snapshot()
+        file_backing, file_call = (
+            self.slicer_area._file_backing,
+            self.slicer_area._file_call,
+        )
+        snapshot = self._snapshot_token
+        source_token = self._source_snapshot_token
+        binding = self._source_binding
+        auto = self._source_auto_update
+        previous_state = self._source_state
+        output = self._output_id
+        replay_data = self._replay_source_data
+
+        def restore() -> None:
+            with (
+                self._suspend_descendant_propagation(),
+                self._suspend_snapshot_updates(),
+            ):
+                self.slicer_area.replace_source_data(source)
+                self.slicer_area._restore_state(state)
+                self.slicer_area._file_backing, self.slicer_area._file_call = (
+                    file_backing,
+                    file_call,
+                )
+                self._source_binding, self._source_auto_update = binding, auto
+                self._source_state, self._output_id = previous_state, output
+                self._snapshot_token, self._source_snapshot_token = (
+                    snapshot,
+                    source_token,
+                )
+                self._replay_source_data = replay_data
+                self.restore_provenance_owners(owners)
+            self.manager.tree_view.refresh(self.uid)
+
+        return restore
+
     def _replace_imagetool_data(
         self,
         data: xr.DataArray,
@@ -2956,6 +3030,9 @@ class _ManagedWindowNode(QtCore.QObject):
         )
 
     def _set_source_auto_update(self, value: bool) -> None:
+        graph = self.manager._operations.graph
+        if graph.has_recipe(self.uid):
+            graph.set_auto(self.uid, enabled=value)
         self._source_auto_update = bool(value)
         self._notify_change(_ManagedNodeChange.ROW)
         self.manager._mark_node_state_dirty(self.uid)
@@ -3098,6 +3175,8 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def reload_source_data(self) -> bool:
         """Reload this node through its one applicable framework path."""
+        if self.manager._operations.graph.has_recipe(self.uid):
+            return self.manager._operations.update(self.uid, reload=True)
         if self.tool_window is None:
             if not self.is_imagetool:
                 return False

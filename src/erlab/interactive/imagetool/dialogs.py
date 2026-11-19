@@ -3219,9 +3219,9 @@ class InterpolationDialog(DataTransformDialog):
 
     def _target_data(self) -> xr.DataArray:
         uid = self.target_tool_selector.current_uid
+        if self._recorded_target is not None:
+            return self._recorded_target
         if uid is None:
-            if self._recorded_target is not None:
-                return self._recorded_target
             raise ValueError("Select a target ImageTool.")
         manager, _target = self._manager_target()
         if manager is None:
@@ -3558,9 +3558,7 @@ class InterpolationDialog(DataTransformDialog):
         recorded_data: xr.DataArray | None = None,
     ) -> None:
         self.target_tool_selector.set_current_uid(uid)
-        self._recorded_target = (
-            recorded_data if self.target_tool_selector.current_uid is None else None
-        )
+        self._recorded_target = recorded_data
         self.restore_transform_operation(operation)
 
     def _copy_code_for_operations(
@@ -3595,61 +3593,28 @@ class InterpolationDialog(DataTransformDialog):
         uid = self.target_tool_selector.current_uid
         if uid is None:
             raise ValueError("Select a target ImageTool.")
-        data = current_node.data_for_role("displayed", owner_node=current_node)
-        target_data = self._candidate_data(manager, uid, data)
-        operation = typing.cast(
-            "InterpolationFromInputOperation", self.source_transform_operation()
-        )
+        operation = self.source_transform_operation()
         if self.launch_mode == "replace" and not self._replacement_is_safe():
             raise ValueError(
                 "Replacement would create a dependency cycle. Select a child or "
                 "top-level result."
             )
-        processed = operation.apply_with_inputs(data, {"target": target_data}).rename(
-            data.name
-        )
-        provenance_spec = manager._multi_input_operation_provenance(
-            (target, uid),
-            operation=operation,
-            active_name="interpolated",
-            start_label="Interpolate ImageTool data",
-            detached_input_uid=(
-                current_node.uid if self.launch_mode == "replace" else None
-            ),
-            data_role="displayed",
-            input_names=("data", "target"),
-            primary_input="data",
-            input_bindings={"target": "target"},
+
+        def make_window(data: xr.DataArray) -> erlab.interactive.imagetool.ImageTool:
+            tool = erlab.interactive.itool(manager=False, **self._itool_kwargs(data))
+            if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
+                raise TypeError("Expected an interpolated ImageTool.")
+            return tool
+
+        manager._operations.submit(
+            operation,
+            {"data": current_node.uid, "target": uid},
+            placement=self.launch_mode,
+            make_window=make_window,
+            output_name="interpolated",
         )
         if self.launch_mode == "replace":
-            current_node.replace_with_detached_data(
-                processed,
-                provenance_spec,
-                propagate_descendants=True,
-                preserve_filter=False,
-                replay_source_data=data,
-            )
-            manager.tree_view.refresh(current_node.uid)
             manager._sigDataReplaced.emit()
-        else:
-            tool = typing.cast(
-                "erlab.interactive.imagetool.ImageTool | None",
-                erlab.interactive.itool(manager=False, **self._itool_kwargs(processed)),
-            )
-            if tool is None:
-                raise RuntimeError("Could not create the interpolated ImageTool.")
-            if self.launch_mode == "nest":
-                manager.add_imagetool_child(
-                    tool,
-                    target,
-                    activate=True,
-                    provenance_spec=provenance_spec,
-                    source_state="fresh",
-                )
-            else:
-                manager.add_imagetool(
-                    tool, activate=True, provenance_spec=provenance_spec
-                )
 
     @QtCore.Slot()
     def accept(self) -> None:

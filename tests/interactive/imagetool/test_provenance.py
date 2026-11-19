@@ -11097,6 +11097,33 @@ def test_stored_program_repeated_revision_shares_one_isolated_input() -> None:
     namespace = {"scan": source.copy(deep=True)}
     exec(code, namespace)  # noqa: S102 - execute the exported program
     xr.testing.assert_identical(namespace["derived"], expected)
+    original = xr.DataArray([1, 2], attrs={"labels": ["initial"]})
+    xr.testing.assert_identical(source, original)
+    xr.testing.assert_identical(namespace["scan"], original)
+
+    # An explicit replacement can give each slot an independent caller value.
+    second = source.copy(deep=True)
     xr.testing.assert_identical(
-        source, xr.DataArray([1, 2], attrs={"labels": ["initial"]})
+        replay_script_provenance(
+            restored, {"left": source, "right": second}, authorize=_authorize_execution
+        ),
+        original,
+    )
+    independent = restored.model_copy(
+        update={
+            "script_inputs": (
+                restored.script_inputs[0],
+                restored.script_inputs[1].model_copy(
+                    update={"revision_id": "different"}
+                ),
+            ),
+        }
+    )
+    xr.testing.assert_identical(
+        replay_script_provenance(
+            independent,
+            {"left": source, "right": source},
+            authorize=_authorize_execution,
+        ),
+        original,
     )

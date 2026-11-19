@@ -91,8 +91,7 @@ from erlab.interactive._options.schema import FigureOptions
 from erlab.interactive.imagetool.manager._workspace import (
     _controller as workspace_controller,
 )
-
-from ._common import (
+from tests.interactive.imagetool.manager.figurecomposer._common import (
     _COLLAPSED_LAYOUT_WARNING,
     _activate_combo_index,
     _activate_combo_text,

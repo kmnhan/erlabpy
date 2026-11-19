@@ -87,8 +87,7 @@ from erlab.interactive.imagetool.manager._provenance_edit import (
     _files as provenance_edit_files,
 )
 from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
-
-from ._common import (
+from tests.interactive.imagetool.manager.provenance._common import (
     _fake_edit_controller,
     _fake_edit_node,
     _manager_provenance_file_spec,

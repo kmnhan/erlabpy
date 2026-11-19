@@ -20,6 +20,7 @@ import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.utils
+from erlab._provenance import ProvenanceGraph
 from erlab._provenance._model import (
     DerivationEntry,
     FileDataSelection,
@@ -55,8 +56,7 @@ from erlab.interactive.imagetool.manager._console import ToolNamespace
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
 from erlab.interactive.imagetool.manager._dialogs import _ConcatDialog, _StoreDialog
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
-
-from .helpers import (
+from tests.interactive.imagetool.manager.helpers import (
     _exec_generated_code,
     click_tree_view_pos,
     console_helper,
@@ -4904,7 +4904,9 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             )
             assert manager._reload_unavailable_reason_for_target(0)
         with monkeypatch.context() as patch:
-            patch.setattr(manager, "_node_for_target", lambda _target: object())
+            patch.setattr(
+                manager, "_node_for_target", lambda uid: types.SimpleNamespace(uid=uid)
+            )
             patch.setattr(
                 manager._lineage_controller,
                 "_reload_target_for_child",
@@ -5061,12 +5063,17 @@ def test_manager_reload_raw_self_replacement_uses_captured_input(
 
 
 def test_unavailable_replay_code_details_lists_unique_labels_and_fallback() -> None:
-    controller = object.__new__(_DetailsPanelController)
+    controller = _DetailsPanelController(
+        types.SimpleNamespace(
+            _operations=types.SimpleNamespace(graph=ProvenanceGraph())
+        )
+    )
     start_entry = DerivationEntry("Start from data", None, False)
     unavailable_entry = DerivationEntry("Opaque step", None, False)
 
     details = controller._unavailable_replay_code_details(
         types.SimpleNamespace(
+            uid="unrecorded",
             derivation_display_rows=tuple(
                 _ProvenanceDisplayRow(entry)
                 for entry in (start_entry, unavailable_entry, unavailable_entry)
@@ -5079,6 +5086,7 @@ def test_unavailable_replay_code_details_lists_unique_labels_and_fallback() -> N
 
     fallback = controller._unavailable_replay_code_details(
         types.SimpleNamespace(
+            uid="unrecorded",
             derivation_display_rows=(_ProvenanceDisplayRow(start_entry),),
             displayed_provenance_spec=None,
             passive_displayed_provenance_spec=None,
@@ -5087,6 +5095,7 @@ def test_unavailable_replay_code_details_lists_unique_labels_and_fallback() -> N
     assert fallback
 
     no_spec_node = types.SimpleNamespace(
+        uid="unrecorded",
         derivation_display_rows=tuple(
             _ProvenanceDisplayRow(entry) for entry in (start_entry, unavailable_entry)
         ),

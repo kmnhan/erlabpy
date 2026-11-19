@@ -15,6 +15,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.utils
+from erlab._provenance import Application, Follow
 from erlab._provenance._model import (
     DerivationEntry,
     ReplayStep,
@@ -2846,9 +2847,21 @@ class _ProvenanceEditController:
             and current_input is None
         ):
             raise RuntimeError("The interpolation step has no target input")
-        prefix_data = self._replay_candidate_result(
-            node, row.scope, spec._prefix_before_ref(ref)
-        ).data
+        graph = self._manager._operations.graph
+        revision = None
+        applied = None
+        if not row.script_input_path and graph.has_recipe(node.uid):
+            revision = graph.current_revision(node.uid)
+            producer = graph.revision(revision).producer
+            if isinstance(producer, Application) and producer.operation == operation:
+                applied = producer
+        prefix_data = (
+            graph.data(dict(applied.inputs)["data"])
+            if applied is not None
+            else self._replay_candidate_result(
+                node, row.scope, spec._prefix_before_ref(ref)
+            ).data
+        )
         temp_tool = erlab.interactive.imagetool.ImageTool(prefix_data)
         temp_tool.hide()
         dialog: dialogs.InterpolationDialog | None = None
@@ -2863,15 +2876,18 @@ class _ProvenanceEditController:
             if isinstance(operation, InterpolationFromInputOperation):
                 bound_input = typing.cast("ScriptInput", current_input)
                 lineage = self._manager._lineage_controller
-                recorded_data = lineage._rebuild_script_provenance(
-                    script(
-                        start_label="Use recorded interpolation target",
-                        active_name=bound_input.name,
-                        root_input=bound_input,
-                    ),
-                    target_node_uid=node.uid,
-                    prefer_recorded_revisions=True,
-                ).data
+                if applied is not None:
+                    recorded_data = graph.data(dict(applied.inputs)["target"])
+                else:
+                    recorded_data = lineage._rebuild_script_provenance(
+                        script(
+                            start_label="Use recorded interpolation target",
+                            active_name=bound_input.name,
+                            root_input=bound_input,
+                        ),
+                        target_node_uid=node.uid,
+                        prefer_recorded_revisions=True,
+                    ).data
                 dialog.restore_manager_target(
                     operation,
                     bound_input.node_uid,
@@ -2904,6 +2920,20 @@ class _ProvenanceEditController:
                 dialog.deleteLater()
             temp_tool.close()
             temp_tool.deleteLater()
+
+        if applied is not None and revision is not None:
+            changed = {}
+            if selected_uid is not None and (
+                current_input is None or current_input.node_uid != selected_uid
+            ):
+                self._manager._operations.observe(
+                    self._manager._node_for_target(selected_uid)
+                )
+                changed["target"] = Follow(selected_uid)
+            graph.edit_application(
+                node.uid, revision, replacement, changed_inputs=changed
+            )
+            return
 
         if isinstance(replacement, InterpolationFromInputOperation):
             candidate = self._interpolation_named_input_spec(node, row, spec)

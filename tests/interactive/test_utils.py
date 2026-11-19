@@ -74,6 +74,7 @@ from erlab.interactive.imagetool.manager._modelview import (
     _ImageToolWrapperItemModel,
 )
 from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
+from erlab.interactive.imagetool.manager._operation_graph import _ManagedOperations
 from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 from erlab.interactive.imagetool.manager._wrapper import (
@@ -7571,6 +7572,7 @@ def test_managed_window_node_kind_specific_source_branches(qtbot, monkeypatch) -
     class _FakeManager(QtWidgets.QWidget):
         def __init__(self) -> None:
             super().__init__()
+            self._operations = _ManagedOperations(self)
             self.tree_view = _FakeTreeView()
             self.updated: list[str] = []
             self.propagated: list[tuple[str, object | None]] = []
@@ -7864,6 +7866,7 @@ def test_managed_imagetool_node_detached_update_branches(qtbot) -> None:
     class _FakeManager(QtWidgets.QWidget):
         def __init__(self, parent_tool: _OutputTool) -> None:
             super().__init__()
+            self._operations = _ManagedOperations(self)
             self.tree_view = _FakeTreeView()
             self.updated: list[str] = []
             self.marked: list[tuple[str, str]] = []

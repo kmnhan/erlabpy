@@ -15,6 +15,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.utils
+from erlab._provenance import Application, EarlierStep, FileLoad, Follow
 from erlab._provenance._model import (
     DerivationEntry,
     ReplayStep,
@@ -39,6 +40,7 @@ from erlab.interactive.imagetool._provenance._graph import (
     selected_provenance_code,
     selected_steps_spec,
 )
+from erlab.interactive.imagetool._provenance._recorded_code import full_code
 from erlab.interactive.imagetool.manager._source_labels import script_input_source_label
 from erlab.interactive.imagetool.manager._widgets import (
     _METADATA_DERIVATION_ACTIVATABLE_ROLE,
@@ -362,7 +364,37 @@ class _DetailsPanelController:
         self._manager.notes_editor.clear()
         self._commit_note_editor()
 
+    def _set_graph_auto(self, enabled: bool) -> None:
+        uid = self._manager._metadata_node_uid
+        if uid is not None and self._manager._operations.graph.has_recipe(uid):
+            self._manager._node_for_target(uid)._set_source_auto_update(enabled)
+
+    def _refresh_revision(self) -> None:
+        uid = self._manager._metadata_node_uid
+        if uid is not None and self._manager._operations.graph.has_recipe(uid):
+            self._manager._operations.update(uid)
+
+    def _show_next_inputs(self, uid: str) -> None:
+        graph = self._manager._operations.graph
+        active = graph.has_recipe(uid)
+        self._manager.next_inputs_box.setVisible(active)
+        if active:
+            lines = []
+            for slot, binding in graph.next_inputs(uid):
+                if isinstance(binding, Follow):
+                    source = self._manager._node_for_target(binding.entry_id)
+                    description = f"After updating {source.display_text}"
+                elif isinstance(binding, EarlierStep):
+                    description = f"Rebuild step {binding.revision_id[:8]}"
+                else:
+                    description = binding[:8]
+                lines.append(f"{slot} · {description}")
+            self._manager.next_inputs_text.setText("\n".join(lines))
+            with QtCore.QSignalBlocker(self._manager.update_auto_check):
+                self._manager.update_auto_check.setChecked(graph.entry(uid).auto)
+
     def _clear_metadata(self) -> None:
+        self._manager.next_inputs_box.hide()
         self._manager._metadata_full_code_available = False
         self._manager._metadata_node_uid = None
         self._metadata_derivation_spec = None
@@ -376,6 +408,7 @@ class _DetailsPanelController:
         self._manager._update_metadata_pane()
 
     def _set_metadata_node(self, node: _ImageToolWrapper | _ManagedWindowNode) -> None:
+        self._show_next_inputs(node.uid)
         same_node = self._manager._metadata_node_uid == node.uid
         self._metadata_multi_node_uids = ()
         self._set_notes_node(node)
@@ -383,7 +416,9 @@ class _DetailsPanelController:
         if displayed_spec is None and node.tool_window is not None:
             displayed_spec = node.displayed_provenance_spec
         self._manager._metadata_full_code_available = (
-            displayed_spec is not None or node.tool_window is not None
+            displayed_spec is not None
+            or node.tool_window is not None
+            or self._manager._operations.graph.has_recipe(node.uid)
         )
         self._metadata_derivation_spec = displayed_spec
         self._manager._metadata_node_uid = node.uid
@@ -542,6 +577,7 @@ class _DetailsPanelController:
         self,
         nodes: list[_ImageToolWrapper | _ManagedWindowNode],
     ) -> None:
+        self._manager.next_inputs_box.hide()
         node_uids = tuple(node.uid for node in nodes)
         same_selection = self._metadata_multi_node_uids == node_uids
         self._manager._metadata_full_code_available = False
@@ -717,13 +753,31 @@ class _DetailsPanelController:
         node: _ImageToolWrapper | _ManagedWindowNode,
     ) -> list[_ProvenanceDisplayRow]:
         spec = node.passive_displayed_provenance_spec
-        return [
+        rows = [
             self._current_derivation_display_row(
                 row,
                 spec,
             )
             for row in node.derivation_display_rows
         ]
+
+        graph = self._manager._operations.graph
+        if graph.has_recipe(node.uid):
+            producer = graph.revision(graph.current_revision(node.uid)).producer
+            if isinstance(producer, Application):
+                rows.insert(
+                    0,
+                    _ProvenanceDisplayRow(
+                        DerivationEntry("Inputs used", None),
+                        children=tuple(
+                            _ProvenanceDisplayRow(
+                                DerivationEntry(f"{slot} · {revision[:8]}", None)
+                            )
+                            for slot, revision in producer.inputs
+                        ),
+                    ),
+                )
+        return rows
 
     @staticmethod
     def _flatten_derivation_rows(
@@ -1697,6 +1751,37 @@ class _DetailsPanelController:
         )
         dialog.exec()
 
+    def _checkpoint_name(self, key: str, reserved: set[str]) -> str | None:
+        record = self._manager._provenance_revisions.get(key)
+        source = (
+            self._manager._tool_graph.nodes.get(record.source_owner_uid)
+            if record is not None and record.source_owner_uid is not None
+            else None
+        )
+        suggested = source.name if source is not None else None
+        if (
+            not erlab.utils.misc._is_valid_identifier(suggested)
+            or suggested in reserved
+        ):
+            suggested = f"source_{key[:8]}"
+        while True:
+            name, accepted = QtWidgets.QInputDialog.getText(
+                self._manager,
+                "Copy Full Code",
+                f"Notebook variable for revision {key[:8]}. Retrieve it in the "
+                f"Manager console with tools.checkpoint({key!r}).",
+                text=suggested,
+            )
+            if not accepted:
+                return None
+            if erlab.utils.misc._is_valid_identifier(name) and name not in reserved:
+                return name
+            QtWidgets.QMessageBox.warning(
+                self._manager,
+                "Variable Name",
+                "Choose a distinct Python variable name.",
+            )
+
     def _copy_full_derivation_code(self) -> None:
         node = (
             None
@@ -1704,6 +1789,45 @@ class _DetailsPanelController:
             else self._manager._tool_graph.nodes.get(self._manager._metadata_node_uid)
         )
         if node is None or not self._manager._metadata_full_code_available:
+            return
+        native = self._manager._operations.graph
+        if native.has_recipe(node.uid):
+            spec = node.displayed_provenance_spec
+            key = native.current_revision(node.uid)
+            output_name = (spec.active_name if spec is not None else None) or "derived"
+            with native.retain(key):
+                names = {}
+                reserved = {output_name, "era", "xr", "np"}
+                for revision in native.recorded_lineage(key):
+                    if isinstance(revision.producer, Application):
+                        continue
+                    if isinstance(revision.producer, FileLoad) and revision.backing:
+                        try:
+                            revision.backing.verify()
+                        except OSError as exc:
+                            QtWidgets.QMessageBox.warning(
+                                self._manager,
+                                "Copy Full Code",
+                                f"{exc} Refresh this result after Reload.",
+                            )
+                            return
+                        continue
+                    checkpoint_name = self._checkpoint_name(
+                        revision.revision_id, reserved
+                    )
+                    if checkpoint_name is None:
+                        return
+                    names[revision.revision_id] = checkpoint_name
+                    reserved.add(checkpoint_name)
+                code = full_code(
+                    native,
+                    key,
+                    output_name=output_name,
+                    source_names=names,
+                    verify_file=lambda revision: revision.backing is not None,
+                )
+            if code:
+                erlab.interactive.utils.copy_to_clipboard(code)
             return
         compiled = node._derivation_replay_graph()
         if compiled is None:

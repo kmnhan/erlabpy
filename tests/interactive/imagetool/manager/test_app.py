@@ -814,6 +814,7 @@ def test_manager_main_configure_packaged_runtime_caches_skips_source_launch(
 def test_manager_main_configure_packaged_runtime_caches_sets_packaged_env(
     tmp_path, monkeypatch
 ) -> None:
+    monkeypatch.setattr(os, "environ", os.environ.copy())
     cache_root = tmp_path / "cache-root"
     monkeypatch.delenv("MPLCONFIGDIR", raising=False)
     monkeypatch.delenv("NUMBA_CACHE_DIR", raising=False)

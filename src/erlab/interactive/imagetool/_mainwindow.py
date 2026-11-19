@@ -27,7 +27,10 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab._provenance._files import _load_provenance_from_file_details
+from erlab._provenance._files import (
+    _capture_loader_file,
+    _load_provenance_from_file_details,
+)
 from erlab.interactive import _qt_state, _shortcut_sequences
 from erlab.interactive._code_trust import (
     create_manifest,
@@ -650,6 +653,7 @@ class ImageTool(BaseImageTool):
 
             try:
                 with erlab.interactive.utils.wait_dialog(self, "Loading..."):
+                    backing = _capture_loader_file(fname, fn, kargs)
                     loaded_data = fn(fname, **kargs)
                 selected_data = _select_input_dataarrays(loaded_data, self)
                 if selected_data is None:
@@ -657,6 +661,7 @@ class ImageTool(BaseImageTool):
                 first = selected_data[0]
                 self.slicer_area.replace_source_data(
                     first.data,
+                    _file_backing=backing,
                     file_path=fname,
                     load_func=(fn, kargs, first.selection),
                     preparation_operations=first.operations,
@@ -664,6 +669,7 @@ class ImageTool(BaseImageTool):
                 for prepared in selected_data[1:]:
                     tool = ImageTool(
                         prepared.data,
+                        _file_backing=backing,
                         file_path=fname,
                         load_func=(fn, kargs, prepared.selection),
                         preparation_operations=prepared.operations,

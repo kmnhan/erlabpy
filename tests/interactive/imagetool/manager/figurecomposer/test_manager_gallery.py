@@ -29,6 +29,12 @@ from erlab.interactive._figurecomposer import (
 )
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager._figurecomposer import _collection
+from tests.interactive.imagetool.manager.figurecomposer._common import (
+    _materialized_figure_tool,
+    _restored_figure_composer_from_netcdf,
+    _selection_shortcut_sequences,
+    _SourcePickerDummyTool,
+)
 from tests.interactive.imagetool.manager.helpers import (
     _exec_generated_code,
     activate_widget_shortcut,
@@ -41,13 +47,6 @@ from tests.interactive.imagetool.manager.helpers import (
 from tests.interactive.imagetool.manager.workspace._support import (
     _current_workspace_payload_path,
     _request_workspace_save_as_and_wait,
-)
-
-from ._common import (
-    _materialized_figure_tool,
-    _restored_figure_composer_from_netcdf,
-    _selection_shortcut_sequences,
-    _SourcePickerDummyTool,
 )
 
 

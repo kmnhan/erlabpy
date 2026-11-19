@@ -26,13 +26,16 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab._provenance._checkpoint import FileVersion, _guard_file_variables
 from erlab._provenance._files import (
+    _capture_loader_file,
     _deserialize_loader_kwargs,
     _extension_loader_identity,
     _LoadFunc,
     _parse_serialized_file_data_selection,
     _register_local_callable_loader,
     _registered_local_callable_loader,
+    _resolve_load_func,
     _select_replay_input,
     _semantic_file_data_selection,
     _serialize_loader_kwargs,
@@ -319,6 +322,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         _defer_state_refresh: bool = False,
         _defer_secondary_plots: bool = False,
         _workspace_load_profiler: typing.Any = None,
+        _file_backing: FileVersion | None = None,
     ) -> None:
         super().__init__(parent)
         initialize_plot_defaults()
@@ -500,6 +504,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.set_data(
             data,
             rad2deg=rad2deg,
+            _file_backing=_file_backing,
             file_path=file_path,
             load_func=load_func,
             preparation_operations=preparation_operations,
@@ -2526,6 +2531,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         auto_compute: bool = True,
         *,
         source_replaced: bool = False,
+        _file_backing: FileVersion | None = None,
     ) -> None:
         """Set the data to be displayed.
 
@@ -2560,6 +2566,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if isinstance(data, xr.DataArray)
             else None
         )
+        if _file_backing is not None and isinstance(data, xr.DataArray):
+            _file_backing.verify()
+            data = _guard_file_variables(data, _file_backing)
         prepared_data = _prepare_input_data(data, self)
         if prepared_data is None:
             raise ValueError("Opening high-dimensional data was canceled.")
@@ -2575,6 +2584,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             _repeatable_xarray_resource_closer(darr_list[0]) or input_resource_closer
         )
 
+        self._file_backing = _file_backing
         self._file_path = pathlib.Path(file_path) if file_path is not None else None
 
         if load_func is not None:
@@ -2607,6 +2617,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         data = darr_list[0]
         self._source_input_dtype = prepared_data[0].source_dtype
+        self._file_call = None
+        if _file_backing is not None and not rad2deg and not preparation_operations:
+            resolved = _resolve_load_func(
+                self._load_func, source_input_dtype=self._source_input_dtype
+            )
+            if resolved is not None:
+                self._file_call = resolved.replay_call()
         shares_external_values = True
         if hasattr(self, "_data") and data is self._data:
             shares_external_values = False
@@ -2746,6 +2763,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         auto_compute: bool = True,
         *,
         emit_edited: bool = False,
+        _file_backing: FileVersion | None = None,
     ) -> None:
         """Replace the underlying source data and notify bound child tools.
 
@@ -2756,6 +2774,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.set_data(
             data,
             rad2deg=rad2deg,
+            _file_backing=_file_backing,
             file_path=file_path,
             load_func=load_func,
             preparation_operations=preparation_operations,
@@ -2804,8 +2823,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             and provenance_requires_code_trust(provenance_spec)
             and self._stored_code_authorizer is None
         )
-        if self._managed_source_chain_reload_target() is not None:
-            return True
+        if managed := self._managed_source_chain_reload_target():
+            manager, uid = managed
+            return manager._reload_unavailable_reason_for_target(uid) is None
         if not stored_code_without_host and self._direct_reloadable():
             return True
         if (manager := self._script_input_reload_manager()) is not None:
@@ -2834,6 +2854,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if manager is None:
             return None
         target = manager.target_from_slicer_area(self)
+        if isinstance(target, int):
+            uid = manager._node_for_target(target).uid
+            return (manager, uid) if manager._operations.graph.has_recipe(uid) else None
         if not isinstance(target, str):
             return None
         if manager._reload_target_for_child(target) is None:
@@ -3086,8 +3109,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def _reload_unavailable_reason(self) -> str | None:
         """Return why Reload Data cannot run, or `None` when reload is available."""
-        if self._managed_source_chain_reload_target() is not None:
-            return None
+        if managed := self._managed_source_chain_reload_target():
+            manager, uid = managed
+            return manager._reload_unavailable_reason_for_target(uid)
         manager = self._manager_instance if self._in_manager else None
         provenance_spec = self.provenance_spec
         if (
@@ -3218,10 +3242,17 @@ class ImageSlicerArea(QtWidgets.QWidget):
         ):
             return self._fetch_for_provenance_reload(), {}
         if self._direct_reloadable():
-            return (
-                self._fetch_for_reload(),
-                {"file_path": self._file_path, "load_func": self._load_func},
-            )
+            kwargs: dict[str, typing.Any] = {
+                "file_path": self._file_path,
+                "load_func": self._load_func,
+            }
+            if self._file_path is not None and self._load_func is not None:
+                version = _capture_loader_file(
+                    self._file_path, self._load_func[0], self._load_func[1]
+                )
+                if version is not None:
+                    kwargs["_file_backing"] = version
+            return self._fetch_for_reload(), kwargs
         if self._provenance_reloadable():
             return self._fetch_for_provenance_reload(), {}
         raise RuntimeError("Data cannot be reloaded")

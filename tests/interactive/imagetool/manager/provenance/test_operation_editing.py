@@ -84,8 +84,7 @@ from tests.interactive.imagetool.manager.helpers import (
     _exec_generated_code,
     select_tools,
 )
-
-from ._common import (
+from tests.interactive.imagetool.manager.provenance._common import (
     _authorize_local_edit,
     _fake_edit_controller,
     _fake_edit_node,

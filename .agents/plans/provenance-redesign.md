@@ -13,7 +13,8 @@ or get faster, with equal or lower peak and retained memory. Apply the
 milestone onward.
 
 Stage 1 (`7d3f7541`) and Stage 2 (`d7c4329b`) provide the revision graph on
-main `9b62b1e3`. The Manager still uses the existing provenance system. The
+main `9b62b1e3`. The first Manager integration covers **Interpolate → From
+ImageTool**. Other producer paths still use the existing provenance system. The
 Stage 3 prototype is preserved at `71ee41ee`. Its tests and console behavior
 matrix can be recovered from that commit.
 
@@ -27,9 +28,8 @@ matrix can be recovered from that commit.
 | ImageTool entry | A stable window identity with a displayed revision, pending recipe, Auto setting, and tree placement. A revision becomes virtual when no entry displays it. It can still supply data through its producer or a checkpoint. |
 
 This is the existing distinction between `Recipe`, `Application`, and
-`ImageToolEntry`. Extend these records in place. At present `Application.apply()`
-asks the operation to calculate, and `Application.code()` asks it to write a
-second description of the calculation. This is where the two paths can diverge.
+`ImageToolEntry`. Extend these records in place. For ported operations, `Application.apply()` and `Application.code()` use the
+same call description and the settings recorded when the recipe was created.
 [Graph records](../../src/erlab/_provenance/_records.py) ·
 [Graph commands](../../src/erlab/_provenance/_graph.py)
 
@@ -43,15 +43,14 @@ matches a slot or notebook name. The operation type registered by installed
 code determines the callable. The saved record contains its stable type and
 fields. The call description is derived from those fields.
 
-For example, this is the proposed binding for the existing concatenation
-operation. In this sketch, `Call` and `InputRef` are plain records. Constructing
-them performs no calculation.
+The concatenation operation builds its call from the ordered slots. Constructing
+the call performs no calculation. [Call definitions](../../src/erlab/_provenance/_calls.py)
 
 ```python
-def invocation(self):
-    names = ("data", *self.input_slots())
-    arrays = [InputRef(name) for name in names]
-    return Call(function=xr.concat, args=(arrays,), kwargs=self.kwargs)
+def invocation(self) -> Call:
+    slots = ("data", *self.input_slots())
+    arrays = [InputRef(slot) for slot in slots]
+    return Call.function(xr.concat, args=(arrays,), kwargs=self.kwargs)
 ```
 
 If the bindings are A₀, B₀, A₀, execution passes those three arrays to
@@ -183,6 +182,50 @@ single-dot sibling imports. The `__init__.pyi` files read by
    Verify the affected workloads below before closing the milestone. Track
    the remaining production ports separately.
 
+### Implemented paths
+
+- The catalog check covers 50 operations and `source_view`. The [call
+  definition](../../src/erlab/_provenance/_calls.py) supplies live execution
+  and notebook export for the ported built-ins. Transpose adds one method
+  binding to the existing operation. It removes its separate `apply` and
+  `expression_code` implementations.
+- The [headless parity tests](../../tests/test_provenance_graph.py) restore
+  typed records, execute copied Python, and compare both results with an
+  independent expectation. They cover rename, transpose, ordered concat,
+  affine coordinates, guarded normalization, an accessor setter, both outputs
+  of mesh removal, and a selected variable from a file. Mesh removal preserves
+  the public tuple unpacking and chooses the recorded array as the result.
+- The [Manager integration](../../src/erlab/interactive/imagetool/manager/_operation_graph.py)
+  resolves both interpolation inputs from their selected entries. Child,
+  top-level, and replacement displays use the same calculation. The historical
+  editor and Copy Full Code use the displayed application. Refresh uses the
+  current bindings. The Manager tests also exercise a rejected installation
+  and release of the last owner.
+- The extension tests exercise module initialization, a second submission with
+  different settings, deferred computation, and notebook export. The worker
+  implementation is on the local `dev-provenance-extension-candidate` branch.
+  Its measured time and memory costs keep this milestone open.
+
+### Operation and replay inventory
+
+The [porting inventory](../../tests/interactive/imagetool/provenance_ports.csv)
+identifies the calculation or boundary for each registered type. The
+`test_porting_routes_cover_the_registered_operations` test checks the inventory
+against the loaded registry. A porting route describes work to do. Its numerical,
+ownership, and replay tests establish when it works.
+
+The registry excludes some decisions made by the [replay compiler](../../src/erlab/interactive/imagetool/_provenance/_graph.py)
+and [replay executor](../../src/erlab/interactive/imagetool/_provenance/_execution.py).
+
+| Existing replay input or node | Destination and evidence required |
+| --- | --- |
+| `full_data`, `public_data`, `selection` | Resolve the selected source view and its preparation steps when capturing the input. Test a filtered, transposed selection against its expected coordinates. |
+| `file_load` | Preserve the loader kind, file version, arguments, selection, and optional cast. Exercise the ERLab loader, local callable, and extension loader. Cover Dataset and DataTree variables, sequence items, and old positional selections. |
+| `caller_input`, `external_input`, `live_input` | Supply or request an operand at its declared boundary. Capture the revision before evaluation. Check an unavailable input, two names for one operand, and an editable caller buffer. |
+| `operation`, `script` | Use the catalog binding or the authorized stored program, with the ordered inputs and named result. Check the recorded settings, selected output, and denied execution. |
+| `setup`, `relay`, `source_view` | Preserve setup information and pass-through relationships during import and export. Check the notebook prologue and the visible source without creating an extra numerical result. |
+| Schema-v2 parent context | Recover the saved parent revision or its checkpoint for operations that need it. Test a legacy coordinate operation with distinct parent and current data. |
+
 ## Performance and large workspaces
 
 **Baseline.** Compare each migrated path with the same user action on
@@ -222,10 +265,60 @@ switching the default implementation.
 The foundation already tests a 1,100-entry chain and diamond, lazy status queries,
 Auto coalescing, and release of retained revisions. Extend these checks through
 the Manager and workspace so they also catch hidden work in the UI and storage.
-Paired timing and peak-memory measurements are pending for the new framework.
+On macOS arm64, eight alternating pairs on a 1,024 × 1,024 interpolation
+gave 177.63 ms on main and 178.28 ms on the integration snapshot. Paired changes
+ranged from −13.4% to +9.2%. Eight pairs on a 2,048 × 512 input gave 111.82 ms
+and 114.52 ms. Both stores together retained two unique buffers, totaling
+10 MiB, after each result window closed in the latter workload. Timing varied
+between processes. A fixed one-edge refresh took about 0.17 ms with either
+1,000 or 10,000 unrelated entries. This measurement covers graph evaluation.
+A further eight pairs measured the macOS physical footprint, including compressed
+pages. The median paired differences were +0.20 MiB for both peak and settled
+memory and −0.03% for latency. The two versions retained the same six arrays
+after window close in that workload.
+
+The live Rename action measured 0.958 ms on main and 0.995 ms on the candidate
+across eight process pairs. Paired changes ranged from −13.6% to +14.1%.
+Direct replay of the small method had a measurable cost, 1.37 µs on main and
+1.52 µs with the general positional method binding. Transpose measured 32.12 µs
+and 31.76 µs. These direct measurements exclude window publication.
+
+The extension's isolated interpreter measured higher first-use latency and
+peak memory on the same Manager workload. Keep its performance work open.
 [Graph tests](../../tests/test_provenance_graph.py) ·
 [Pending previews](../../tests/interactive/imagetool/manager/workspace/test_pending_preview.py) ·
 [Workspace storage](../../tests/interactive/imagetool/manager/workspace/test_storage.py)
+
+### Extension measurements
+
+On macOS arm64 with Python 3.14.3 and PyQt6, the benchmark queued one registered
+routine that took the mean of a 256 × 256 float64 array. It checked each result.
+Three fresh-process pairs ran one cold job and 25 warm jobs each. Run
+`PYTHONPATH=<checkout>/src python bench_extension_worker.py <label>` for baseline
+`9b62b1e3` and the candidate based on `0771e1d3` (extension source digest
+`4c2336a8f473`). The table gives the median across the three process runs.
+Memory is sampled RSS, summed across the caller and its children every 20 ms.
+Shared resident pages can count once per process.
+
+| Worker measurement | Baseline | Candidate |
+| --- | ---: | ---: |
+| First job | 4.07 ms | 944 ms |
+| Warm median | 1.67 ms | 2.43 ms |
+| Warm 90th percentile | 2.01 ms | 3.28 ms |
+| Peak RSS | 304 MiB | 518 MiB |
+| RSS increase after last owner closes | 0.43 MiB | 0.45 MiB |
+
+Warm medians ranged from 1.48 to 1.70 ms on the baseline and 2.22 to 2.64 ms
+on the candidate. One slice read one source chunk. A shared reduction read all four source chunks
+once each on both paths. The private interpreter preserves xarray settings
+through script imports and deferred callbacks. The worker culls its most recent
+graph before sending the selected tasks. After worker replacement, the first
+request sends the saved graph to the new interpreter. Changing the settings
+starts a new interpreter because imported helpers can cache them. The time and
+peak memory regressions keep the extension gate open. A read-only memory map
+reduced the warm transfer time for a 32 MiB operand from 12.3 ms to 0.71 ms,
+but required a 32 MiB file and 282 ms on the first transfer. It does not resolve
+the interpreter cost.
 
 ## Finding and retiring the old paths
 
@@ -254,6 +347,44 @@ The rebased foundation contains these two examples of independent decisions.
 | --- | --- | --- |
 | Reload from an ImageTool or from the Manager | The viewer also checks availability and can choose a direct loader or its local provenance. | For a managed row, exercise both actions with a viable but conflicting local loader. Check that each action uses the graph-selected origin once and explains unavailability consistently. Exercise standalone Reload separately. [Viewer reload paths](../../src/erlab/interactive/imagetool/viewer.py) |
 | Paste Provenance Steps | The edit controller branches on tree parent and displayed source spec to choose how to apply the pasted step. | Paste the same metadata edit into stale child and top-level results. Both must use the old displayed values, copy those values, and refresh from the new binding. [Paste controller](../../src/erlab/interactive/imagetool/manager/_provenance_edit/_controller.py) |
+
+The Manager tree's Rename editor also calculates outside the operation record.
+The [window wrapper](../../src/erlab/interactive/imagetool/manager/_wrapper.py)
+renames the displayed, slicer, and accepted filter arrays, then records the new
+name. A future port must keep those arrays and the copied result in agreement
+when a filter is active. The existing editor remains in use for this milestone.
+
+The following additional routes connect user entry points to the writers and
+readers on the rebased foundation. The last column gives the observable test for
+moving each decision. When a path has both managed and standalone callers, keep
+the standalone case in the test.
+
+| Entry point and present owner | Destination | Public behavior to test |
+| --- | --- | --- |
+| [Single transform](../../src/erlab/interactive/imagetool/dialogs.py), `DataTransformDialog.accept`, calls `process_data` and composes separate nested and detached specs. The [concat dialog](../../src/erlab/interactive/imagetool/manager/_dialogs.py) selects multiple rows and also builds a spec at publication. | Submit the operation and ordered operands before evaluating. Place its result through an entry command. | Apply the same transform in three placements. Concatenate A, B, A and execute the copied Python. |
+| [Plot selection and associated coordinates](../../src/erlab/interactive/imagetool/plot_items.py), `open_in_new_window` passes current plot data and a separately built source spec. `open_associated_coord` applies a spec to the parent. | Submit the cursor selection, crop, binning, and view operations with the selected revision. | Open a transposed, binned profile and its coordinate. Move the cursor and execute each historical result’s copied code. |
+| [Batch transform and filter](../../src/erlab/interactive/imagetool/manager/_actions.py), `apply_batch_transform_dialog` and `apply_batch_filter_dialog`, preflight each row and stage results. | Resolve each target's operands and validate the group before committing. | An invalid last target leaves the earlier targets and their history intact. Count evaluations on success. |
+| [File Open in a viewer](../../src/erlab/interactive/imagetool/_mainwindow.py), `_open_file`, loads and selects an array before replacing the source. [Manager ingress](../../src/erlab/interactive/imagetool/manager/_io.py), `receive_data`, combines loader selections and preparation operations. | Register a file source and its selected output, or capture an incoming array as a source revision. | Open a multi-variable file through both actions. Replay the chosen variable after another variable changes order. |
+| [Server and watched replacements](../../src/erlab/interactive/imagetool/manager/_actions.py), `_data_replace` and `_data_watched_update`, choose which metadata assignments to keep. The [viewer](../../src/erlab/interactive/imagetool/viewer.py) applies a display filter to replacement data. | Capture the incoming revision, applicable metadata edits, and filter separately. | Replace a watched array with a growing scan while slicing. Verify the displayed plane, filter output, old source, and accepted update count. |
+| [Acquisition context](../../src/erlab/interactive/imagetool/manager/_acquisition_context.py), `apply_to_file_data`, applies accepted metadata assignments at file ingress. | Save the effective assignments with the selected file revision. | Load a file with an existing scalar coordinate. Check the keep and replace choices, their order, and the replayed result. |
+| [Console](../../src/erlab/interactive/imagetool/manager/_console.py) handles both recorded calls and direct `slicer_area.replace_source_data` on assignment. | Bind a console calculation to its input revisions. Publish an array assignment as a source and an item assignment as an edit. | Overwrite a caller buffer, then inspect, show, assign, and copy a previously calculated result. |
+| [Metadata table](../../src/erlab/interactive/imagetool/manager/_metadata_editor.py), `_plan_target_edit`, chooses a direct patch or validates a historical edit. [Historical editor](../../src/erlab/interactive/imagetool/manager/_provenance_edit/_controller.py), `_apply_validated_edit`, installs the result according to scope. | Edit the selected application on its branch. Commit the new data and history together. | Edit a stale child and a top-level result. Check the original coordinates, the next refresh, an unchanged sibling, and a rejected edit. |
+| [ToolWindow output](../../src/erlab/interactive/utils.py), `_open_output_imagetool`, accepts calculated data and a spec, then resolves a named or detached result. [Figure Composer](../../src/erlab/interactive/imagetool/manager/_figurecomposer/_controller.py) refreshes a referenced source separately. | A tool authors a durable recipe. A figure consumes a reference for display. | Reuse a named output, close its editor, then refresh it. Reopen a figure that references an ftool parameter directly. |
+| [Extension completion](../../src/erlab/interactive/imagetool/manager/_extensions/_execution.py), `_insert_if_current`, constructs the operation after the worker returns. | Capture inputs, version, settings, and parameters at submission. Verify the result is still current before publication. | Change settings across two jobs on one worker. Compute a deferred output later. Supersede a running job and check that it publishes nothing. |
+| [Manager lineage](../../src/erlab/interactive/imagetool/manager/_lineage.py) plans live or recorded input resolution. The [dependency index](../../src/erlab/interactive/imagetool/manager/_dependency.py) reads specs and tool inputs to derive stale status and schedule updates. | Graph queries read applications for displayed data and recipes for future updates. | Stop Auto at a stale prerequisite, resume it, and count shared ancestors evaluated in a diamond. Check the badge and enabled actions at each step. |
+| [Details and Copy Full Code](../../src/erlab/interactive/imagetool/manager/_details_panel.py), `_copy_full_derivation_code`, can walk tree parents to find a watched name. | Resolve the displayed application's historical operands. Assign notebook names at export. | Change the source with Auto off. Execute copied code on independent inputs for both a child and a top-level result. |
+| [Duplicate](../../src/erlab/interactive/imagetool/manager/_actions.py), `_duplicate_subtree`, copies a managed subtree. [Workspace save](../../src/erlab/interactive/imagetool/manager/_workspace/_saving.py) writes per-row specs and [restore](../../src/erlab/interactive/imagetool/manager/_workspace/_loading.py) rebuilds source and displayed state for loaded and pending rows. | Duplicate entries with explicit bindings. Restore shared revisions before attaching windows. Import older specs once. | Duplicate a stale branch and refresh only the copy. Save and reopen with a pending row, then inspect both histories without loading unrelated arrays. |
+
+The reverse trace starts at the wrapper's [data and history writers](../../src/erlab/interactive/imagetool/manager/_wrapper.py),
+especially `_replace_imagetool_data`, `replace_with_detached_data`, and
+`set_displayed_provenance`. Follow the [legacy revision store](../../src/erlab/interactive/imagetool/manager/_revisions.py)
+when a wrapper binds a checkpoint, stores a metadata edit, or releases unreachable
+revisions. Compare retained history and checkpoint lifetime across close and reopen.
+Also trace `replace_source_data` and `set_data`
+directly on the viewer. These reach console assignment and viewer File Open,
+which can bypass a wrapper writer. Repeat both searches when switching each
+route. Existing [Manager tests](../../tests/interactive/imagetool/manager)
+cover the legacy behavior and supply fixtures for these comparisons.
 
 For each migrated route, drive its real entry point with the legacy decision
 disabled or contradicted *before* the action. Assert the expected data, recorded

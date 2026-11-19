@@ -24,9 +24,10 @@ from erlab.interactive._figurecomposer import (
 )
 from erlab.interactive._figurecomposer._providers import FigureSourceTarget
 from erlab.interactive.imagetool.manager._figurecomposer import _dialogs
+from tests.interactive.imagetool.manager.figurecomposer.test_manager_sources import (
+    _source_picker_item,
+)
 from tests.interactive.imagetool.manager.helpers import select_child_tool, select_tools
-
-from .test_manager_sources import _source_picker_item
 
 
 class _ProviderToolState(pydantic.BaseModel):

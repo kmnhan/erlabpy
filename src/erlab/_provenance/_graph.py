@@ -619,14 +619,23 @@ class ProvenanceGraph:
         )
 
     def reload(
-        self, entry_id: str, *, is_cancelled: Callable[[], bool] | None = None
+        self,
+        entry_id: str,
+        *,
+        is_cancelled: Callable[[], bool] | None = None,
+        choose_destination: Callable[[xr.DataArray], str | None] | None = None,
     ) -> str:
-        """Rebuild followed inputs from their origins. Pinned revisions stay fixed."""
+        """Reload once and let the host choose a window for the evaluated result.
+
+        The host borrows the result for inspection. Return the current entry ID,
+        a new entry ID, or None to cancel the complete update.
+        """
         return self._run(
             entry_id,
             self._entries[entry_id].recipe,
             mode="reload",
             is_cancelled=is_cancelled,
+            choose_destination=choose_destination,
         )
 
     def _sources(self, recipe: Recipe | FileLoad | None) -> set[str]:
@@ -873,6 +882,7 @@ class ProvenanceGraph:
         auto: bool = False,
         parent_id: str | None = None,
         is_cancelled: Callable[[], bool] | None = None,
+        choose_destination: Callable[[xr.DataArray], str | None] | None = None,
     ) -> str:
         generation = self._write_generation()
         if recipe is None and mode != "displayed":
@@ -902,6 +912,23 @@ class ProvenanceGraph:
             if mode == "displayed":
                 # A new edge elsewhere may have closed a proposed live cycle.
                 self._check_recipe(entry_id, recipe)
+
+        forked = False
+        if choose_destination is not None:
+            destination = choose_destination(result.entries[entry_id][1])
+            if destination is None:
+                raise CancelledError("The reloaded data was not published")
+            if self._generation != generation:
+                self._check_current(plan)
+            if destination != entry_id:
+                self._check_new_entry(destination, None)
+                forked = True
+                result.entries[destination] = result.entries.pop(entry_id)
+                entry_id = destination
+                revision_id = result.entries[destination][0]
+                result.revisions[revision_id] = replace(
+                    result.revisions[revision_id], producer_id=revision_id
+                )
 
         historical = False
         if displayed is not None and isinstance(recipe, Recipe):
@@ -945,6 +972,8 @@ class ProvenanceGraph:
                 self._check_current(plan)
                 if mode == "displayed":
                     self._check_recipe(entry_id, recipe)
+                if forked:
+                    self._check_new_entry(entry_id, None)
 
             # Install the values and edges after all operations succeed.
             self._revisions.update(result.revisions)
@@ -964,7 +993,7 @@ class ProvenanceGraph:
                 else:
                     self._displayed.pop(old.revision_id, None)
                     entry = replace(old, revision_id=revision_id, recipe=effective)
-                if target == entry_id and mode == "displayed":
+                if target == entry_id and (mode == "displayed" or forked):
                     self._index_sources(target, old.recipe if old else None, sources)
                 self._entries[target] = entry
                 self._displayed[revision_id] = data
