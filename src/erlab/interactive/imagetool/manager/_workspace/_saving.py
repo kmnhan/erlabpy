@@ -629,10 +629,14 @@ class _WorkspaceSaver:
         path: str,
         *,
         include_children: bool,
-        pending_images: Mapping[str, xr.Dataset] | None = None,
+        capture_pending_image: Callable[[_ManagedWindowNode, str], xr.Dataset | None]
+        | None = None,
     ) -> None:
-        if pending_images is not None and node.uid in pending_images:
-            constructor[f"{path}/imagetool"] = pending_images[node.uid]
+        pending_ds = (
+            None if capture_pending_image is None else capture_pending_image(node, path)
+        )
+        if pending_ds is not None:
+            constructor[f"{path}/imagetool"] = pending_ds
         elif node.is_imagetool:
             target: int | str = (
                 node.index if isinstance(node, _ImageToolWrapper) else node.uid
@@ -695,7 +699,7 @@ class _WorkspaceSaver:
                 child,
                 f"{path}/childtools/{child_uid}",
                 include_children=include_children,
-                pending_images=pending_images,
+                capture_pending_image=capture_pending_image,
             )
 
     def _to_datatree(
@@ -703,7 +707,8 @@ class _WorkspaceSaver:
         close: bool = False,
         include_children: bool = True,
         *,
-        pending_images: Mapping[str, xr.Dataset] | None = None,
+        capture_pending_image: Callable[[_ManagedWindowNode, str], xr.Dataset | None]
+        | None = None,
     ) -> xr.DataTree:
         """Convert the current state of the manager to a DataTree object."""
         constructor: dict[str, xr.Dataset] = {}
@@ -713,7 +718,7 @@ class _WorkspaceSaver:
                 self._manager._tool_graph.root_wrappers[index],
                 str(index),
                 include_children=include_children,
-                pending_images=pending_images,
+                capture_pending_image=capture_pending_image,
             )
             if close:
                 self._manager.remove_imagetool(index)

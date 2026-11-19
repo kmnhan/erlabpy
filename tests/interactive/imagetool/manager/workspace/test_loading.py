@@ -5505,6 +5505,35 @@ def test_workspace_replace_backs_up_shared_pending_images(
         lock.unlock()
 
 
+def test_workspace_replace_skips_pending_images_below_unsavable_tool(
+    monkeypatch, tmp_path, manager_context
+) -> None:
+    data = xr.DataArray(np.arange(9.0).reshape(3, 3), dims=("x", "y"))
+    with manager_context() as manager:
+        root = manager.add_imagetool(
+            itool(data, manager=False, execute=False), show=False
+        )
+        tool = _AddedTimeChildTool(data)
+        parent = add_source_childtool(manager, tool, root, show=False)
+        loader = manager._workspace_controller.loading
+        child = loader.pending._register_pending_workspace_imagetool(
+            xr.Dataset(),
+            parent_target=parent,
+            node_path=None,
+            kwargs={},
+            pending_workspace_memory_payload=(tmp_path / "unavailable.itws", "image"),
+            loaded_targets_by_uid=None,
+        )
+        monkeypatch.setattr(tool, "can_save_and_load", lambda: False)
+        backup = loader._workspace_replace_backup_for_load(None)
+        try:
+            assert backup.tree is not None
+            assert set(backup.tree[str(root)].children) == {"imagetool"}
+            assert manager._node_for_target(child).imagetool is None
+        finally:
+            backup.close()
+
+
 def test_manager_workspace_replace_load_failure_keeps_dirty_memory_backup(
     qtbot,
     monkeypatch,

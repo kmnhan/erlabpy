@@ -946,26 +946,30 @@ class _WorkspaceLoader:
         backup = _WorkspaceReplaceBackup(snapshot, sources=sources, metadata=metadata)
         saving = self._controller.saving
         datasets: dict[tuple[pathlib.Path, str], xr.Dataset] = {}
-        images: dict[str, xr.Dataset] = {}
         image_backup = workspace_arrays._WorkspaceImageBackupCache()
-        try:
-            for uid, node in self._manager._tool_graph.nodes.items():
-                payload = node.pending_workspace_memory_payload
-                if payload is None or node.imagetool is not None:
-                    continue
-                path, group = payload
-                if payload not in datasets:
-                    # Keep an independent fallback if the original document disappears.
-                    datasets[payload] = self._read_workspace_imagetool_payload_dataset(
-                        path, group, load_data=True, image_backup=image_backup
-                    )
-                ds = datasets[payload].copy(deep=False)
-                ds.attrs = saving._pending_workspace_imagetool_attrs(
-                    node, stored_attrs=ds.attrs
+
+        def capture_pending_image(
+            node: _ManagedWindowNode, node_path: str
+        ) -> xr.Dataset | None:
+            payload = node.pending_workspace_memory_payload
+            if payload is None or node.imagetool is not None:
+                return None
+            if payload not in datasets:
+                # Keep an independent fallback if the original document disappears.
+                datasets[payload] = self._read_workspace_imagetool_payload_dataset(
+                    *payload, load_data=True, image_backup=image_backup
                 )
-                images[uid] = ds
-                backup.pending_images[saving._workspace_node_path(uid)] = payload
-            backup.tree = saving._to_datatree(pending_images=images)
+            ds = datasets[payload].copy(deep=False)
+            ds.attrs = saving._pending_workspace_imagetool_attrs(
+                node, stored_attrs=ds.attrs
+            )
+            backup.pending_images[node_path] = payload
+            return ds
+
+        try:
+            backup.tree = saving._to_datatree(
+                capture_pending_image=capture_pending_image
+            )
             backup.backing_versions = image_backup.backing_versions
         except Exception:
             backup.close()
