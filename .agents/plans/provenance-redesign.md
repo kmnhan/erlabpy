@@ -455,25 +455,42 @@ the mutable callback change the caller's original index.
 
 ### Eager source ownership
 
-On a 64 MiB signal with a 16 MiB auxiliary coordinate, both main and the
-integration copied each buffer once when first recording an interpolation
-input. Metadata inspection, plane selection and two repeat submissions made
-no additional full-buffer copies. The saved revision remained correct when
-the producer immediately overwrote its buffers. The live source window
-could show the new data under the old revision token. With an accepted filter,
-its displayed values could stay fixed while the auxiliary coordinate changed.
-Refresh then used the earlier revision.
+A managed ImageTool captures mutable eager values and coordinates at admission or
+source replacement. Reading a plane, inspecting metadata and binding the same
+revision again share those buffers. In the Manager console, item assignment
+(`tools[0][0, 0] = value`) and full source replacement record a new revision.
+An accepted filter publishes its displayed data. A transient preview keeps the
+previous accepted data available for operations and replay. Graph results
+use the same protected values in the window and in both revision stores.
 
-Giving the unfiltered live window another private array preserved both the
-original display and its history when the producer wrote again. A trial took
-12 ms and added 80.06 MiB RSS for these two buffers. Pointing the window at
-the historical array allowed a direct write to `slicer_area.data.values`
-to change history. The private-copy trial did not meet the memory criterion.
-On the macOS test host, POSIX shared memory rejected a private mapping.
-An unlinked file allowed independent writes. Creating its mappings took
-78–135 ms, used 80 MiB of filesystem space and required another 80 MiB of
-physical memory after the viewer overwrote all values. The writable viewer
-interfaces and their ownership need a decision before this case can pass.
+On macOS arm64, allocation tracing at `bbcb48b2` counted one 64 MiB signal
+and one 16 MiB auxiliary coordinate at admission, with no further buffers of
+either size on first or repeat interpolation, metadata inspection or plane
+selection. The producer immediately overwrote its own arrays. The displayed
+plane, historical data, Refresh and executed Copy Full Code kept the recorded
+values and coordinates. The viewer, graph and revision store held the same
+169,345,096 bytes in nine live arrays as the pre-redesign workload.
+
+Across four alternating pairs against `9b62b1e3`, admission took 12.50 ms
+versus 1.01 ms. First interpolation took 107.72 ms versus 114.90 ms.
+Admission plus first interpolation changed by a paired median of +4.76 ms
+(range −9.42 to +8.47 ms). Group peak RSS changed by +0.25 MiB and RSS after
+close by +0.64 MiB. At the read-only stage, the baseline allocator could reuse
+a freed 16 MiB producer allocation. Physical footprint differed by +17.25 MiB
+when that allocation was free and +0.94 MiB when it was retained on both
+versions. Live array sizes matched in both controls.
+
+A growing-grid test submitted 12 source and target replacements while moving
+the cursor. With a normalization filter, each burst also accepted the filter
+on the new source. With Auto off, one manual Refresh reproduced the last
+frame. With Auto on, all 36 published frames per filter condition matched an
+independent calculation across three runs. The controls and axis labels read
+layout metadata directly. In a profile of 12 unfiltered bursts this reduced
+public array wrapper construction from 2,423 calls to 58. Relative to
+`9b62b1e3`, the median manual cursor gap changed from 18.54 to 18.43 ms
+without a filter and from 18.26 to 18.82 ms with a filter. Automatic
+calculation still runs on the GUI thread. The worst observed cursor gaps with
+Auto enabled were 136 ms unfiltered and 140 ms filtered.
 
 ### Extension measurements
 
