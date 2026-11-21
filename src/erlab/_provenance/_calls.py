@@ -61,14 +61,17 @@ def _argument_code(value: typing.Any, names: Mapping[str, str]) -> str:
         return "slice(" + ", ".join(_argument_code(item, names) for item in items) + ")"
     if isinstance(value, np.ndarray | np.generic):
         dtype = value.dtype
+        dtype_spec = dtype.descr if dtype.fields else dtype.str
         # Preserve the storage unit of timestamps and durations.
         if dtype.kind in "mM":
             items = value.astype(np.int64).tolist()
-        elif dtype.kind in "fc" and dtype.itemsize > (16 if dtype.kind == "c" else 8):
+        elif dtype.char in {"g", "G"}:
+            # tolist() can return another longdouble, even on platforms where it
+            # uses eight bytes. Decimal text preserves the native precision.
             items = value.astype(str).tolist()
+            dtype_spec = dtype.byteorder + dtype.char
         else:
             items = value.tolist()
-        dtype_spec = dtype.descr if dtype.fields else dtype.str
         literal = f"np.array({_argument_code(items, names)}, dtype={dtype_spec!r})"
         if isinstance(value, np.generic):
             return literal + "[()]"

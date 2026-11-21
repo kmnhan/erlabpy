@@ -1056,7 +1056,12 @@ def _migrate_legacy_file_data_selection(
         loaded = loader(file_path, **kwargs)
     else:
         loaded = _load_file_source_object(load_source)
-    return _semantic_file_data_selection(loaded, resolved.selection)
+    close = erlab.io.utils._take_file_closer(loaded)
+    try:
+        return _semantic_file_data_selection(loaded, resolved.selection)
+    finally:
+        if close is not None:
+            close()
 
 
 def _processed_replay_ndim(darr: xr.DataArray) -> int:
@@ -1265,7 +1270,14 @@ def _load_file_source_data(
         backing=backing,
         extension_loader_executor=extension_loader_executor,
     )
-    data = _select_replay_input(loaded, call.selection)
-    if call.cast_float64:
-        data = data.astype(np.float64)
-    return data
+    close = erlab.io.utils._take_file_closer(loaded)
+    try:
+        data = _select_replay_input(loaded, call.selection)
+        if call.cast_float64:
+            data = data.astype(np.float64)
+        data.set_close(close)
+        close = None
+        return data
+    finally:
+        if close is not None:
+            close()

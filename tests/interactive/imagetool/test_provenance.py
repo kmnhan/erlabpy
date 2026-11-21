@@ -22,6 +22,7 @@ import erlab._provenance._files as imagetool_load_source
 import erlab.extensions._api as extension_api
 from erlab._provenance import _code
 from erlab._provenance import _model as provenance_model
+from erlab._provenance._calls import Call
 from erlab._provenance._code import (
     _FIT_DATASET_MARKER,
     _MAPPING_MARKER,
@@ -1391,6 +1392,58 @@ def test_tool_provenance_discards_saved_cosmetic_coordinate_sorting() -> None:
     assert [operation.op for operation in spec.operations] == ["isel"]
     assert all(step.operation.op != "sort_coord_order" for step in spec.steps)
     assert "sort_coord_order" not in str(spec.model_dump(mode="json"))
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        np.datetime64("2026-03-03T10:00", "m"),
+        np.array([1, 2], dtype="timedelta64[ns]"),
+        np.float32(-0.0),
+        np.array([np.inf, -np.inf, np.nan]),
+        complex(-np.inf, np.nan),
+        np.array([np.nextafter(np.longdouble(1), np.longdouble(2))]),
+        np.longdouble("1.125"),
+        np.clongdouble(1.125 + 2.5j),
+        np.empty((2, 0, 3), dtype="uint16"),
+        np.array([(3, 1.25)], dtype=[("detector", "i4"), ("gain", "f8")]),
+    ],
+)
+def test_copied_call_preserves_calibration_literal_type_shape_and_value(value):
+    data = xr.DataArray([2.0, 5.0], dims="energy")
+    call = Call.method("assign_attrs", kwargs={"detector calibration": value})
+    calculated = call.evaluate({"data": data})
+    notebook = {"np": np, "counts": data.copy(deep=True)}
+    exec("result = " + call.expression({"data": "counts"}), notebook)  # noqa: S102
+    for output in (calculated, notebook["result"]):
+        restored = output.attrs["detector calibration"]
+        assert type(restored) is type(value)
+        assert np.asarray(restored).dtype == np.asarray(value).dtype
+        np.testing.assert_array_equal(restored, value)
+    assert not data.attrs
+
+
+def test_copied_call_preserves_stride_on_a_nonidentifier_dimension():
+    data = xr.DataArray(np.arange(9), dims="time of flight")
+    call = Call.method("isel", kwargs={"time of flight": slice(1, -1, 2)})
+    expected = xr.DataArray([1, 3, 5, 7], dims="time of flight")
+    notebook = {"scan": data}
+    exec("selected = " + call.expression({"data": "scan"}), notebook)  # noqa: S102
+    xr.testing.assert_identical(call.evaluate({"data": data}), expected)
+    xr.testing.assert_identical(notebook["selected"], expected)
+
+
+def test_call_rejects_notebook_literals_and_functions_without_public_names():
+    call = Call.method("assign_attrs", kwargs={"calibration": object()})
+    with pytest.raises(TypeError, match="Cannot emit a Python literal"):
+        call.expression({"data": "image"})
+
+    def local_only(data):
+        return data
+
+    call = Call.function(local_only)
+    with pytest.raises(ValueError, match="has no public export"):
+        call.expression({})
 
 
 def test_porting_routes_cover_the_registered_operations() -> None:
@@ -9688,6 +9741,118 @@ def test_console_operations_match_branch_specific_calls() -> None:
         )
         is None
     )
+
+
+@pytest.mark.parametrize("container", ["dataset", "tree", "sequence"])
+def test_migrated_file_selection_closes_its_reader_and_preserves_the_selected_array(
+    tmp_path, monkeypatch, container
+):
+    image = xr.DataArray(
+        np.arange(6, dtype="int16").reshape(2, 3), dims=("x", "y"), name="image"
+    )
+    path = tmp_path / "scan.nc"
+    xr.Dataset({"reference": 0, "first": image + 10, "image": image}).to_netcdf(
+        path, engine="h5netcdf"
+    )
+    expected_selection = {
+        "dataset": FileDataSelection(kind="dataset_variable", value="image"),
+        "tree": FileDataSelection(
+            kind="datatree_variable", value=("/detector", "image")
+        ),
+        "sequence": FileDataSelection(kind="sequence_index", value=1),
+    }[container]
+    closed = []
+
+    def open_container(_record, **_kwargs):
+        dataset = xr.open_dataset(path, engine="h5netcdf", chunks={})
+        if container == "tree":
+            result = xr.DataTree.from_dict({"detector": dataset})
+            owner = result["detector"]
+        elif container == "sequence":
+            result = (dataset.first, dataset.image)
+            owner = result[0]
+        else:
+            result = owner = dataset
+        backend_close = dataset._close
+
+        def close():
+            backend_close()
+            closed.append(container)
+
+        owner.set_close(close)
+        return result
+
+    monkeypatch.setattr(
+        imagetool_load_source, "_load_file_source_object", open_container
+    )
+    old_selection = FileDataSelection(kind="parsed_index", value=1)
+    load = (xr.open_dataset, {}, old_selection)
+    assert (
+        imagetool_load_source._migrate_legacy_file_data_selection(path, load)
+        == expected_selection
+    )
+    assert closed == [container]
+
+    missing = FileDataSelection(kind="parsed_index", value=2)
+    with pytest.raises(IndexError, match="out of range"):
+        imagetool_load_source._migrate_legacy_file_data_selection(
+            path, (*load[:2], missing)
+        )
+    assert closed == [container] * 2
+
+    call = FileReplayCall(
+        kind="callable",
+        target="xarray.open_dataset",
+        selection=expected_selection,
+        cast_float64=True,
+    )
+    record = _file_replay_source(path, replay_call=call)
+    with _load_file_source_data(record) as restored:
+        xr.testing.assert_identical(restored.compute(), image.astype("float64"))
+        assert closed == [container] * 2
+    assert closed == [container] * 3
+    bad_record = _file_replay_source(
+        path, replay_call=call.model_copy(update={"selection": missing})
+    )
+    with pytest.raises(IndexError, match="out of range"):
+        _load_file_source_data(bad_record)
+    assert closed == [container] * 4
+
+
+@pytest.mark.parametrize(
+    ("container", "selection", "error", "message"),
+    [
+        (
+            [np.arange(3), object()],
+            FileDataSelection(kind="parsed_index", value=1),
+            TypeError,
+            "must be a DataArray",
+        ),
+        (
+            [xr.DataArray(1.0)],
+            FileDataSelection(kind="parsed_index", value=0),
+            ValueError,
+            "not valid for ImageTool",
+        ),
+        (
+            xr.DataArray([1]),
+            FileDataSelection(kind="dataset_variable", value="scan"),
+            TypeError,
+            "return a Dataset",
+        ),
+        (
+            xr.Dataset(),
+            FileDataSelection(kind="datatree_variable", value=("/scan", "signal")),
+            TypeError,
+            "return a DataTree",
+        ),
+    ],
+)
+def test_file_replay_rejects_changed_loader_output(
+    container, selection, error, message
+):
+    with pytest.raises(error, match=message):
+        _select_replay_input(container, selection)
 
 
 def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -> None:

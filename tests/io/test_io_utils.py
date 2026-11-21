@@ -21,6 +21,50 @@ def test_save_as_hdf5_squeezes_size_one_dims_with_igor_compat(tmp_path) -> None:
     assert "IGORWaveScaling" in loaded.attrs
 
 
+def test_recorded_source_recognizes_classic_netcdf_and_rejects_other_drivers(tmp_path):
+    from erlab._provenance._files import _capture_loader_file
+
+    path = tmp_path / "classic.nc"
+    signal = xr.DataArray(
+        np.arange(12, dtype="float32").reshape(3, 4), dims=("x", "y"), name="counts"
+    )
+    signal.to_netcdf(path, engine="scipy", format="NETCDF3_CLASSIC")
+    version = _capture_loader_file(path, xr.open_dataarray, {"engine": "scipy"})
+    assert version == FileVersion.capture(path)
+    with erlab.io.read_file_version(
+        read=xr.open_dataarray, read_kwargs={"engine": "scipy"}, **asdict(version)
+    ) as restored:
+        xr.testing.assert_identical(restored, signal)
+
+    for options in (
+        {"engine": "zarr"},
+        {"driver": "family"},
+        {"backend_kwargs": {"driver": "family"}},
+    ):
+        assert _capture_loader_file(path, xr.open_dataset, options) is None
+    path.write_bytes(b"data from a different file format")
+    assert _capture_loader_file(path, xr.open_dataset, {}) is None
+
+
+def test_versioned_reader_reports_file_replacement_even_when_open_fails(tmp_path):
+    path = tmp_path / "scan.nc"
+    path.write_bytes(b"recorded")
+    version = FileVersion.capture(path)
+
+    def broken_reader(_path):
+        raise ValueError("invalid scan")
+
+    with pytest.raises(ValueError, match="invalid scan"):
+        erlab.io.read_file_version(read=broken_reader, **asdict(version))
+
+    def replacing_reader(_path):
+        path.unlink()
+        return broken_reader(_path)
+
+    with pytest.raises(OSError, match="unavailable"):
+        erlab.io.read_file_version(read=replacing_reader, **asdict(version))
+
+
 def test_file_replaced_during_versioned_read_closes_result(tmp_path) -> None:
     path = tmp_path / "scan.nc"
     original = xr.DataArray([1, 2], dims="x")
