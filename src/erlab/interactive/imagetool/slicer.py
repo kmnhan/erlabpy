@@ -10,6 +10,7 @@ import warnings
 import numpy as np
 import numpy.typing as npt
 from qtpy import QtCore, QtWidgets
+from xarray.indexes import PandasIndex
 
 import erlab
 from erlab._provenance._checkpoint import protected_data
@@ -469,7 +470,11 @@ class ArraySlicer(QtCore.QObject):
             obj_original = self._to_physical_data(obj_original.copy(deep=False))
 
         if validate:
-            self._obj = self.validate_array(xarray_obj, copy_values=copy_values)
+            self._obj = self.validate_array(
+                xarray_obj,
+                copy_values=copy_values,
+                copy_coords=not self._protect_values,
+            )
             self._dimension_mapping: dict[Hashable, Hashable] = {
                 f"{dim}_idx": dim
                 for dim in xarray_obj.dims
@@ -892,7 +897,9 @@ class ArraySlicer(QtCore.QObject):
         # something... reproduce by archiving a 3D array with one non-uniform axis.
 
     @staticmethod
-    def validate_array(data: xr.DataArray, copy_values: bool = True) -> xr.DataArray:
+    def validate_array(
+        data: xr.DataArray, copy_values: bool = True, *, copy_coords: bool = True
+    ) -> xr.DataArray:
         """Validate a given :class:`xarray.DataArray`.
 
         If data has two momentum axes (``kx`` and ``ky``), set them (and ``eV`` if
@@ -911,6 +918,9 @@ class ArraySlicer(QtCore.QObject):
             If `True`, copy the underlying values while validating. Set to `False` when
             the caller intentionally wants the validated array to share the same values
             buffer as the source array.
+        copy_coords
+            Copy dimension coordinates. A managed viewer can reuse an already owned,
+            contiguous coordinate with a standard index.
 
         Returns
         -------
@@ -942,18 +952,24 @@ class ArraySlicer(QtCore.QObject):
         if data.ndim > 4:
             raise ValueError("Data must have at most four dimensions.")
 
-        for d in data.dims:
-            if data[d].ndim != 1:
-                raise ValueError(f"Coordinate of dimension {d} is not one-dimensional.")
-
-        # Convert coords to C-contiguous array
-        data = erlab.utils.array.sort_coord_order(
-            data.assign_coords(
-                {d: data[d].astype(data[d].dtype, order="C") for d in data.dims}
-            ),
-            keys=data.coords.keys(),
-            dims_first=False,
-        )
+        coords = {}
+        for dim in data.dims:
+            coord = data[dim]
+            if coord.ndim != 1:
+                raise ValueError(
+                    f"Coordinate of dimension {dim} is not one-dimensional."
+                )
+            # Reassigning even an unchanged dimension rebuilds its pandas index.
+            if (
+                copy_coords
+                or type(data.xindexes.get(dim)) is not PandasIndex
+                or not coord.values.flags.c_contiguous
+            ):
+                coords[dim] = coord.astype(coord.dtype, order="C")
+        if coords:
+            data = erlab.utils.array.sort_coord_order(
+                data.assign_coords(coords), keys=data.coords.keys(), dims_first=False
+            )
 
         # Cast to float64 if not a floating point type (e.g. int)
         display_dtype = image_display_dtype(data.dtype)

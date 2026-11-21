@@ -839,3 +839,27 @@ def test_managed_operation_shares_published_result_on_create_and_refresh(
         manager.refresh_revision_button.click()
         check_published(spectrum.interp_like(changed))
         xr.testing.assert_identical(before, spectrum.interp_like(grid))
+
+
+@pytest.mark.parametrize("nonuniform", [False, True])
+def test_managed_slicer_shares_the_owned_dimension_in_a_promoted_spectrum(
+    manager_context, nonuniform
+):
+    indices = np.arange(2048, dtype=np.float64)
+    if nonuniform:
+        indices[-1] += 0.5
+    spectrum = xr.DataArray(np.zeros_like(indices), dims="x", coords={"x": indices})
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            itool(spectrum, manager=False, execute=False), show=False
+        )
+        area = manager._node_for_target(index).slicer_area
+        stored = area.displayed_data.x.values
+        rendered = area.data
+        assert len(rendered.stack_dim) == 1
+        assert ("x_idx" in rendered.dims) is nonuniform
+        assert not np.shares_memory(stored, indices)
+        assert np.shares_memory(rendered.x.values, stored)
+        assert not stored.flags.writeable
+        indices[:] = -1
+        assert rendered.x.values[-1] == (2047.5 if nonuniform else 2047.0)
