@@ -73,6 +73,10 @@ def _buffer_owner(array: object) -> object:
     while isinstance(array, np.ndarray | memoryview):
         if isinstance(array, memoryview):
             array = array.obj
+        elif type(array) is _OwnedBytesArray:
+            if type(array.base) is bytes and not array.flags.writeable:
+                return array
+            array = array.base
         elif array.base is not None:
             array = array.base
         else:
@@ -196,11 +200,57 @@ _BufferMemo = dict[
 ]
 
 
+class _OwnedBytesArray(np.ndarray):
+    """A privately captured bytes buffer, retained as the base of public views."""
+
+    def __new__(
+        cls, values: np.ndarray, order: typing.Literal["F", "C"]
+    ) -> typing.Self:
+        values = np.asarray(values)
+        return super().__new__(
+            cls, values.shape, values.dtype, buffer=values.tobytes(order), order=order
+        )
+
+    def __reduce_ex__(self, protocol: typing.SupportsIndex, /) -> typing.Any:
+        # NumPy can unpickle writable arrays over bytes. Restore a plain ndarray
+        # so that the graph captures it again at its next admission.
+        return np.asarray(self).__reduce_ex__(protocol)
+
+
+# Small captures are faster as bytes. Large numeric buffers can reuse an exact-sized
+# NumPy allocation without the Python bytes header moving it into a larger size class.
+_NUMERIC_BUFFER_MIN_BYTES = 1024**2
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _ReadOnlyBuffer:
+    """Own an isolated numeric allocation and expose its read-only array interface."""
+
+    _root: np.ndarray
+
+    def __init__(self, values: np.ndarray) -> None:
+        # Export a byte view of our sole private allocation, including for non-native
+        # dtypes. DLPack keeps it alive without exposing the writable producer.
+        flat = np.asarray(values).flatten(order="A").view(np.uint8)
+        root = np.from_dlpack(flat)
+        root.setflags(write=False)
+        object.__setattr__(self, "_root", root)
+
+    @property
+    def __array_interface__(self) -> dict[str, typing.Any]:
+        return self._root.__array_interface__
+
+    def __reduce__(self) -> tuple[type[_ReadOnlyBuffer], tuple[np.ndarray]]:
+        # An unpickled owner must acquire its own immutable storage, too.
+        return type(self), (self._root,)
+
+
 def _immutable_values(
     values: np.ndarray, memo: _BufferMemo | None = None
 ) -> np.ndarray:
-    """Share an immutable byte buffer or copy the input into one."""
-    if isinstance(_buffer_owner(values), bytes):
+    """Share private storage or capture an external array once."""
+    owner = _buffer_owner(values)
+    if type(owner) in (_OwnedBytesArray, _ReadOnlyBuffer):
         return values.view()
     if memo is not None:
         # Pandas and xarray may return a new ndarray header for the same view.
@@ -208,9 +258,13 @@ def _immutable_values(
         if (saved := memo.get(layout)) is not None:
             return saved[1].view(values.dtype)
     order: typing.Literal["F", "C"] = "F" if values.flags.f_contiguous else "C"
-    result = np.frombuffer(values.tobytes(order), dtype=values.dtype).reshape(
-        values.shape, order=order
-    )
+    if values.nbytes >= _NUMERIC_BUFFER_MIN_BYTES and values.dtype.kind in "biufc":
+        buffer = np.asarray(_ReadOnlyBuffer(values))
+        result = np.frombuffer(buffer, dtype=values.dtype).reshape(
+            values.shape, order=order
+        )
+    else:
+        result = np.asarray(_OwnedBytesArray(values, order))
     if memo is not None:
         # Keep the original alive while its address is in use.
         memo[layout] = (values, result)

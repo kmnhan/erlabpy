@@ -786,8 +786,9 @@ def test_graph_captures_the_signaled_public_data(manager_context, monkeypatch, c
         xr.testing.assert_identical(operations.graph.data(key), stored)
 
 
+@pytest.mark.parametrize("grid_size", [2, 512])
 def test_managed_operation_shares_published_result_on_create_and_refresh(
-    qtbot, manager_context
+    qtbot, manager_context, grid_size
 ):
     from erlab.interactive.imagetool.dialogs import InterpolationDialog
 
@@ -801,7 +802,13 @@ def test_managed_operation_shares_published_result_on_create_and_refresh(
         name="source",
     )
     spectrum = spectrum.assign_coords(detector=spectrum + 100)
-    grid = spectrum.isel(x=[0, 2], y=[0, 2]).drop_vars("detector").rename("grid")
+    axis = np.linspace(0, 2, grid_size)
+    grid = xr.DataArray(
+        np.zeros((grid_size, grid_size)),
+        dims=("x", "y"),
+        coords={"x": axis, "y": axis},
+        name="grid",
+    )
     with manager_context() as manager:
         source = manager._node_for_target(
             manager.add_imagetool(window(spectrum), show=False)
@@ -833,7 +840,7 @@ def test_managed_operation_shares_published_result_on_create_and_refresh(
             return public
 
         before = check_published(spectrum.interp_like(grid))
-        changed = grid.assign_coords(x=[0.5, 1.5])
+        changed = grid.assign_coords(x=0.5 + 0.5 * grid.x)
         target.slicer_area.replace_source_data(changed)
         manager._set_metadata_node(child)
         manager.refresh_revision_button.click()

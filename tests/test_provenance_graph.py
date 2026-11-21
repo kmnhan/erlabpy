@@ -1947,11 +1947,16 @@ def _check_saved_file_call(tmp_path):
 
 
 def test_checkpoint_reuses_only_immutable_numeric_values():
-    from erlab._provenance._checkpoint import checkpoint_data
+    from erlab._provenance._checkpoint import _buffer_owner, checkpoint_data
 
     mutable = np.arange(12)
+    saved = checkpoint_data(xr.DataArray(mutable)).values
+    owner = _buffer_owner(saved)
     for values, share in (
-        (np.frombuffer(mutable.tobytes(), dtype=mutable.dtype), True),
+        (saved, True),
+        (mutable.view(type(owner)), False),
+        (owner.copy(), False),
+        (np.frombuffer(mutable.tobytes(), dtype=mutable.dtype), False),
         (mutable.view(), False),
     ):
         values.setflags(write=False)
@@ -1960,6 +1965,78 @@ def test_checkpoint_reuses_only_immutable_numeric_values():
         assert np.shares_memory(owned.values, source.values) is share
         owned.attrs["groups"].clear()
         assert source.attrs == {"groups": [1]}
+
+
+@pytest.mark.parametrize("layout", ["fortran", "strided", "non_native", "annotated"])
+def test_numeric_checkpoint_shares_its_own_read_only_slices(layout):
+    from erlab._provenance._checkpoint import checkpoint_data
+
+    raw = np.arange(1024**2, dtype="i4").reshape(1024, 1024)
+    if layout == "fortran":
+        raw = raw.T
+    elif layout == "strided":
+        raw = raw[::-2, ::2]
+    elif layout == "non_native":
+        raw = raw.astype(raw.dtype.newbyteorder("S"))
+    elif layout == "annotated":
+        raw = raw.view(np.dtype("i4", metadata={"sensor": "counts"}))
+    expected = raw.copy()
+    captured = checkpoint_data(xr.DataArray(raw))
+    raw[:] = -1
+    np.testing.assert_array_equal(captured.values, expected)
+    assert captured.dtype == raw.dtype
+    assert captured.dtype.metadata == raw.dtype.metadata
+    if layout == "fortran":
+        assert captured.values.flags.f_contiguous
+    section = captured[::2]
+    repeated = checkpoint_data(section)
+    assert np.shares_memory(repeated.values, captured.values)
+    with pytest.raises(ValueError, match="WRITEABLE"):
+        repeated.values.setflags(write=True)
+
+
+def test_foreign_capsule_and_pickled_checkpoint_remain_independent():
+    import pickle
+
+    from erlab._provenance._checkpoint import _buffer_owner, checkpoint_data
+
+    expected = np.arange(512**2, dtype="f4")
+    producer = expected.copy()
+    foreign = np.from_dlpack(producer)
+    foreign.setflags(write=False)
+    captured = checkpoint_data(xr.DataArray(foreign, dims="x", name="scan"))
+    assert not np.shares_memory(captured.values, producer)
+    producer[:] = -1
+    np.testing.assert_array_equal(captured, expected)
+    # The default NumPy pickle can restore writable values over a bytes object.
+    # A fresh view of those bytes does not identify its independent writable peer.
+    restored_input = pickle.loads(pickle.dumps(producer, protocol=4))
+    foreign_bytes = _buffer_owner(restored_input)
+    if type(foreign_bytes) is bytes and restored_input.flags.writeable:
+        fresh_view = np.frombuffer(foreign_bytes, dtype=producer.dtype)
+        protected = checkpoint_data(xr.DataArray(fresh_view))
+        small = checkpoint_data(xr.DataArray(fresh_view[:8]))
+        restored_input[0] = 37
+        assert fresh_view[0] == 37
+        assert protected.values[0] == small.values[0] == -1
+
+    owner = _buffer_owner(captured.values)
+    small_owner = _buffer_owner(checkpoint_data(captured[:8].copy(deep=True)).values)
+    for protocol in (4, 5):
+        plain = pickle.loads(pickle.dumps(small_owner, protocol=protocol))
+        assert type(plain) is np.ndarray
+        np.testing.assert_array_equal(plain, expected[:8])
+        restored_owner = pickle.loads(pickle.dumps(owner, protocol=protocol))
+        buffer = np.asarray(restored_owner)
+        assert not np.shares_memory(buffer, captured.values)
+        with pytest.raises(ValueError, match="WRITEABLE"):
+            buffer.setflags(write=True)
+        restored = pickle.loads(pickle.dumps(captured, protocol=protocol))
+        xr.testing.assert_identical(restored, captured)
+        edited = restored.copy(deep=True)
+        edited.values[:] = 0
+        np.testing.assert_array_equal(captured.values, expected)
+        xr.testing.assert_identical(checkpoint_data(restored), captured)
 
 
 @pytest.mark.parametrize("structured", [False, True])
