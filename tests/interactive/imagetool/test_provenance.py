@@ -9986,23 +9986,21 @@ def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -
     )
     datatree_file = tmp_path / "tree.h5"
     tree.to_netcdf(datatree_file, engine="h5netcdf")
-    xr.testing.assert_identical(
-        _load_file_source_data(
-            _file_replay_source(
-                datatree_file,
-                replay_call=FileReplayCall(
-                    kind="callable",
-                    target="xarray.load_datatree",
-                    kwargs={"engine": "h5netcdf"},
-                    selection=FileDataSelection(
-                        kind="datatree_variable",
-                        value=("/leaf", "image"),
-                    ),
+    with _load_file_source_data(
+        _file_replay_source(
+            datatree_file,
+            replay_call=FileReplayCall(
+                kind="callable",
+                target="xarray.open_datatree",
+                kwargs={"engine": "h5netcdf"},
+                selection=FileDataSelection(
+                    kind="datatree_variable",
+                    value=("/leaf", "image"),
                 ),
-            )
-        ),
-        image,
-    )
+            ),
+        )
+    ) as restored:
+        xr.testing.assert_identical(restored, image)
     with pytest.raises(IndexError, match="out of range"):
         _load_file_source_data(
             _file_replay_source(
@@ -10073,13 +10071,13 @@ def test_unregistered_callable_file_replay_does_not_import_target(
         ("xarray.open_dataarray", xr.open_dataarray),
         ("xarray.load_dataset", xr.load_dataset),
         ("xarray.open_dataset", xr.open_dataset),
-        ("xarray.load_datatree", xr.load_datatree),
+        ("xarray.load_datatree", getattr(xr, "load_datatree", None)),
         ("xarray.open_datatree", xr.open_datatree),
     ],
 )
 def test_supported_callable_loader_resolution_survives_local_registry_reset(
     identifier: str,
-    loader: collections.abc.Callable[..., typing.Any],
+    loader: collections.abc.Callable[..., typing.Any] | None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(imagetool_load_source, "_LOCAL_CALLABLE_LOADERS", {})
