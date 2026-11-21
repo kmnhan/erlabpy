@@ -3512,3 +3512,87 @@ def test_manager_provenance_edit_controller_private_error_branches() -> None:
             ),
             operation_row,
         )
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_manager_file_reload_restores_the_recorded_source_and_refreshes_its_view(
+    qtbot, manager_context, tmp_path, monkeypatch, request, chunked
+):
+    import numpy as np
+
+    from erlab.interactive.imagetool import itool
+    from erlab.interactive.imagetool.manager._io import _MultiFileHandler
+
+    counts = xr.DataArray(
+        np.arange(24.0).reshape(4, 6),
+        dims=("x", "y"),
+        coords={"x": np.arange(4), "y": np.arange(6)},
+        name="counts",
+    )
+    path = tmp_path / "spectrum.nc"
+
+    def save(data):
+        data.to_netcdf(
+            path, engine="h5netcdf", encoding={"counts": {"chunksizes": (2, 3)}}
+        )
+
+    save(counts)
+    with manager_context() as manager:
+        option = "io/dask/compute_threshold"
+        previous = erlab.interactive.options[option]
+        request.addfinalizer(lambda: erlab.interactive.options.set(option, previous))
+        erlab.interactive.options[option] = 0
+        loader = xr.open_dataset if chunked else xr.load_dataset
+        kwargs = {"engine": "h5netcdf"}
+        if chunked:
+            kwargs["chunks"] = {}
+        handler = _MultiFileHandler(manager, [path], loader, kwargs)
+        with qtbot.waitSignal(handler.sigFinished, timeout=10000):
+            handler.start()
+        source = manager._node_for_target(0)
+        operations = manager._operations
+        output = operations.submit(
+            RenameOperation(name="spectrum"),
+            {"data": source.uid},
+            placement="detach",
+            make_window=lambda data: itool(data, manager=False, execute=False),
+            output_name="renamed",
+        )
+        child = manager._node_for_target(output)
+        graph = operations.graph
+        first = graph.current_revision(source.uid)
+        before = child.slicer_area.displayed_data
+        expected = counts
+        if not chunked:
+            path.unlink()
+            warnings = []
+            monkeypatch.setattr(
+                erlab.interactive.utils,
+                "_show_reload_unavailable_dialog",
+                lambda parent, reason: warnings.append(reason),
+            )
+            assert not operations.update(source.uid, reload=True)
+            assert len(warnings) == 1
+            assert str(path) in warnings[0]
+            assert graph.current_revision(source.uid) == first
+            xr.testing.assert_identical(source.slicer_area.displayed_data, counts)
+            expected = counts + 9
+            save(expected)
+        source.slicer_area.reload()
+        current = graph.current_revision(source.uid)
+        assert current != first
+        assert graph.is_stale(output)
+        data = source.slicer_area.displayed_data
+        xr.testing.assert_identical(data, expected)
+        captured = manager._provenance_revisions._captured_data(current)
+        if chunked:
+            assert data.chunks == captured.chunks
+        else:
+            assert np.shares_memory(data.values, captured.values)
+        manager._set_metadata_node(child)
+        manager.refresh_revision_button.click()
+        after = child.slicer_area.displayed_data
+        assert not graph.is_stale(output)
+        if chunked:
+            assert before.chunks == after.chunks == ((2, 2), (3, 3))
+        xr.testing.assert_identical(after, expected.rename("spectrum"))
