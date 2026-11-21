@@ -3615,11 +3615,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._applied_func = None
             self._applied_provenance_operation = None
             self._restore_obj_from_source(update=update)
+            had_filter = self._accepted_filter_data is not None
             if accept:
                 self._set_accepted_filter(None, None)
-            if emit_edited:
-                self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
-                self.sigDataEdited.emit()
+            self._notify_filter_change(
+                accepted=accept and had_filter, edited=emit_edited
+            )
             return
 
         filtered = self._filtered_data_for_display(func)
@@ -3671,8 +3672,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._applied_filter_data = filtered.copy(deep=False)
         if accept:
             self._set_accepted_filter(operation, filtered.copy(deep=False))
-        if emit_edited:
+        self._notify_filter_change(accepted=accept, edited=emit_edited)
+
+    def _notify_filter_change(self, *, accepted: bool, edited: bool) -> None:
+        if edited or (accepted and self._in_manager):
             self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
+        if edited:
             self.sigDataEdited.emit()
 
     def apply_filter_operation(
