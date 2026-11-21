@@ -3224,14 +3224,18 @@ def _extension_script_references(
             raise ReplayGraphError(
                 "Extension call does not have a registered local script"
             ) from exc
-        if preserve_versions and recorded_hash != reference.source_hash:
+        exact_source = preserve_versions or (
+            node.kind == "operation"
+            and node.payload["operation"].execution_options is not None
+        )
+        if exact_source and recorded_hash != reference.source_hash:
             raise ReplayGraphError(
                 f"Recorded version of extension {script_name!r} is unavailable"
             )
         references[node.key] = (
             pathlib.Path(reference.registered_path).expanduser().resolve(),
             reference.descriptor.function_name,
-            recorded_hash if preserve_versions else None,
+            recorded_hash if exact_source else None,
         )
     return references
 
@@ -3438,7 +3442,10 @@ def emit_replay_code(
     extension_script_bindings: dict[tuple[pathlib.Path, str | None], str] = {}
     for node in graph.nodes:
         reference = extension_references.get(node.key)
-        if reference is None:
+        if reference is None or (
+            node.kind == "operation"
+            and node.payload["operation"].execution_options is not None
+        ):
             continue
         source_path, _function_name, source_hash = reference
         if (source_path, source_hash) in extension_script_bindings:
@@ -3604,6 +3611,15 @@ def emit_replay_code(
             context_name = names[node.parents[1]]
             operation = node.payload["operation"]
             if isinstance(operation, ExtensionRoutineOperation):
+                if operation.execution_options is not None:
+                    path, _, _ = extension_references[node.key]
+                    call = operation.invocation(script=str(path))
+                    consume(node.parents)
+                    append_code(
+                        f"{name} = {call.expression({'data': parent_name})}",
+                        allowed_accesses=(parent_name,),
+                    )
+                    continue
                 module_name, function_name = extension_binding(node.key)
                 consume(node.parents)
                 append_code(

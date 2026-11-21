@@ -2066,6 +2066,31 @@ def test_recorded_code_preserves_each_steps_settings():
         assert xr.get_options()["keep_attrs"] is False
 
 
+def test_worker_application_keeps_saved_options_at_dispatch():
+    from erlab._provenance import Application
+    from erlab._provenance._operations import ExtensionRoutineOperation
+
+    operation = ExtensionRoutineOperation(
+        script_name="routine.py",
+        source_hash="a" * 64,
+        routine_id="routine",
+        routine_name="Routine",
+        parameters={},
+        execution_options={"keep_attrs": False},
+    )
+    with xr.set_options(keep_attrs=True, arithmetic_broadcast=False):
+        recipe = Recipe.bind(operation, Follow("A"))
+        applied = Application(operation, (("data", "revision"),))
+    assert applied.execution == recipe._captured.execution
+    assert applied.execution.as_dict()["keep_attrs"] is False
+    assert applied.execution.as_dict()["arithmetic_broadcast"] is False
+    assert applied.operation.execution_options == applied.execution.as_dict()
+    assert applied.local_execution.options == ()
+    code = applied.code({"revision": "data"}, output_name="result")
+    assert "with xr.set_options" not in code
+    assert "'keep_attrs': False" in code
+
+
 def test_copied_array_method_uses_edited_arguments():
     from erlab._provenance._operations import RenameOperation, TransposeOperation
 

@@ -7,19 +7,17 @@ import typing
 import pydantic
 
 import erlab
+from erlab._provenance._calls import Call, InputRef, WorkerCallOperation
 from erlab._provenance._code import _provenance_value_code
-from erlab._provenance._model import DerivationEntry, ToolProvenanceOperation
+from erlab._provenance._model import DerivationEntry
 from erlab.extensions._models import (
     _require_finite_parameter_values,
     _script_name_key,
     _validate_source_hash,
 )
 
-if typing.TYPE_CHECKING:
-    import xarray as xr
 
-
-class ExtensionRoutineOperation(ToolProvenanceOperation):
+class ExtensionRoutineOperation(WorkerCallOperation):
     """Apply a user extension routine from an identified source snapshot."""
 
     op: typing.Literal["extension_routine"] = "extension_routine"
@@ -48,13 +46,20 @@ class ExtensionRoutineOperation(ToolProvenanceOperation):
         _require_finite_parameter_values(value)
         return value
 
-    def apply(self, data: xr.DataArray) -> xr.DataArray:
-        return erlab.extensions.run_routine(
-            data,
-            registered_script=self.script_name,
-            source_hash=self.source_hash,
-            routine_id=self.routine_id,
-            parameters=self.parameters,
+    def invocation(self, *, script: str | None = None) -> Call:
+        kwargs = {
+            "routine_id": self.routine_id,
+            "source_hash": self.source_hash,
+            "parameters": self.parameters,
+        }
+        if script is None:
+            kwargs["registered_script"] = self.script_name
+        else:
+            kwargs["script"] = script
+        if self.execution_options is not None:
+            kwargs["execution_options"] = self.execution_options
+        return Call.function(
+            erlab.extensions.run_routine, args=(InputRef("data"),), kwargs=kwargs
         )
 
     def derivation_label(self) -> str:

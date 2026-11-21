@@ -1285,3 +1285,180 @@ def label(
         run_routine(xr.DataArray([1]), script=script, routine_id="label"),
         xr.DataArray([1], attrs={"output": "result.nc"}),
     )
+
+
+def test_recorded_extension_culls_chunks_and_shares_reductions(
+    tmp_path: pathlib.Path,
+) -> None:
+    source = tmp_path / "blocks.py"
+    source.write_text(
+        """import dask.array as da
+from dask import delayed
+import numpy as np
+import xarray as xr
+from erlab.extensions import routine
+
+def read(log, index):
+    with open(log, "a") as stream:
+        print(index, file=stream)
+    return np.array([index], dtype=np.float32)
+
+@routine()
+def make(data: xr.DataArray, log: str, center: bool) -> xr.DataArray:
+    blocks = [
+        da.from_delayed(delayed(read)(log, i), (1,), dtype="f4") for i in range(4)
+    ]
+    values = da.concatenate(blocks)
+    return xr.DataArray(values - values.mean() if center else values, name="signal")
+"""
+    )
+    data = xr.DataArray(0)
+    log = tmp_path / "reads"
+    for center in (False, True):
+        result = run_routine(
+            data,
+            script=source,
+            routine_id="make",
+            execution_options={"keep_attrs": True},
+            parameters={"log": str(log), "center": center},
+        )
+        assert not log.exists()
+        if center:
+            xr.testing.assert_identical(
+                result.compute(),
+                xr.DataArray(np.arange(4, dtype="f4") - 1.5, name="signal"),
+            )
+            assert sorted(log.read_text().splitlines()) == ["0", "1", "2", "3"]
+        else:
+            assert result[2].compute().item() == 2
+            assert log.read_text().splitlines() == ["2"]
+        log.unlink()
+
+
+def test_recorded_routine_recovers_after_worker_exit(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "stop.py"
+    path.write_text(
+        "import os\nimport xarray as xr\nfrom erlab.extensions import routine\n"
+        "@routine()\ndef echo(data: xr.DataArray, stop: bool) -> xr.DataArray:\n"
+        "    if stop:\n        os._exit(1)\n    return data\n"
+    )
+    data = xr.DataArray([0.0], attrs={"sample": "A"})
+    with pytest.raises(ExtensionExecutionError, match="process stopped"):
+        run_routine(
+            data,
+            script=path,
+            routine_id="echo",
+            execution_options={"keep_attrs": True},
+            parameters={"stop": True},
+        )
+    result = run_routine(
+        data,
+        script=path,
+        routine_id="echo",
+        execution_options={"keep_attrs": True},
+        parameters={"stop": False},
+    )
+    xr.testing.assert_identical(result, data)
+
+
+def test_recorded_extension_computes_on_distributed_workers(
+    tmp_path: pathlib.Path,
+) -> None:
+    from distributed import Client, LocalCluster
+
+    script = tmp_path / "distributed_routine.py"
+    script.write_text(
+        """import numpy as np
+import xarray as xr
+from erlab.extensions import routine
+
+def offset(block):
+    print("computing block")
+    return block + int(xr.get_options()["keep_attrs"])
+
+@routine()
+def calculate(data: xr.DataArray) -> xr.DataArray:
+    chunks = data.chunk({"x": 2})
+    return chunks.copy(data=chunks.data.map_blocks(offset, dtype=chunks.dtype))
+"""
+    )
+    data = xr.DataArray(np.arange(4), dims="x")
+    result = run_routine(
+        data,
+        script=script,
+        routine_id="calculate",
+        execution_options={"keep_attrs": True},
+    )
+    with (
+        LocalCluster(
+            n_workers=1,
+            threads_per_worker=2,
+            dashboard_address=":0",
+            scheduler_kwargs={"dashboard": False},
+        ) as cluster,
+        Client(cluster),
+        xr.set_options(keep_attrs=False),
+    ):
+        xr.testing.assert_identical(result.compute(), data + 1)
+
+
+def test_recorded_options_apply_to_imported_extension_helpers(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.syspath_prepend(str(tmp_path))
+    (tmp_path / "lab_keep_attrs.py").write_text(
+        'import xarray as xr\nKEEP = xr.get_options()["keep_attrs"]\n'
+        "def offset(block):\n    return block + int(KEEP)\n"
+    )
+    script = tmp_path / "settings.py"
+    script.write_text(
+        "import xarray as xr\nfrom erlab.extensions import routine\n"
+        "from lab_keep_attrs import KEEP, offset\n"
+        "@routine()\ndef calculate(data: xr.DataArray) -> xr.DataArray:\n"
+        "    chunks = data.chunk({'x': 1})\n"
+        "    values = chunks.data.map_blocks(offset, dtype=chunks.dtype)\n"
+        "    return chunks.copy(data=values).assign_attrs(imported=KEEP)\n"
+    )
+    data = xr.DataArray([0], dims="x")
+    results = []
+    for keep_attrs in (True, False):
+        result = run_routine(
+            data,
+            script=script,
+            routine_id="calculate",
+            execution_options={"keep_attrs": keep_attrs},
+        )
+        assert result.attrs["imported"] is keep_attrs
+        assert "lab_keep_attrs" not in sys.modules
+        results.append(result)
+    # Calculating the first result again starts a cold interpreter. Its deferred
+    # function references the importable helper module by name.
+    for keep_attrs, result in zip((True, False), results, strict=True):
+        with xr.set_options(keep_attrs=not keep_attrs):
+            assert result.compute().item() == int(keep_attrs)
+            assert "lab_keep_attrs" not in sys.modules
+
+
+def test_recorded_worker_expires_after_the_last_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+    import time
+
+    import psutil
+
+    from erlab._provenance._settings import ExecutionSettings
+    from erlab.extensions import _subprocess
+
+    monkeypatch.setattr(_subprocess, "_IDLE_SECONDS", 0.5)
+    worker = _subprocess.SubprocessWorker(ExecutionSettings.capture())
+    try:
+        pid = worker.run(os.getpid)
+        child = psutil.Process(pid)
+        # The first idle deadline passes during a calculation.
+        worker.run(time.sleep, 0.75)
+        assert worker.run(os.getpid) == pid
+        child.wait(timeout=10)
+        assert worker.run(os.getpid) != pid
+    finally:
+        worker.close()

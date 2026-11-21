@@ -47,6 +47,7 @@ from erlab._provenance._operations import (
     ScriptCodeOperation,
 )
 from erlab.extensions._models import _script_name_key
+from erlab.extensions._routine import _detached_routine_output, _readonly_array
 from erlab.interactive.imagetool._provenance._execution import (
     can_reload_with_trusted_code,
     can_reload_without_trust,
@@ -73,12 +74,10 @@ from erlab.interactive.imagetool.manager._extensions._dialogs import (
     _RoutineSelectionDialog,
 )
 from erlab.interactive.imagetool.manager._extensions._execution import (
-    _detached_routine_output,
     _ExtensionLoaderCall,
     _ExtensionLoaderWorker,
     _ExtensionRoutineWorker,
     _ExtensionValidationWorker,
-    _readonly_array,
     _validate_script_snapshot,
 )
 from erlab.interactive.imagetool.manager._extensions._models import (
@@ -1842,11 +1841,6 @@ def test_extension_execution_value_guards_and_log_fields(
     assert tree_fields["dimensions"] == ("x",)
     assert tree_fields["shape"] == (1,)
     assert extension_execution._xarray_log_fields(array)["type"] == "DataArray"
-
-    with pytest.raises(
-        erlab.extensions.ExtensionExecutionError, match="expected DataArray"
-    ):
-        extension_execution._require_dataarray(dataset)
 
 
 def test_decorated_loader_adapter_preserves_loader_contract(
@@ -6501,6 +6495,10 @@ def test_dispatched_routine_can_be_removed_before_worker_start(
             if active is None:
                 pytest.fail("The queued routine worker was not retained")
             queued_worker = active[1]
+            # A producer may reuse its buffer before the worker takes this job.
+            displayed = manager._node_for_target(0).data_for_role("displayed")
+            displayed.values[...] = 99.0
+            np.testing.assert_array_equal(queued_worker.job.input_data, [1.0])
 
             manager._extensions.execution.remove_queued(job_id)
 
@@ -6583,27 +6581,23 @@ def test_manager_executes_routine_in_serial_extension_queue(
     manager_context,
     qtbot: pytest.QtBot,
     tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("threading.stack_size", lambda: 8 * 1024 * 1024)
     script_path = tmp_path / "inspect_input.py"
     script_path.write_text(
-        """import threading
+        """import os
 import xarray as xr
-from qtpy import QtCore
 from erlab.extensions import routine
 
 @routine(name="Inspect Input")
 def inspect_input(data: xr.DataArray, offset: float = 0.0) -> xr.DataArray:
     return (data + offset).assign_attrs(
         input_writeable=data.values.flags.writeable,
-        execution_thread=threading.get_ident(),
-        execution_stack_size=QtCore.QThread.currentThread().stackSize(),
+        execution_process=os.getpid(),
     )
 """
     )
     data = xr.DataArray(np.arange(3.0), dims="x")
-    manager_thread = threading.get_ident()
+    manager_pid = os.getpid()
 
     with manager_context() as manager:
         catalog, source_hash = manager._extensions.catalog.store.register_script(
@@ -6634,8 +6628,7 @@ def inspect_input(data: xr.DataArray, offset: float = 0.0) -> xr.DataArray:
         result = manager._get_imagetool_data(1)
         xr.testing.assert_equal(result, data + 2.0)
         assert not result.attrs["input_writeable"]
-        assert result.attrs["execution_thread"] != manager_thread
-        assert result.attrs["execution_stack_size"] == 8 * 1024 * 1024
+        assert result.attrs["execution_process"] != manager_pid
         operation = manager._tool_graph.root_wrappers[1].provenance_spec.operations[-1]
         assert operation.op == "extension_routine"
         assert operation.source_hash == source_hash
@@ -6646,8 +6639,7 @@ def inspect_input(data: xr.DataArray, offset: float = 0.0) -> xr.DataArray:
         )
         xr.testing.assert_equal(replayed, data + 2.0)
         assert not replayed.attrs["input_writeable"]
-        assert replayed.attrs["execution_thread"] != manager_thread
-        assert replayed.attrs["execution_stack_size"] == 8 * 1024 * 1024
+        assert replayed.attrs["execution_process"] != manager_pid
 
         graph_replayed = replay_script_provenance(
             manager._tool_graph.root_wrappers[1].provenance_spec,
@@ -6656,8 +6648,12 @@ def inspect_input(data: xr.DataArray, offset: float = 0.0) -> xr.DataArray:
         )
         xr.testing.assert_equal(graph_replayed, data + 2.0)
         assert not graph_replayed.attrs["input_writeable"]
-        assert graph_replayed.attrs["execution_thread"] != manager_thread
-        assert graph_replayed.attrs["execution_stack_size"] == 8 * 1024 * 1024
+        assert graph_replayed.attrs["execution_process"] != manager_pid
+
+    import psutil
+
+    worker_pid = result.attrs["execution_process"]
+    qtbot.wait_until(lambda: not psutil.pid_exists(worker_pid), timeout=10_000)
 
 
 def test_queued_routine_uses_pinned_bytes_after_unchanged_relocation(
@@ -6766,9 +6762,12 @@ def test_started_routine_uses_pinned_bytes_during_catalog_reload(
         )
         reloaded = False
 
-        original_require_dataarray = extension_execution._require_dataarray
+        from erlab.extensions import _routine
 
-        def reload_after_invocation(value: typing.Any) -> xr.DataArray:
+        original_run = _routine.run_recorded_routine
+
+        def reload_after_invocation(*args, **kwargs) -> xr.DataArray:
+            value = original_run(*args, **kwargs)
             nonlocal reloaded
             if not reloaded:
                 reloaded = True
@@ -6779,16 +6778,13 @@ def test_started_routine_uses_pinned_bytes_during_catalog_reload(
                     expected_source_hash=hashlib.sha256(changed_source).hexdigest(),
                     expected_record_generation=current.record_generation,
                 )
-            return original_require_dataarray(value)
+            return value
 
-        monkeypatch.setattr(
-            extension_execution, "_require_dataarray", reload_after_invocation
-        )
+        monkeypatch.setattr(_routine, "run_recorded_routine", reload_after_invocation)
         worker = _ExtensionRoutineWorker(
             job,
             manager_session_id=execution._manager_session_id,
             catalog_store=store,
-            script_modules=execution._script_modules,
             source_is_healthy=lambda *_args: True,
         )
 
@@ -10122,9 +10118,13 @@ def test_execution_adapters_workers_and_result_lifecycle_guards(
 
     loader_only_path = tmp_path / "loader_only.py"
     _loader_script(loader_only_path, name="Only Loader", extensions=(".txt",))
-    loaded = erlab.extensions.load_script(loader_only_path)
-    with pytest.raises(erlab.extensions.ExtensionExecutionError, match="missing from"):
-        extension_execution._require_routine(loaded, "missing")
+    with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="missing"):
+        erlab.extensions.run_routine(
+            xr.DataArray([1]),
+            script=loader_only_path,
+            routine_id="missing",
+            execution_options={"keep_attrs": True},
+        )
 
     routine = erlab.extensions.RoutineDescriptor(
         id="scale",
@@ -10135,13 +10135,7 @@ def test_execution_adapters_workers_and_result_lifecycle_guards(
     )
     bad_snapshot = _pinned_script(
         tmp_path / "bad.py",
-        b"import os\nimport xarray as xr\n"
-        b"from erlab.extensions import routine\n"
-        b'if os.getenv("ERLAB_TEST_FAIL_EXTENSION_IMPORT"):\n'
-        b'    raise RuntimeError("import failed")\n'
-        b"@routine()\n"
-        b"def scale(data: xr.DataArray) -> xr.DataArray:\n"
-        b"    return data\n",
+        b'raise RuntimeError("import failed")',
         routines=(routine,),
     )
     job = extension_execution._ExtensionRoutineJob(
@@ -10157,7 +10151,6 @@ def test_execution_adapters_workers_and_result_lifecycle_guards(
         job,
         manager_session_id="worker-manager",
         catalog_store=_ExtensionCatalogStore(tmp_path / "worker-catalog"),
-        script_modules={},
         source_is_healthy=lambda *_args: True,
     )
     monkeypatch.setattr(
@@ -10167,11 +10160,7 @@ def test_execution_adapters_workers_and_result_lifecycle_guards(
             "ready", bad_snapshot, routine
         ),
     )
-    monkeypatch.setenv("ERLAB_TEST_FAIL_EXTENSION_IMPORT", "1")
-    try:
-        worker.run()
-    finally:
-        extension_execution._remove_manager_modules("worker-manager")
+    worker.run()
     if worker.result is None:
         raise RuntimeError("The routine worker did not return a result")
     assert worker.done.is_set()
@@ -10196,7 +10185,6 @@ def test_execution_adapters_workers_and_result_lifecycle_guards(
             job,
             manager_session_id="manager-worker",
             catalog_store=execution._catalog.store,
-            script_modules={},
             source_is_healthy=lambda *_args: True,
         )
         active_worker.signals.finished.connect(execution._finished_slot)
@@ -10289,3 +10277,103 @@ def test_completed_routine_can_be_removed_before_completion_is_delivered(
         qtbot.wait_until(lambda: execution._active is None, timeout=5000)
         assert manager.ntools == 2
         xr.testing.assert_identical(manager._get_imagetool_data(1), data * 3.0)
+
+
+def test_routine_submission_replay_and_copy_use_recorded_settings(
+    manager_context, qtbot, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script_path = tmp_path / "settings.py"
+    script_path.write_text(
+        """import xarray as xr
+from erlab.extensions import routine
+
+retain = xr.get_options()["keep_attrs"]
+
+def center(block):
+    image = xr.DataArray(block, dims=("x", "y"))
+    return (image - image.mean("x")).values
+
+@routine()
+def center_image(data: xr.DataArray) -> xr.DataArray:
+    chunks = data.chunk({"y": 2})
+    result = chunks.copy(data=chunks.data.map_blocks(center, dtype=chunks.dtype))
+    result.attrs = dict(data.attrs) if retain else {}
+    return result
+"""
+    )
+    data = xr.DataArray(
+        np.arange(12, dtype=np.float32).reshape(3, 4),
+        dims=("x", "y"),
+        attrs={"sample": "Cu"},
+        name="scan",
+    )
+    expected = data.copy(data=np.array([[-4] * 4, [0] * 4, [4] * 4], dtype="f4"))
+    # A small result normally computes when the ImageTool opens it.
+    options = erlab.interactive.options.model
+    options.io.dask.compute_threshold = 0
+    monkeypatch.setattr(
+        type(erlab.interactive.options), "model", property(lambda _: options)
+    )
+    with manager_context() as manager:
+        store = manager._extensions.catalog.store
+        catalog, digest = store.register_script(script_path)
+        _validate_and_enable(
+            store,
+            script_path.name,
+            expected_record_generation=catalog.extensions[
+                script_path.name
+            ].record_generation,
+        )
+        manager._extensions.catalog.refresh()
+        manager.add_imagetool(erlab.interactive.imagetool.ImageTool(data), show=False)
+        for index, keep in enumerate((True, False), start=1):
+            with xr.set_options(keep_attrs=keep, arithmetic_broadcast=True):
+                manager._extensions.execution.queue_routine(
+                    script_name=script_path.name,
+                    source_hash=digest,
+                    routine_id="center_image",
+                    parameters={},
+                    target=0,
+                )
+            with xr.set_options(keep_attrs=not keep, arithmetic_broadcast=False):
+                qtbot.wait_until(
+                    lambda index=index: manager.ntools == index + 1, timeout=20_000
+                )
+                result = manager._get_imagetool_data(index)
+                assert result.chunks is not None
+                expected.attrs = dict(data.attrs) if keep else {}
+                xr.testing.assert_identical(result.compute(), expected)
+                node = manager._node_for_target(index)
+                stored = node.provenance_spec.operations[-1]
+                operation = ExtensionRoutineOperation.model_validate_json(
+                    stored.model_dump_json()
+                )
+                assert operation.execution_options["keep_attrs"] is keep
+                xr.testing.assert_identical(operation.apply(data).compute(), expected)
+
+                manager.tree_view.selectionModel().select(
+                    manager.tree_view._model._row_index(index),
+                    QtCore.QItemSelectionModel.SelectionFlag.ClearAndSelect,
+                )
+                manager._update_info(uid=node.uid)
+                copied = []
+                monkeypatch.setattr(
+                    manager, "_prompt_replay_input_name", lambda _: "source_data"
+                )
+                monkeypatch.setattr(
+                    erlab.interactive.utils, "copy_to_clipboard", copied.append
+                )
+                manager._copy_full_derivation_code()
+                assert len(copied) == 1
+                namespace = {
+                    "source_data": data.copy(deep=True),
+                    "erlab": erlab,
+                    "xr": xr,
+                }
+                exec(copied[0], namespace)  # noqa: S102 - execute Copy Full Code
+                (output,) = [
+                    array
+                    for name, array in namespace.items()
+                    if isinstance(array, xr.DataArray) and name != "source_data"
+                ]
+                xr.testing.assert_identical(output.compute(), expected)
