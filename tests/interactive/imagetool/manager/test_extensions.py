@@ -6467,10 +6467,9 @@ def test_dispatched_routine_can_be_removed_before_worker_start(
             ),
         )
         manager._extensions.catalog.refresh()
+        producer = xr.DataArray([1.0], dims="x")
         manager.add_imagetool(
-            erlab.interactive.imagetool.ImageTool(
-                xr.DataArray([1.0], dims="x"), _in_manager=True
-            ),
+            erlab.interactive.imagetool.ImageTool(producer, _in_manager=True),
             show=False,
         )
         blocking_task = _BlockingTask()
@@ -6496,8 +6495,10 @@ def test_dispatched_routine_can_be_removed_before_worker_start(
                 pytest.fail("The queued routine worker was not retained")
             queued_worker = active[1]
             # A producer may reuse its buffer before the worker takes this job.
-            displayed = manager._node_for_target(0).data_for_role("displayed")
-            displayed.values[...] = 99.0
+            producer.values[...] = 99.0
+            np.testing.assert_array_equal(
+                manager._node_for_target(0).data_for_role("displayed"), [1.0]
+            )
             np.testing.assert_array_equal(queued_worker.job.input_data, [1.0])
 
             manager._extensions.execution.remove_queued(job_id)

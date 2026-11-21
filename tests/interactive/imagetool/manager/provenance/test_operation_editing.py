@@ -151,11 +151,13 @@ def test_manager_metadata_history_shares_protected_values(
         for revision_id, _expected in revisions:
             checkpoint = store._data[revision_id]
             assert np.shares_memory(checkpoint.data, captured.data)
-            assert not np.shares_memory(checkpoint.data, tool.slicer_area._data.data)
+            assert np.shares_memory(checkpoint.data, tool.slicer_area.data.data)
             checkpoint.attrs["nested"]["value"] = 2
             assert captured.attrs["nested"]["value"] == 1
             checkpoint.attrs["nested"]["value"] = 1
-        tool.slicer_area._data.values[...] = -1.0
+        source.values[...] = -1.0
+        with pytest.raises(ValueError, match="read-only"):
+            tool.slicer_area.data.values[...] = -1.0
         xr.testing.assert_identical(store.resolve_data(source_revision_id), original)
         for revision_id, expected in revisions:
             record = store.get(revision_id)

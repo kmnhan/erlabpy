@@ -781,5 +781,6 @@ def test_graph_captures_the_signaled_public_data(manager_context, monkeypatch, c
             assert stored.attrs["_erlab_promoted_from_1d_source"]
         if case == "filtered":
             assert not stored.equals(data_for_role("source"))
-        expected.values[:] = -123
+        with pytest.raises(ValueError, match="read-only"):
+            expected.values[:] = -123
         xr.testing.assert_identical(operations.graph.data(key), stored)
