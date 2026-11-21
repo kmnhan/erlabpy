@@ -201,8 +201,11 @@ single-dot sibling imports. The `__init__.pyi` files read by
   resolves both interpolation inputs from their selected entries. Child,
   top-level, and replacement displays use the same calculation. The historical
   editor and Copy Full Code use the displayed application. Refresh uses the
-  current bindings. The Manager tests also exercise a rejected installation
-  and release of the last owner.
+  current bindings. Both Reload actions open the recorded file once when a
+  different, usable file loader is attached to the viewer. If the recorded
+  file is missing, both actions identify it and preserve the displayed data.
+  The Manager tests also exercise a rejected installation and release of the
+  last owner.
 - Copied Python for a versioned file calls the public
   [file reader](../../src/erlab/io/utils.py) with the recorded loader, selected
   array and local filesystem identity. Replacing the file after copying the
@@ -471,7 +474,8 @@ plane, historical data, Refresh and executed Copy Full Code kept the recorded
 values and coordinates. The viewer, graph and revision store held the same
 169,345,096 bytes in nine live arrays as the pre-redesign workload.
 
-Across four alternating pairs against `9b62b1e3`, admission took 12.50 ms
+With the initial bytes-backed capture, four alternating pairs against
+`9b62b1e3` showed admission times of 12.50 ms
 versus 1.01 ms. First interpolation took 107.72 ms versus 114.90 ms.
 Admission plus first interpolation changed by a paired median of +4.76 ms
 (range −9.42 to +8.47 ms). Group peak RSS changed by +0.25 MiB and RSS after
@@ -479,6 +483,22 @@ close by +0.64 MiB. At the read-only stage, the baseline allocator could reuse
 a freed 16 MiB producer allocation. Physical footprint differed by +17.25 MiB
 when that allocation was free and +0.94 MiB when it was retained on both
 versions. Live array sizes matched in both controls.
+
+For numeric buffers of 1 MiB or more, the final implementation captures into
+one exact-sized NumPy allocation. Smaller buffers use an owned bytes object.
+A read-only view of a foreign array can share storage with a writable array
+restored from pickle. The Manager captures foreign buffers once and shares
+only storage that it already owns. In the small-array benchmark (32 bytes to
+64 KiB), capturing three variables took an additional 0.52 to 1.97 µs.
+
+Four alternating process runs lowered settled RSS after plane and metadata
+reads by a paired median of 16.23 MiB relative to the initial capture.
+Against pre-redesign main, admission took 9.27 ms versus 0.97 ms, and first
+interpolation took 98.85 ms versus 105.68 ms. The paired median difference
+for both steps together was +0.86 ms (range −4.42 to +7.28 ms). The paired
+median difference was +1.43 MiB for settled RSS (−3.77 to +6.28 MiB) and
++1.51 MiB for peak RSS (−3.31 to +7.45 MiB). Both versions held the same
+scientific data and coordinate bytes. All 11 tracked owners were released.
 
 A growing-grid test submitted 12 source and target replacements while moving
 the cursor. With a normalization filter, each burst also accepted the filter
