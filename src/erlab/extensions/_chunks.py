@@ -124,6 +124,12 @@ class _RoutineTasks(Layer):
     def __len__(self) -> int:
         return self.length
 
+    @property
+    def has_legacy_tasks(self) -> bool:
+        # Every exposed task is (evaluate, *dependencies). Dask can cull this
+        # layer without first enumerating and transferring all of its tasks.
+        return True
+
     def is_materialized(self) -> bool:
         return self._full is not None
 
