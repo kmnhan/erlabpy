@@ -7,8 +7,10 @@ catalog. A contributor should be able to read one operation definition and answe
 three questions. Which inputs does it consume? What Python calculation does it
 perform? Which DataArray does it return? Adding an operation should require no
 changes to Refresh, Copy Full Code, window placement, or the graph traversal.
-The same user workflows must stay as fast as the pre-redesign implementation
-or get faster, with equal or lower peak and retained memory. Apply the
+Built-in operations must stay as fast as the pre-redesign implementation or
+get faster, with equal or lower peak and retained memory. Registered extension
+routines have a separate [worker budget](#extension-measurements) because their
+imports and deferred calculations must use the recorded settings. Apply the
 [performance criteria](#performance-and-large-workspaces) from the first
 milestone onward.
 
@@ -210,9 +212,8 @@ single-dot sibling imports. The `__init__.pyi` files read by
   It can edit object-valued index members and nested coordinate attributes or
   encoding without changing the source or an existing sibling result.
 - The extension tests exercise module initialization, a second submission with
-  different settings, deferred computation, and notebook export. The worker
-  implementation is on the local `dev-provenance-extension-candidate` branch.
-  Its measured time and memory costs keep this milestone open.
+  different settings, deferred computation, and notebook export. The Manager and
+  the exported call use the same isolated routine runner.
 
 ### Verification of the integration
 
@@ -324,8 +325,8 @@ Direct replay of the small method had a measurable cost, 1.37 µs on main and
 1.52 µs with the general positional method binding. Transpose measured 32.12 µs
 and 31.76 µs. These direct measurements exclude window publication.
 
-The extension's isolated interpreter measured higher first-use latency and
-peak memory on the same Manager workload. Keep its performance work open.
+For registered routines, measure first use, warm reuse, active memory and
+release separately as described in [Extension measurements](#extension-measurements).
 [Graph tests](../../tests/test_provenance_graph.py) ·
 [Pending previews](../../tests/interactive/imagetool/manager/workspace/test_pending_preview.py) ·
 [Workspace storage](../../tests/interactive/imagetool/manager/workspace/test_storage.py)
@@ -499,18 +500,23 @@ once each on both paths. The private interpreter preserves xarray settings
 through script imports and deferred callbacks. The worker culls its most recent
 graph before sending the selected tasks. After worker replacement, the first
 request sends the saved graph to the new interpreter. Changing the settings
-starts a new interpreter because imported helpers can cache them. The time and
-peak memory regressions keep the extension gate open. A read-only memory map
+starts a new interpreter because imported helpers can cache them. A read-only memory map
 reduced the warm transfer time for a 32 MiB operand from 12.3 ms to 0.71 ms,
 but required a 32 MiB file and 282 ms on the first transfer. It does not resolve
 the interpreter cost.
 
-The experimental worker now starts one idle timer across 26 consecutive jobs.
+The integrated worker starts one idle timer across 26 consecutive jobs.
 Five alternating runs measured warm median times of 1.60 ms on main and
 2.31 ms with this worker. The first job took 3.72 ms and 928 ms, respectively.
 macOS also measured the physical footprint of the actual Manager worker group.
 The active worker added about 153 MiB. The baseline added about 0.3 MiB.
 Both released that memory after the last owner closed.
+
+These measurements are the accepted comparison for registered routines. Start
+the worker on demand, reuse it while settings match, and release it after five
+idle seconds or when its last owner closes. Compare cold time, warm time,
+active physical footprint and memory after close separately on the same host.
+The ordinary time and memory criteria still apply to built-in transforms.
 
 A separately spawned, single-threaded scientific interpreter on macOS could
 fork a clean child before importing a user routine. This reduced the median
