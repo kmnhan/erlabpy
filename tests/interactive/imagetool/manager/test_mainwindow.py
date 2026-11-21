@@ -11399,6 +11399,209 @@ def test_manager_output_itool_auto_update_can_be_disabled_from_auto_badge(
         xr.testing.assert_identical(fetch(output_uid), refreshed_output)
 
 
+def test_managed_eager_view_and_interpolation_keep_the_captured_values(
+    manager_context, monkeypatch, qtbot
+) -> None:
+    from erlab.interactive.imagetool.manager._console import ToolsNamespace
+
+    def spectrum(x, y):
+        x, y = np.asarray(x), np.asarray(y)
+        return xr.DataArray(
+            1.0 + 2.0 * x[:, None] + 3.0 * y[None, :],
+            coords={
+                "x": x,
+                "y": y,
+                "detector": (("x", "y"), 10.0 + x[:, None] - y[None, :]),
+            },
+            dims=("x", "y"),
+            attrs={"units": "counts", "run": {"number": 17}},
+            name="spectrum",
+        )
+
+    raw = spectrum(np.arange(4.0), np.arange(5.0))
+    expected = raw.copy(deep=True)
+    wanted = spectrum([0.5, 2.0], [0.5, 2.0, 3.5])
+    grid = xr.zeros_like(wanted.drop_vars("detector")).rename("grid")
+    with manager_context() as manager:
+
+        def add(array):
+            return manager._node_for_target(
+                manager.add_imagetool(
+                    itool(array, manager=False, execute=False), show=False
+                )
+            )
+
+        source, target = add(raw), add(grid)
+        area = source.slicer_area
+        dialog = imagetool_dialogs.InterpolationDialog(area)
+        qtbot.addWidget(dialog)
+        dialog.target_tabs.setCurrentIndex(1)
+        dialog.target_tool_selector.set_current_uid(target.uid)
+        dialog.all_coords_check.setChecked(True)
+        dialog.accept()
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+        child = manager._child_node(source._childtool_indices[-1])
+        graph = manager._operations.graph
+        original = graph.current_revision(source.uid)
+        published = graph.current_revision(child.uid)
+        token = source.snapshot_token
+
+        raw.values[:] = -1000.0
+        raw.detector.values[:] = 255.0
+        raw.attrs["run"]["number"] = -1
+        area.refresh_all()
+        xr.testing.assert_identical(area.displayed_data, expected)
+        xr.testing.assert_identical(area.main_image.current_data, expected)
+        np.testing.assert_array_equal(
+            area.main_image.slicer_data_items[0].image, expected.values.T
+        )
+        xr.testing.assert_identical(graph.data(original), expected)
+        xr.testing.assert_identical(graph.data(published), wanted)
+        xr.testing.assert_identical(child.slicer_area.displayed_data, wanted)
+        assert graph.current_revision(source.uid) == original
+        assert source.snapshot_token == token
+        for view in (area.data, area.displayed_data, area.main_image.current_data):
+            with pytest.raises(ValueError, match="read-only"):
+                view.values[0, 0] = -2.0
+            with pytest.raises(ValueError, match="read-only"):
+                view.detector.values[0, 0] = -3.0
+            with pytest.raises(ValueError, match="WRITEABLE"):
+                view.values.setflags(write=True)
+            view.attrs["run"]["number"] = -4
+        xr.testing.assert_identical(area.displayed_data, expected)
+
+        tools = ToolsNamespace(manager)
+        copied = []
+        arguments = {}
+
+        def name_checkpoint(key, _reserved):
+            name = f"saved_{key[:8]}"
+            arguments[name] = tools.checkpoint(key)
+            return name
+
+        monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)
+        monkeypatch.setattr(manager._details_panel, "_checkpoint_name", name_checkpoint)
+        manager._set_metadata_node(child)
+        manager._copy_full_derivation_code()
+        assert len(copied) == 1
+        assert manager._operations.update(child.uid)
+        xr.testing.assert_identical(child.slicer_area.displayed_data, wanted)
+
+        before_edit = graph.current_revision(child.uid)
+        with graph.retain(original), graph.retain(before_edit):
+            tools[source.index][:] = 42.0
+            qtbot.wait_until(lambda: graph.is_stale(child.uid))
+            edited = expected.copy(data=np.full(expected.shape, 42.0))
+            xr.testing.assert_identical(area.displayed_data, edited)
+            assert graph.current_revision(source.uid) != original
+            assert source.snapshot_token != token
+            xr.testing.assert_identical(graph.data(original), expected)
+            xr.testing.assert_identical(child.slicer_area.displayed_data, wanted)
+            xr.testing.assert_identical(
+                _exec_generated_code(copied[0], arguments)["interpolated"], wanted
+            )
+            assert manager._operations.update(child.uid)
+            xr.testing.assert_identical(
+                child.slicer_area.displayed_data,
+                wanted.copy(data=np.full(wanted.shape, 42.0)),
+            )
+            xr.testing.assert_identical(graph.data(original), expected)
+            xr.testing.assert_identical(graph.data(before_edit), wanted)
+
+
+@pytest.mark.parametrize("preview", [False, True])
+def test_manager_adopts_filtered_eager_source_and_preserves_preview(
+    qtbot, manager_context, preview
+) -> None:
+    x, y = np.arange(4.0), np.arange(5.0)
+    raw = xr.DataArray(
+        1 + 2 * x[:, None] + 3 * y[None, :],
+        dims=("x", "y"),
+        coords={"x": x, "y": y, "detector": (("x", "y"), x[:, None] - y[None, :])},
+        name="spectrum",
+    )
+    expected = raw.copy(deep=True)
+    accepted = expected.copy(
+        data=expected.values - expected.values.min(axis=0, keepdims=True)
+    )
+    previewed = expected.copy(
+        data=expected.values - expected.values.min(axis=1, keepdims=True)
+    )
+    with manager_context() as manager:
+        window = itool(raw, manager=False, execute=False)
+        area = window.slicer_area
+        area.apply_filter_operation(NormalizeOperation(dims=("x",), mode="min"))
+        if preview:
+            area.apply_filter_operation(
+                NormalizeOperation(dims=("y",), mode="min"), preview=True
+            )
+        source = manager._node_for_target(manager.add_imagetool(window, show=False))
+        raw.values[:] = -1000.0
+        raw.detector.values[:] = 255.0
+        xr.testing.assert_identical(source.data_for_role("source"), expected)
+        xr.testing.assert_identical(area.displayed_data, accepted)
+        rendered = previewed if preview else accepted
+        xr.testing.assert_identical(area.main_image.current_data, rendered)
+        area.refresh_all()
+        np.testing.assert_array_equal(
+            area.main_image.slicer_data_items[0].image, rendered.values.T
+        )
+
+        grid = expected.isel(x=[0, 2], y=[1, 3]).drop_vars("detector").rename("grid")
+        target = manager._node_for_target(
+            manager.add_imagetool(itool(grid, manager=False, execute=False), show=False)
+        )
+        dialog = imagetool_dialogs.InterpolationDialog(area)
+        qtbot.addWidget(dialog)
+        dialog.target_tabs.setCurrentIndex(1)
+        dialog.target_tool_selector.set_current_uid(target.uid)
+        dialog.accept()
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+        child = manager._child_node(source._childtool_indices[-1])
+        xr.testing.assert_identical(
+            child.slicer_area.displayed_data, accepted.isel(x=[0, 2], y=[1, 3])
+        )
+        xr.testing.assert_identical(area.main_image.current_data, rendered)
+
+
+@pytest.mark.parametrize("layout", ["promoted", "transposed"])
+def test_manager_adopts_eager_image_without_changing_its_layout(
+    manager_context, layout
+) -> None:
+    raw = xr.DataArray(
+        np.arange(20.0).reshape(4, 5),
+        dims=("x", "y"),
+        coords={
+            "x": np.arange(4.0),
+            "y": np.arange(5.0),
+            "detector": ("x", [0.5, 1.5, 2.5, 3.5]),
+        },
+        name="source",
+    )
+    if layout == "promoted":
+        raw = raw.isel(y=2, drop=True)
+    with manager_context() as manager:
+        window = itool(raw, manager=False, execute=False)
+        area = window.slicer_area
+        if layout == "transposed":
+            area.transpose_main_image()
+        area.set_index(0, 1)
+        cursor = tuple(area.array_slicer.get_indices(area.current_cursor))
+        rendered = area.data.copy(deep=True)
+        displayed = area.displayed_data.copy(deep=True)
+        index = manager.add_imagetool(window, show=False)
+        node = manager._node_for_target(index)
+
+        raw.values[:] = -1
+        raw.detector.values[:] = -2
+        assert tuple(area.array_slicer.get_indices(area.current_cursor)) == cursor
+        xr.testing.assert_identical(area.data, rendered)
+        xr.testing.assert_identical(area.displayed_data, displayed)
+        revision = node.revision_id_for_role("displayed")
+        recorded = manager._provenance_revisions.resolve_data(revision)
+        xr.testing.assert_identical(recorded, node.data_for_role("displayed"))
+
+
 @pytest.mark.parametrize("placement", ["nest", "detach", "replace"])
 def test_graph_interpolation_uses_historical_grid_until_refresh(
     qtbot, manager_context, monkeypatch, placement
