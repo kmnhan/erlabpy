@@ -13,9 +13,9 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive.imagetool.manager._registry as manager_registry
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
+from erlab._provenance._model import ScriptInput
 from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive._fit2d import Fit2DTool
-from erlab.interactive.imagetool._provenance._model import ScriptInput
 
 if typing.TYPE_CHECKING:
     import pathlib

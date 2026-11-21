@@ -18,6 +18,7 @@ import erlab.interactive.imagetool.manager._workspace._figure_repair as figure_r
 import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.utils
+from erlab._provenance._model import FileDataSelection
 from erlab.interactive import _persistence_constants
 from erlab.interactive._figurecomposer import (
     FigureComposerTool,
@@ -27,8 +28,13 @@ from erlab.interactive._figurecomposer import (
     FigureSubplotsState,
 )
 from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._provenance._model import FileDataSelection
 from erlab.interactive.imagetool.manager._figurecomposer import _collection
+from tests.interactive.imagetool.manager.figurecomposer._common import (
+    _materialized_figure_tool,
+    _restored_figure_composer_from_netcdf,
+    _selection_shortcut_sequences,
+    _SourcePickerDummyTool,
+)
 from tests.interactive.imagetool.manager.helpers import (
     _exec_generated_code,
     activate_widget_shortcut,
@@ -41,13 +47,6 @@ from tests.interactive.imagetool.manager.helpers import (
 from tests.interactive.imagetool.manager.workspace._support import (
     _current_workspace_payload_path,
     _request_workspace_save_as_and_wait,
-)
-
-from ._common import (
-    _materialized_figure_tool,
-    _restored_figure_composer_from_netcdf,
-    _selection_shortcut_sequences,
-    _SourcePickerDummyTool,
 )
 
 

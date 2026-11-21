@@ -17,9 +17,9 @@ import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._loading as workspace_loading
+from erlab._provenance._model import ScriptInput, script
 from erlab.extensions._models import _script_name_key
 from erlab.interactive import _persistence_constants
-from erlab.interactive.imagetool._provenance._model import ScriptInput, script
 from tests.interactive.imagetool.manager.workspace._support import (
     _workspace_test_file_spec,
 )

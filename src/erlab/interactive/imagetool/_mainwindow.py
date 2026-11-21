@@ -7,13 +7,13 @@ functionality of the ImageTool window, including GUI controls and keyboard short
 
 from __future__ import annotations
 
-from erlab.interactive import _persistence_constants
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     FileDataSelection,
     ReplayStep,
     ToolProvenanceSpec,
     parse_tool_provenance_spec,
 )
+from erlab.interactive import _persistence_constants
 
 __all__ = ["BaseImageTool", "ImageTool"]
 
@@ -27,6 +27,11 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab._provenance._checkpoint import _read_versioned_file
+from erlab._provenance._files import (
+    _capture_loader_file,
+    _load_provenance_from_file_details,
+)
 from erlab.interactive import _qt_state, _shortcut_sequences
 from erlab.interactive._code_trust import (
     create_manifest,
@@ -37,7 +42,6 @@ from erlab.interactive._code_trust import (
 )
 from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool._controls_bar import _ControlsBar
-from erlab.interactive.imagetool._load_source import _load_provenance_from_file_details
 from erlab.interactive.imagetool.viewer_state import _select_input_dataarrays
 
 if typing.TYPE_CHECKING:
@@ -650,13 +654,15 @@ class ImageTool(BaseImageTool):
 
             try:
                 with erlab.interactive.utils.wait_dialog(self, "Loading..."):
-                    loaded_data = fn(fname, **kargs)
+                    backing = _capture_loader_file(fname, fn, kargs)
+                    loaded_data = _read_versioned_file(fn, fname, kargs, backing)
                 selected_data = _select_input_dataarrays(loaded_data, self)
                 if selected_data is None:
                     return
                 first = selected_data[0]
                 self.slicer_area.replace_source_data(
                     first.data,
+                    _file_backing=backing,
                     file_path=fname,
                     load_func=(fn, kargs, first.selection),
                     preparation_operations=first.operations,
@@ -664,6 +670,7 @@ class ImageTool(BaseImageTool):
                 for prepared in selected_data[1:]:
                     tool = ImageTool(
                         prepared.data,
+                        _file_backing=backing,
                         file_path=fname,
                         load_func=(fn, kargs, prepared.selection),
                         preparation_operations=prepared.operations,

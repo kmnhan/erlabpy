@@ -635,6 +635,17 @@ def _load_script_bytes(
     )
 
 
+def _read_script_source(path: os.PathLike[str] | str) -> tuple[pathlib.Path, bytes]:
+    source_path = pathlib.Path(path).expanduser().resolve()
+    try:
+        source = source_path.read_bytes()
+    except OSError as error:
+        raise ExtensionImportError(
+            f"Could not read extension source: {error}"
+        ) from error
+    return source_path, source
+
+
 def load_script(
     path: os.PathLike[str] | str,
     *,
@@ -678,13 +689,7 @@ def load_script(
     >>> tuple(loaded.erlab.routines)  # doctest: +SKIP
     ('normalize',)
     """
-    source_path = pathlib.Path(path).expanduser().resolve()
-    try:
-        source = source_path.read_bytes()
-    except OSError as error:
-        raise ExtensionImportError(
-            f"Could not read extension source: {error}"
-        ) from error
+    source_path, source = _read_script_source(path)
     return _load_script_bytes(
         source,
         source_path,
@@ -738,14 +743,14 @@ def _resolve_from_registered_backends(
     raise _RegisteredScriptUnavailable("missing-source")
 
 
-def _resolve_registered_capability(
+def _registered_source(
     script_name: str,
     source_hash: str,
     kind: typing.Literal["routine", "loader"],
     capability_id: str,
-) -> Callable[..., typing.Any]:
+) -> _RegisteredScriptCapability:
     try:
-        reference = _resolve_from_registered_backends(
+        return _resolve_from_registered_backends(
             script_name,
             kind,
             capability_id,
@@ -756,6 +761,15 @@ def _resolve_registered_capability(
             f"Registered script capability {script_name}:{capability_id} is "
             f"unavailable: {error.status}"
         ) from error
+
+
+def _resolve_registered_capability(
+    script_name: str,
+    source_hash: str,
+    kind: typing.Literal["routine", "loader"],
+    capability_id: str,
+) -> Callable[..., typing.Any]:
+    reference = _registered_source(script_name, source_hash, kind, capability_id)
     loaded = _load_script_bytes(
         reference.source_bytes,
         reference.registered_path,
@@ -812,6 +826,7 @@ def run_routine(
     registered_script: str | None = None,
     source_hash: str | None = None,
     parameters: Mapping[str, typing.Any] | None = None,
+    execution_options: Mapping[str, bool | str] | None = None,
 ) -> xr.DataArray:
     """Run one decorated routine without manager or Qt knowledge.
 
@@ -834,6 +849,12 @@ def run_routine(
         verify a direct script.
     parameters
         User parameter values.
+    execution_options
+        Xarray calculation settings for a recorded routine. When supplied,
+        the routine runs in a separate process. Deferred result chunks also use
+        these settings when read.
+
+        .. versionadded:: 3.31.0
 
     Returns
     -------
@@ -866,25 +887,46 @@ def run_routine(
         raise TypeError("data must be an xarray.DataArray")
     if script is not None and registered_script is not None:
         raise ValueError("script and registered_script cannot both be supplied")
-    if script is None:
+    if script is not None:
+        path, source = _read_script_source(script)
+    else:
         if registered_script is None or source_hash is None:
             raise ExtensionNotFoundError(
                 "script or both registered_script and source_hash are required"
             )
-        func = _resolve_registered_capability(
+        reference = _registered_source(
             registered_script, source_hash, "routine", routine_id
         )
-    else:
-        loaded = load_script(
-            script,
-            expected_source_hash=source_hash,
+        path, source = reference.registered_path, reference.source_bytes
+    if execution_options is not None:
+        from erlab._provenance._settings import ExecutionSettings
+        from erlab.extensions._routine import run_recorded_routine
+
+        return run_recorded_routine(
+            data,
+            source=source,
+            path=path,
+            source_hash=source_hash,
+            routine_id=routine_id,
+            parameters=parameters or {},
+            settings=ExecutionSettings.from_options(execution_options),
         )
-        entry = loaded.erlab.routines.get(routine_id)
-        if entry is None:
-            raise ExtensionNotFoundError(f"Routine {routine_id!r} was not found")
-        func = entry[1]
+    loaded = _load_script_bytes(source, path, expected_source_hash=source_hash)
+    return _invoke_routine(loaded, data, routine_id, parameters or {})
+
+
+def _invoke_routine(
+    loaded: LoadedScript,
+    data: xr.DataArray,
+    routine_id: str,
+    parameters: Mapping[str, typing.Any],
+) -> xr.DataArray:
+    entry = loaded.erlab.routines.get(routine_id)
+    if entry is None:
+        raise ExtensionNotFoundError(f"Routine {routine_id!r} was not found")
+    func = entry[1]
     try:
-        values = _coerce_call_parameters(func, parameters or {})
+        values = _coerce_call_parameters(func, parameters)
         result = func(data, **values)
     except Exception as error:
         raise ExtensionExecutionError(

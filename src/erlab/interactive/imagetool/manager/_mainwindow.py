@@ -50,6 +50,7 @@ from erlab.interactive.imagetool.manager._metadata_editor import (
 )
 from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
 from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
+from erlab.interactive.imagetool.manager._operation_graph import _ManagedOperations
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _ProvenanceEditController,
 )
@@ -103,23 +104,21 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
     import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
-    from erlab.interactive._figurecomposer import (
-        FigureAxesSelectionState,
-        FigureOperationState,
-    )
-    from erlab.interactive.imagetool._load_source import _LoadSourceDetails
-    from erlab.interactive.imagetool._mainwindow import ImageTool
-    from erlab.interactive.imagetool._provenance._graph import ResolvedReplayInput
-    from erlab.interactive.imagetool._provenance._model import (
+    from erlab._provenance._files import _LoadSourceDetails
+    from erlab._provenance._model import (
         ScriptInput,
         ScriptInputDataRole,
         ToolProvenanceOperation,
         ToolProvenanceSpec,
         _ProvenanceDisplayRow,
     )
-    from erlab.interactive.imagetool._provenance._operations import (
-        ImageToolSelectionSourceBinding,
+    from erlab._provenance._operations import ImageToolSelectionSourceBinding
+    from erlab.interactive._figurecomposer import (
+        FigureAxesSelectionState,
+        FigureOperationState,
     )
+    from erlab.interactive.imagetool._mainwindow import ImageTool
+    from erlab.interactive.imagetool._provenance._graph import ResolvedReplayInput
     from erlab.interactive.imagetool.manager._dependency import _DependencyStatus
     from erlab.interactive.imagetool.manager._server import (
         _ManagerServer,
@@ -266,6 +265,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
         # This map is the single coalescing boundary for expensive node-derived work.
         self._pending_node_changes: dict[str, _ManagedNodeChange] = {}
+        self._operations = _ManagedOperations(self)
         self._lineage_controller = _LineageController(self)
         self._provenance_edit_controller = _ProvenanceEditController(self)
         self._details_panel = _DetailsPanelController(self)
@@ -1016,6 +1016,28 @@ class ImageToolManager(_ImageToolManagerBase):
         self.metadata_derivation_list.setVisible(False)
         metadata_provenance_page_layout.addWidget(self.metadata_derivation_list, 1)
 
+        self.next_inputs_box = QtWidgets.QGroupBox(
+            "Inputs for next update", self.metadata_provenance_page
+        )
+        update_layout = QtWidgets.QVBoxLayout(self.next_inputs_box)
+        self.next_inputs_text = QtWidgets.QLabel(self.next_inputs_box)
+        self.next_inputs_text.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        update_layout.addWidget(self.next_inputs_text)
+        update_actions = QtWidgets.QHBoxLayout()
+        self.update_auto_check = QtWidgets.QCheckBox("Auto", self.next_inputs_box)
+        self.update_auto_check.toggled.connect(self._details_panel._set_graph_auto)
+        update_actions.addWidget(self.update_auto_check)
+        self.refresh_revision_button = QtWidgets.QPushButton(
+            "Refresh", self.next_inputs_box
+        )
+        self.refresh_revision_button.clicked.connect(
+            self._details_panel._refresh_revision
+        )
+        update_actions.addWidget(self.refresh_revision_button)
+        update_layout.addLayout(update_actions)
+        self.next_inputs_box.hide()
+        metadata_provenance_page_layout.addWidget(self.next_inputs_box)
+
         self.notes_page = QtWidgets.QWidget(self.inspector_tabs)
         self.notes_page.setObjectName("managerNotesPage")
         notes_page_layout = QtWidgets.QVBoxLayout(self.notes_page)
@@ -1426,6 +1448,7 @@ class ImageToolManager(_ImageToolManagerBase):
             return
         if node.workspace_link_key is not None:
             self._invalidate_workspace_link_color_cache()
+        self._operations.removed(uid)
         self._cancel_managed_node_change(uid)
         self._dependency_tracker.clear_uid(uid)
         if refresh_dependents and not self._workspace_state.closing_document:
@@ -1725,6 +1748,7 @@ class ImageToolManager(_ImageToolManagerBase):
             if update_view:
                 self.tree_view.imagetool_removed(index)
 
+            self._operations.removed(wrapper.uid)
             self._tool_graph.unregister_root(index)
             removed_uids.add(wrapper.uid)
             self._cancel_managed_node_change(wrapper.uid)

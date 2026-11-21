@@ -12,24 +12,24 @@ import json
 import typing
 from collections.abc import Mapping
 
+from erlab._provenance._code import _FIT_DATASET_MARKER
+from erlab._provenance._model import (
+    ToolProvenanceSpec,
+    _direct_replay_source_name,
+    parse_tool_provenance_spec,
+)
 from erlab.interactive._code_trust import create_entry, execution_capability_allows
 from erlab.interactive._fit_code_trust import (
     lmfit_model_default_parameter_expressions,
     lmfit_parameter_expression_entries,
     lmfit_result_code_entry,
 )
-from erlab.interactive.imagetool._provenance._code import _FIT_DATASET_MARKER
-from erlab.interactive.imagetool._provenance._model import (
-    ToolProvenanceSpec,
-    _direct_replay_source_name,
-    parse_tool_provenance_spec,
-)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
 
+    from erlab._provenance._model import ScriptInput
     from erlab.interactive.imagetool._provenance._graph import LiveInputResolver
-    from erlab.interactive.imagetool._provenance._model import ScriptInput
 
 
 def _model_fit_parameter_expressions(

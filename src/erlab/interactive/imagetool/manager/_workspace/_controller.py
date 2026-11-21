@@ -84,6 +84,7 @@ if typing.TYPE_CHECKING:
     import h5py
     import xarray as xr
 
+    from erlab._provenance._model import ToolProvenanceSpec
     from erlab.interactive._code_trust._api import _DocumentTrust
     from erlab.interactive._code_trust._core import (
         CodeTrustEntry,
@@ -91,7 +92,6 @@ if typing.TYPE_CHECKING:
         CodeTrustManifest,
     )
     from erlab.interactive.imagetool._mainwindow import ImageTool
-    from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.manager._workspace._state import (
         _WorkspaceStateSnapshot,

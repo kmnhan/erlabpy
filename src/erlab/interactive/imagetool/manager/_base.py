@@ -13,12 +13,12 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive._options.core
+from erlab._provenance._files import _serialize_loader_kwargs
 from erlab.interactive import _qt_state
 from erlab.interactive._file_loaders import (
     builtin_file_loader_for_id,
     builtin_file_loader_for_name_filter,
 )
-from erlab.interactive.imagetool._load_source import _serialize_loader_kwargs
 from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
 
 if typing.TYPE_CHECKING:

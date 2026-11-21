@@ -15,13 +15,8 @@ import erlab
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
-from erlab.interactive.imagetool import _kspace_conversion, itool
-from erlab.interactive.imagetool._provenance._execution import (
-    replay_file_provenance,
-    replay_script_provenance,
-)
-from erlab.interactive.imagetool._provenance._graph import ReplayGraphError
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance import ProvenanceGraph
+from erlab._provenance._model import (
     DerivationEntry,
     ReplayStep,
     ScriptInput,
@@ -37,7 +32,7 @@ from erlab.interactive.imagetool._provenance._model import (
     stamp_operation_group,
     strip_operation_groups,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AffineCoordOperation,
     AssignAttrsOperation,
     AverageOperation,
@@ -54,6 +49,12 @@ from erlab.interactive.imagetool._provenance._operations import (
     SwapDimsOperation,
     TransposeOperation,
 )
+from erlab.interactive.imagetool import _kspace_conversion, itool
+from erlab.interactive.imagetool._provenance._execution import (
+    replay_file_provenance,
+    replay_script_provenance,
+)
+from erlab.interactive.imagetool._provenance._graph import ReplayGraphError
 from erlab.interactive.imagetool.manager import replace_data
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _controller as provenance_edit_controller,
@@ -67,8 +68,7 @@ from tests.interactive.imagetool.manager.helpers import (
     set_transform_launch_mode,
     trigger_menu_action,
 )
-
-from ._common import (
+from tests.interactive.imagetool.manager.provenance._common import (
     _add_file_replay_tool,
     _authorize_execution,
     _authorize_local_edit,
@@ -90,8 +90,12 @@ def derivation_panel(qtbot, monkeypatch):
     ):
         tree = manager_widgets._MetadataDerivationListWidget()
         qtbot.addWidget(tree)
+        next_inputs = QtWidgets.QGroupBox()
+        qtbot.addWidget(next_inputs)
         manager = types.SimpleNamespace(
             metadata_derivation_list=tree,
+            next_inputs_box=next_inputs,
+            _operations=types.SimpleNamespace(graph=ProvenanceGraph()),
             _metadata_node_uid=None,
             _tool_graph=(
                 types.SimpleNamespace(
@@ -1029,6 +1033,7 @@ def test_manager_unavailable_replay_details_skip_replayable_script_inputs() -> N
         ),
     )
     node = types.SimpleNamespace(
+        uid="selected",
         displayed_provenance_spec=spec,
         passive_displayed_provenance_spec=spec,
         derivation_display_rows=spec.display_rows(),
@@ -1038,6 +1043,7 @@ def test_manager_unavailable_replay_details_skip_replayable_script_inputs() -> N
             "typing.Any",
             types.SimpleNamespace(
                 _tool_graph=types.SimpleNamespace(nodes={}),
+                _operations=types.SimpleNamespace(graph=ProvenanceGraph()),
                 _lineage_controller=types.SimpleNamespace(
                     _has_recorded_script_input=lambda _input: False
                 ),

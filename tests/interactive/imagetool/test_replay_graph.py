@@ -16,10 +16,7 @@ import xarray as xr
 
 import erlab
 import erlab.extensions._api as extension_api
-from erlab.interactive._code_trust import issue_execution_capability, new_document_trust
-from erlab.interactive.imagetool._load_source import _register_local_callable_loader
-from erlab.interactive.imagetool._provenance import _execution, _graph
-from erlab.interactive.imagetool._provenance._code import (
+from erlab._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
     _code_uses_name,
     _code_uses_name_any_scope,
@@ -28,6 +25,53 @@ from erlab.interactive.imagetool._provenance._code import (
     _simplify_display_code,
     _symbol_table_dependencies,
 )
+from erlab._provenance._files import _register_local_callable_loader
+from erlab._provenance._model import (
+    FileDataSelection,
+    FileLoadSource,
+    FileReplayCall,
+    OperationGroupMarker,
+    ReplayStage,
+    ReplayStep,
+    ScriptInput,
+    ToolProvenanceOperation,
+    ToolProvenanceSpec,
+    _ProvenanceStepRef,
+    compose_full_provenance,
+    file_load,
+    full_data,
+    parse_script_inputs,
+    parse_tool_provenance_spec,
+    public_data,
+    rebase_script_inputs_node_uids,
+    recipe,
+    script,
+    selection,
+)
+from erlab._provenance._operations import (
+    AverageOperation,
+    CoarsenOperation,
+    ConcatOperation,
+    CorrectWithEdgeOperation,
+    DivideByCoordOperation,
+    ExtensionRoutineOperation,
+    GaussianFilterOperation,
+    ImageDerivativeOperation,
+    IselOperation,
+    KspaceWorkFunctionOperation,
+    ModelFitOperation,
+    QSelOperation,
+    RenameOperation,
+    RotateOperation,
+    ScriptCodeOperation,
+    SelOperation,
+    ShiftFromInputOperation,
+    SortCoordOrderOperation,
+    SqueezeOperation,
+    TransposeOperation,
+)
+from erlab.interactive._code_trust import issue_execution_capability, new_document_trust
+from erlab.interactive.imagetool._provenance import _execution, _graph
 from erlab.interactive.imagetool._provenance._execution import (
     execute_replay_graph,
     rebuild_script_inputs,
@@ -66,50 +110,6 @@ from erlab.interactive.imagetool._provenance._graph import (
     selected_provenance_code,
     selected_steps_code,
     selected_steps_spec,
-)
-from erlab.interactive.imagetool._provenance._model import (
-    FileDataSelection,
-    FileLoadSource,
-    FileReplayCall,
-    OperationGroupMarker,
-    ReplayStage,
-    ReplayStep,
-    ScriptInput,
-    ToolProvenanceOperation,
-    ToolProvenanceSpec,
-    _ProvenanceStepRef,
-    compose_full_provenance,
-    file_load,
-    full_data,
-    parse_script_inputs,
-    parse_tool_provenance_spec,
-    public_data,
-    rebase_script_inputs_node_uids,
-    recipe,
-    script,
-    selection,
-)
-from erlab.interactive.imagetool._provenance._operations import (
-    AverageOperation,
-    CoarsenOperation,
-    ConcatOperation,
-    CorrectWithEdgeOperation,
-    DivideByCoordOperation,
-    ExtensionRoutineOperation,
-    GaussianFilterOperation,
-    ImageDerivativeOperation,
-    IselOperation,
-    KspaceWorkFunctionOperation,
-    ModelFitOperation,
-    QSelOperation,
-    RenameOperation,
-    RotateOperation,
-    ScriptCodeOperation,
-    SelOperation,
-    ShiftFromInputOperation,
-    SortCoordOrderOperation,
-    SqueezeOperation,
-    TransposeOperation,
 )
 from erlab.interactive.imagetool._provenance._trust import (
     provenance_code_trust_entries,
@@ -6447,6 +6447,69 @@ def load_data(path: Path) -> xr.DataArray:
 
     assert code.count("from erlab.extensions import load_script") == 1
     xr.testing.assert_identical(namespace["derived"], xr.DataArray([4.0]))
+
+
+def test_recorded_code_requires_the_applied_extension_version(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from erlab._provenance import FileLoad, FileVersion, ProvenanceGraph
+    from erlab.interactive.imagetool._provenance._recorded_code import full_code
+
+    script_path = tmp_path / "loader.py"
+    script_path.write_text(
+        "from pathlib import Path\nimport xarray as xr\n"
+        "from erlab.extensions import loader\n"
+        "@loader()\ndef load_data(path: Path) -> xr.DataArray:\n"
+        "    return xr.DataArray(int(path.read_text()))\n"
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: _registered_loader(script_path),
+    )
+    data_path = tmp_path / "value.txt"
+    data_path.write_text("5")
+    call = FileReplayCall(
+        kind="extension_loader",
+        target=script_path.name,
+        source_hash=_registered_loader(script_path).source_hash,
+        capability_id="load_data",
+        selection=FileDataSelection(kind="dataarray"),
+    )
+
+    def read_file(source, call):
+        version = FileVersion.capture(source.path)
+        module = erlab.extensions.load_script(
+            script_path, expected_source_hash=call.source_hash
+        )
+        return module.load_data(pathlib.Path(source.path)), version
+
+    graph = ProvenanceGraph(read_file=read_file)
+    revision = graph.derive("scan", FileLoad(graph.file_source(str(data_path)), call))
+
+    def copy_code():
+        return full_code(
+            graph,
+            revision,
+            output_name="scan",
+            verify_file=lambda _revision: data_path.read_text() == "5",
+        )
+
+    code = copy_code()
+    xr.testing.assert_identical(
+        _exec_generated_code(code)["scan"], graph.data(revision)
+    )
+    data_path.write_text("6")
+    with pytest.raises(OSError, match="has changed"):
+        _exec_generated_code(code)
+    data_path.write_text("5")
+    revision = graph.reload("scan")
+    code = copy_code()
+    script_path.write_text(script_path.read_text() + "# edited\n")
+    with pytest.raises(erlab.extensions.ExtensionImportError, match="expected hash"):
+        _exec_generated_code(code)
+    with pytest.raises(ReplayGraphError, match="Recorded version"):
+        copy_code()
 
 
 @pytest.mark.parametrize(

@@ -20,15 +20,11 @@ import erlab.interactive.imagetool.manager._extensions._dialogs as extension_dia
 import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
-from erlab.interactive._code_trust import (
-    issue_complete_execution_capability,
-    new_document_trust,
-)
-from erlab.interactive.imagetool._load_source import (
+from erlab._provenance._files import (
     _deserialize_loader_kwargs,
     _serialize_loader_kwargs,
 )
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     DerivationEntry,
     FileDataSelection,
     FileLoadSource,
@@ -42,7 +38,7 @@ from erlab.interactive.imagetool._provenance._model import (
     full_data,
     script,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AffineCoordOperation,
     AssignAttrsOperation,
     AssignCoord1DOperation,
@@ -75,6 +71,10 @@ from erlab.interactive.imagetool._provenance._operations import (
     ThinOperation,
     UniformInterpolationOperation,
 )
+from erlab.interactive._code_trust import (
+    issue_complete_execution_capability,
+    new_document_trust,
+)
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 from erlab.interactive.imagetool.dialogs import SelectionDialog
 from erlab.interactive.imagetool.manager._provenance_edit import (
@@ -87,8 +87,7 @@ from erlab.interactive.imagetool.manager._provenance_edit import (
     _files as provenance_edit_files,
 )
 from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
-
-from ._common import (
+from tests.interactive.imagetool.manager.provenance._common import (
     _fake_edit_controller,
     _fake_edit_node,
     _manager_provenance_file_spec,

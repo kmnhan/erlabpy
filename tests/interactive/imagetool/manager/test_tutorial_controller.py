@@ -253,17 +253,14 @@ def test_tutorial_sequence_has_stable_forward_only_ids(monkeypatch, qtbot) -> No
 
 
 def test_tutorial_clipboard_requires_the_copied_operations(monkeypatch, qtbot) -> None:
-    from erlab.interactive.imagetool import _kspace_conversion
-    from erlab.interactive.imagetool._provenance._model import (
-        ReplayStep,
-        stamp_operation_group,
-    )
-    from erlab.interactive.imagetool._provenance._operations import (
+    from erlab._provenance._model import ReplayStep, stamp_operation_group
+    from erlab._provenance._operations import (
         AffineCoordOperation,
         AverageOperation,
         KspaceConvertOperation,
         KspaceSetNormalOperation,
     )
+    from erlab.interactive.imagetool import _kspace_conversion
     from erlab.interactive.imagetool.manager import _details_panel
 
     manager = _Manager()
@@ -1593,10 +1590,8 @@ def test_tutorial_real_workflow(
         input_item.setExpanded(True)
         complete_action("select-reusable-operations")
 
+        from erlab._provenance._operations import AffineCoordOperation
         from erlab.interactive.imagetool import _kspace_conversion
-        from erlab.interactive.imagetool._provenance._operations import (
-            AffineCoordOperation,
-        )
         from erlab.interactive.imagetool.manager._widgets import (
             _METADATA_DERIVATION_ROW_ROLE,
         )

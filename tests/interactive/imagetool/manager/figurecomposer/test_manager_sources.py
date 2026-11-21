@@ -9,6 +9,8 @@ from matplotlib.figure import Figure
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.interactive._stylesheets
+from erlab._provenance._model import FileDataSelection
+from erlab._provenance._operations import GaussianFilterOperation
 from erlab.interactive._figurecomposer import (
     FigureAxesSelectionState,
     FigureComposerTool,
@@ -16,19 +18,16 @@ from erlab.interactive._figurecomposer import (
     FigureSourceState,
 )
 from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._provenance._model import FileDataSelection
-from erlab.interactive.imagetool._provenance._operations import GaussianFilterOperation
 from erlab.interactive.imagetool.manager._figurecomposer import _dialogs
+from tests.interactive.imagetool.manager.figurecomposer._common import (
+    _materialized_figure_tool,
+    _render_figure_composer_rgba,
+    _SourcePickerDummyTool,
+)
 from tests.interactive.imagetool.manager.helpers import (
     _exec_generated_code,
     select_child_tool,
     select_tools,
-)
-
-from ._common import (
-    _materialized_figure_tool,
-    _render_figure_composer_rgba,
-    _SourcePickerDummyTool,
 )
 
 if typing.TYPE_CHECKING:

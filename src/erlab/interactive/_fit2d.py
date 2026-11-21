@@ -28,6 +28,21 @@ from xarray_lmfit.modelfit import (
 )
 
 import erlab.interactive.utils
+from erlab._provenance._model import (
+    ReplayStep,
+    ToolProvenanceOperation,
+    ToolProvenanceSpec,
+    recipe,
+    script,
+)
+from erlab._provenance._operations import (
+    IselOperation,
+    ModelFitOperation,
+    ScriptCodeOperation,
+    SelOperation,
+    _model_fit_parameters_code,
+    _ModelFitParameterSpec,
+)
 from erlab.interactive._fit1d import (
     Fit1DTool,
     _broadcast_uncertainty,
@@ -40,21 +55,6 @@ from erlab.interactive._fit1d import (
     _uncertainty_from_weights,
     _validate_uncertainty_input,
     _validate_weights_input,
-)
-from erlab.interactive.imagetool._provenance._model import (
-    ReplayStep,
-    ToolProvenanceOperation,
-    ToolProvenanceSpec,
-    recipe,
-    script,
-)
-from erlab.interactive.imagetool._provenance._operations import (
-    IselOperation,
-    ModelFitOperation,
-    ScriptCodeOperation,
-    SelOperation,
-    _model_fit_parameters_code,
-    _ModelFitParameterSpec,
 )
 
 if typing.TYPE_CHECKING:
@@ -3944,9 +3944,7 @@ class Fit2DTool(Fit1DTool):
         return prelude or None
 
     def _figure_fit_provenance(self) -> ToolProvenanceSpec | None:
-        from erlab.interactive.imagetool._provenance._operations import (
-            ScriptCodeOperation,
-        )
+        from erlab._provenance._operations import ScriptCodeOperation
 
         selection = erlab.interactive.utils.format_kwargs(
             {self._y_dim_name: self._current_idx}

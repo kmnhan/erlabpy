@@ -6,9 +6,9 @@ import json
 import typing
 from collections.abc import Mapping
 
+from erlab._provenance._model import parse_tool_provenance_spec
 from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool import _serialization
-from erlab.interactive.imagetool._provenance._model import parse_tool_provenance_spec
 from erlab.interactive.imagetool.manager._revisions import (
     _ProvenanceRevision,
     _ProvenanceRevisionStore,

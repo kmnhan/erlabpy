@@ -18,8 +18,7 @@ import unicodedata
 import uuid
 import weakref
 
-from erlab.interactive import _persistence_constants
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ScriptInput,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
@@ -28,11 +27,12 @@ from erlab.interactive.imagetool._provenance._model import (
     script,
     to_replay_provenance_spec,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     IselOperation,
     QSelAggregationOperation,
     QSelOperation,
 )
+from erlab.interactive import _persistence_constants
 
 # Matplotlib's Qt backend should see the qtpy-selected binding first.
 # isort: off

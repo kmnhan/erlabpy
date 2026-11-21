@@ -20,6 +20,18 @@ import erlab.interactive._figurecomposer._ui._figure_window as figure_window_ui
 import erlab.interactive._stylesheets
 import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.plotting as eplt
+from erlab._provenance._model import (
+    ScriptInput,
+    ToolProvenanceSpec,
+    parse_tool_provenance_spec,
+    public_data,
+    script_input_dependency_refs,
+)
+from erlab._provenance._operations import (
+    IselOperation,
+    QSelAggregationOperation,
+    QSelOperation,
+)
 from erlab.interactive import _persistence_constants
 from erlab.interactive._figurecomposer import (
     FigureAxesSelectionState,
@@ -60,21 +72,7 @@ from erlab.interactive.imagetool._provenance._graph import (
     ResolvedReplayInput,
     compile_replay_graph,
 )
-from erlab.interactive.imagetool._provenance._model import (
-    ScriptInput,
-    ToolProvenanceSpec,
-    parse_tool_provenance_spec,
-    public_data,
-    script_input_dependency_refs,
-)
-from erlab.interactive.imagetool._provenance._operations import (
-    IselOperation,
-    QSelAggregationOperation,
-    QSelOperation,
-)
-from tests.interactive.imagetool.manager.helpers import _exec_generated_code
-
-from ._common import (
+from tests.interactive.imagetool.manager.figurecomposer._common import (
     _activate_combo_index,
     _clear_clipboard,
     _custom_order_step,
@@ -87,6 +85,7 @@ from ._common import (
     _restored_figure_composer_from_netcdf,
     _select_operation_rows,
 )
+from tests.interactive.imagetool.manager.helpers import _exec_generated_code
 
 
 def test_embedded_workspace_sources_filters_captured_array_inputs():
@@ -6338,9 +6337,13 @@ def test_manager_fit_source_workspace_roundtrip(
     import erlab.interactive.imagetool.manager._workspace._trust as workspace_trust
     from erlab.interactive._code_trust import document_trust_has_trusted_lineage
     from erlab.interactive._code_trust._application import reset_saved_code_trust
-
-    from ._common import _materialized_figure_tool
-    from .test_fit_plot import _assert_equal_artists, _render
+    from tests.interactive.imagetool.manager.figurecomposer._common import (
+        _materialized_figure_tool,
+    )
+    from tests.interactive.imagetool.manager.figurecomposer.test_fit_plot import (
+        _assert_equal_artists,
+        _render,
+    )
 
     x = np.linspace(-1.0, 1.0, 41)
     spectra = xr.DataArray(

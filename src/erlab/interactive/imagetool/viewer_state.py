@@ -17,10 +17,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool._provenance._model import (
-    FileDataSelection,
-    ToolProvenanceOperation,
-)
+from erlab._provenance._model import FileDataSelection, ToolProvenanceOperation
 
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Sequence

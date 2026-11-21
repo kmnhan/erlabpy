@@ -18,9 +18,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from erlab.interactive import _persistence_constants
-from erlab.interactive.imagetool._provenance._execution import replay_script_provenance
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ReplayStep,
     ScriptInput,
     full_data,
@@ -29,13 +27,15 @@ from erlab.interactive.imagetool._provenance._model import (
     script,
     selection,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AssignAttrsOperation,
     AssignScalarCoordOperation,
     IselOperation,
     ScriptCodeOperation,
     ShiftFromInputOperation,
 )
+from erlab.interactive import _persistence_constants
+from erlab.interactive.imagetool._provenance._execution import replay_script_provenance
 from erlab.interactive.imagetool.manager._revisions import (
     _ProvenanceRevisionStore,
     _RevisionCheckpointSource,
@@ -773,7 +773,7 @@ def test_bound_revision_requires_explicit_legacy_normalization_seed() -> None:
 
 
 def test_bound_revision_keeps_loader_arguments_exact() -> None:
-    from erlab.interactive.imagetool._provenance._model import (
+    from erlab._provenance._model import (
         FileDataSelection,
         FileLoadSource,
         FileReplayCall,

@@ -24,7 +24,7 @@ import uuid
 from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 
-from erlab.interactive.imagetool._provenance._code import (
+from erlab._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
     _BindingState,
     _code_stores_name,
@@ -43,7 +43,7 @@ from erlab.interactive.imagetool._provenance._code import (
     _symbol_table_dependencies,
     _validate_script_replay_code,
 )
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ReplayStep,
     ScriptInput,
     ToolProvenanceSpec,
@@ -56,7 +56,8 @@ from erlab.interactive.imagetool._provenance._model import (
 if typing.TYPE_CHECKING:
     import xarray as xr
 
-    from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
+    from erlab._provenance import FileVersion
+    from erlab._provenance._operations import ScriptCodeOperation
 
 
 class ReplayGraphError(Exception):
@@ -744,6 +745,8 @@ def _add_file_load_node(
     setup_code: str | None,
     load_code: str | None,
     active_name: str,
+    key: str | None = None,
+    backing: FileVersion | None = None,
 ) -> str:
     if _is_extension_loader_source(load_source):
         setup_code = None
@@ -755,8 +758,8 @@ def _add_file_load_node(
             "setup",
             payload={"code": setup_code},
         )
-    return graph.add_node(
-        _canonical_key(
+    if key is None:
+        key = _canonical_key(
             "file_load",
             _file_load_key_payload(
                 load_source,
@@ -764,13 +767,16 @@ def _add_file_load_node(
                 load_code=load_code,
                 active_name=active_name,
             ),
-        ),
+        )
+    return graph.add_node(
+        key,
         "file_load",
         parents=() if setup_key is None else (setup_key,),
         payload={
             "active_name": active_name,
             "load_source": load_source,
             "load_code": load_code,
+            **({"backing": backing} if backing is not None else {}),
         },
     )
 
@@ -964,6 +970,15 @@ def _operation_replay_code(
     return code
 
 
+def _script_value_revision(item: ScriptInput) -> str | None:
+    """Only a checkpoint of the actual slot value establishes object identity."""
+    if item.resolved_revision_id is not None:
+        return item.resolved_revision_id
+    if item.source_spec is None:
+        return item.revision_id
+    return None
+
+
 def _compile_script_input(
     graph: ReplayGraph,
     script_input: ScriptInput,
@@ -976,7 +991,7 @@ def _compile_script_input(
     allow_unresolved_inputs: bool,
     input_provenance_resolver: InputProvenanceResolver,
     code_analyzer: _CodeAnalyzer,
-) -> str:
+) -> tuple[str, str | None]:
     live_data = None
     refreshed = _normalize_legacy_script_input(script_input)
     input_spec = None
@@ -1011,7 +1026,9 @@ def _compile_script_input(
                     payload={"data": None},
                 )
             elif display:
-                return _add_external_input_node(graph, script_input)
+                return _add_external_input_node(
+                    graph, script_input
+                ), _script_value_revision(script_input)
             else:
                 raise ReplayGraphError(
                     f"{_script_input_reference_text(script_input)} does not contain "
@@ -1072,7 +1089,9 @@ def _compile_script_input(
     graph.input_boundaries.append(boundary)
     if display:
         graph.add_alias(script_input.name, boundary.output_key)
-    return boundary.output_key
+    return boundary.output_key, _script_value_revision(
+        refreshed if live_resolved else script_input
+    )
 
 
 def _compile_spec(
@@ -1156,12 +1175,16 @@ def _compile_spec(
         )
         graph._external_names.update(caller_names)
         bindings: list[tuple[str, str]] = []
+        # Resolution may deduplicate a file read for independent named inputs.
+        # Only an explicit matching revision can share a mutable script operand.
+        revisions: dict[tuple[str, str], tuple[str, int | None]] = {}
         if parsed.script_inputs:
             for script_input in parsed.script_inputs:
                 if input_keys is not None and script_input.name in input_keys:
                     input_key = input_keys[script_input.name]
+                    revision = _script_value_revision(script_input)
                 else:
-                    input_key = _compile_script_input(
+                    input_key, revision = _compile_script_input(
                         graph,
                         script_input,
                         display=display,
@@ -1173,7 +1196,20 @@ def _compile_spec(
                         input_provenance_resolver=input_provenance_resolver,
                         code_analyzer=code_analyzer,
                     )
-                bindings.append((script_input.name, input_key))
+                binding = (script_input.name, input_key)
+                bindings.append(binding)
+                if revision is not None:
+                    # Explicit caller overrides can supply distinct values for
+                    # slots that previously referred to one revision.
+                    supplied = (
+                        None
+                        if external_inputs is None
+                        else external_inputs.get(script_input.name)
+                    )
+                    revisions[binding] = (
+                        revision,
+                        None if supplied is None else id(supplied),
+                    )
         elif external_inputs:
             for name, data in external_inputs.items():
                 input_key = graph.add_node(
@@ -1295,12 +1331,22 @@ def _compile_spec(
             )
             if output_name is None:  # pragma: no cover - rejected by validation.
                 raise ReplayGraphError("Script provenance has no replay code")
+            owners: dict[tuple[str, int | None], str] = {}
+            shared_inputs: dict[str, str] = {}
+            for binding in current_bindings:
+                value_revision = revisions.get(binding)
+                if value_revision is not None:
+                    input_name = binding[0]
+                    owner = owners.setdefault(value_revision, input_name)
+                    if owner != input_name:
+                        shared_inputs[input_name] = owner
             script_current_key = graph.add_node(
                 _canonical_key(
                     "script",
                     {
                         "active_name": output_name,
                         "bindings": current_bindings,
+                        "shared_inputs": shared_inputs,
                         "codes": tuple(pending_codes),
                         "external_names": tuple(pending_code_external_names),
                         "uses_implicit_framework_imports": tuple(
@@ -1316,6 +1362,7 @@ def _compile_spec(
                 payload={
                     "active_name": output_name,
                     "bindings": current_bindings,
+                    "shared_inputs": shared_inputs,
                     "codes": tuple(pending_codes),
                     "external_names": tuple(pending_code_external_names),
                     "uses_implicit_framework_imports": tuple(
@@ -1844,6 +1891,9 @@ def _node_names(
         if not node.parents or node.kind in {"setup", "relay", "source_view"}:
             continue
         data_consumer_counts[emitted_key(node.parents[0])] += 1
+        if node.kind == "operation":
+            for _, source in node.payload.get("input_bindings", ()):
+                data_consumer_counts[emitted_key(source)] += 1
     for node in graph.nodes:
         if node.kind != "operation" or not node.parents:
             continue
@@ -1902,11 +1952,9 @@ def _semantic_emitted_step_count(graph: ReplayGraph) -> int:
 def _copied_script_bindings(graph: ReplayGraph) -> set[tuple[str, str, str]]:
     """Return shared bindings that need independent script-owned arrays.
 
-    Runtime replay gives every script binding its own deep copy. Emitted code
-    preserves that ownership wherever two bindings share the same value or a
-    value-producing graph ancestor. Setup nodes are excluded because sharing
-    import/setup code does not imply sharing an array. Display code uses notebook
-    inputs directly; only arrays produced by the graph need independent bindings.
+    Independent slots keep their own values even when one file read serves both.
+    Names for one recorded value share an isolated copy. Setup nodes have no
+    array values. Display code otherwise uses notebook inputs directly.
     """
     node_by_key = {node.key: node for node in graph.nodes}
     direct_input_kinds = {"caller_input"}
@@ -1945,6 +1993,14 @@ def _copied_script_bindings(graph: ReplayGraph) -> set[tuple[str, str, str]]:
             for other_binding in bindings
         ):
             copied.add(binding)
+    for node in graph.nodes:
+        if shared_inputs := node.payload.get("shared_inputs"):
+            names = set(shared_inputs) | set(shared_inputs.values())
+            copied.update(
+                (node.key, name, key)
+                for name, key in node.payload["bindings"]
+                if name in names
+            )
     return copied
 
 
@@ -3130,16 +3186,14 @@ def _rename_display_replay_temps(
 
 
 def _extension_script_references(
-    graph: ReplayGraph,
-) -> dict[str, tuple[pathlib.Path, str]]:
+    graph: ReplayGraph, *, preserve_versions: bool
+) -> dict[str, tuple[pathlib.Path, str, str | None]]:
     """Resolve each graph-owned extension call to one current local script."""
+    from erlab._provenance._operations._extension import ExtensionRoutineOperation
     from erlab.extensions import ExtensionNotFoundError
     from erlab.extensions._api import _resolve_registered_script_capability
-    from erlab.interactive.imagetool._provenance._operations._extension import (
-        ExtensionRoutineOperation,
-    )
 
-    references: dict[str, tuple[pathlib.Path, str]] = {}
+    references: dict[str, tuple[pathlib.Path, str, str | None]] = {}
     for node in graph.nodes:
         capability_kind: typing.Literal["routine", "loader"]
         if _is_extension_loader_node(node):
@@ -3147,6 +3201,7 @@ def _extension_script_references(
             script_name = replay_call.target
             capability_kind = "loader"
             capability_id = replay_call.capability_id
+            recorded_hash = replay_call.source_hash
         elif node.kind == "operation" and isinstance(
             node.payload.get("operation"), ExtensionRoutineOperation
         ):
@@ -3156,6 +3211,7 @@ def _extension_script_references(
             script_name = operation.script_name
             capability_kind = "routine"
             capability_id = operation.routine_id
+            recorded_hash = operation.source_hash
         else:
             continue
         try:
@@ -3168,9 +3224,18 @@ def _extension_script_references(
             raise ReplayGraphError(
                 "Extension call does not have a registered local script"
             ) from exc
+        exact_source = preserve_versions or (
+            node.kind == "operation"
+            and node.payload["operation"].execution_options is not None
+        )
+        if exact_source and recorded_hash != reference.source_hash:
+            raise ReplayGraphError(
+                f"Recorded version of extension {script_name!r} is unavailable"
+            )
         references[node.key] = (
             pathlib.Path(reference.registered_path).expanduser().resolve(),
             reference.descriptor.function_name,
+            recorded_hash if exact_source else None,
         )
     return references
 
@@ -3261,10 +3326,9 @@ def emit_replay_code(
     publish_output: bool = False,
     required_public_bindings: Collection[str] = (),
     code_analyzer: _CodeAnalyzer | None = None,
+    preserve_extension_versions: bool = False,
 ) -> str:
-    from erlab.interactive.imagetool._provenance._operations._extension import (
-        ExtensionRoutineOperation,
-    )
+    from erlab._provenance._operations._extension import ExtensionRoutineOperation
 
     code_analyzer = code_analyzer or _CodeAnalyzer()
     _validate_module_future_imports(graph.source_module_futures)
@@ -3287,7 +3351,9 @@ def emit_replay_code(
         input_name_overrides=input_name_overrides,
     )
     node_by_key = {node.key: node for node in graph.nodes}
-    extension_references = _extension_script_references(graph)
+    extension_references = _extension_script_references(
+        graph, preserve_versions=preserve_extension_versions
+    )
     protected_graph = any(node.kind == "external_input" for node in graph.nodes)
     copied_script_bindings = _copied_script_bindings(graph)
     aliases = list(graph.aliases) if include_all_aliases else []
@@ -3373,13 +3439,16 @@ def emit_replay_code(
             external_load_script_name = f"input_data_{suffix}"
             suffix += 1
         extension_binding_names.add(external_load_script_name)
-    extension_script_bindings: dict[pathlib.Path, str] = {}
+    extension_script_bindings: dict[tuple[pathlib.Path, str | None], str] = {}
     for node in graph.nodes:
         reference = extension_references.get(node.key)
-        if reference is None:
+        if reference is None or (
+            node.kind == "operation"
+            and node.payload["operation"].execution_options is not None
+        ):
             continue
-        source_path, _function_name = reference
-        if source_path in extension_script_bindings:
+        source_path, _function_name, source_hash = reference
+        if (source_path, source_hash) in extension_script_bindings:
             continue
         module_base = re.sub(r"\W", "_", source_path.stem)
         if not module_base.isidentifier() or keyword.iskeyword(module_base):
@@ -3390,7 +3459,7 @@ def emit_replay_code(
             module_name = f"{module_base}_{suffix}"
             suffix += 1
         extension_binding_names.add(module_name)
-        extension_script_bindings[source_path] = module_name
+        extension_script_bindings[source_path, source_hash] = module_name
     active_setup_key: str | None = None
 
     def append_code(
@@ -3450,8 +3519,8 @@ def emit_replay_code(
             remaining_uses[_emitted_node_key(graph, node_by_key, key)] -= 1
 
     def extension_binding(node_key: str) -> tuple[str, str]:
-        source_path, function_name = extension_references[node_key]
-        module_name = extension_script_bindings[source_path]
+        source_path, function_name, source_hash = extension_references[node_key]
+        module_name = extension_script_bindings[source_path, source_hash]
         return module_name, function_name
 
     if extension_script_bindings:
@@ -3462,9 +3531,18 @@ def emit_replay_code(
         extension_setup_chunks.append(
             ("from erlab.extensions import load_script", graph.display)
         )
-        for source_path, module_name in extension_script_bindings.items():
+        for (
+            source_path,
+            source_hash,
+        ), module_name in extension_script_bindings.items():
+            version_arg = (
+                "" if source_hash is None else f", expected_source_hash={source_hash!r}"
+            )
             extension_setup_chunks.append(
-                (f"{module_name} = load_script({str(source_path)!r})", False)
+                (
+                    f"{module_name} = load_script({str(source_path)!r}{version_arg})",
+                    False,
+                )
             )
 
     def copied_binding_name(input_name: str) -> str:
@@ -3482,6 +3560,7 @@ def emit_replay_code(
                 return candidate
             suffix += 1
 
+    versioned_files = set()
     for node in graph.nodes:
         if node.kind == "setup":
             continue
@@ -3489,16 +3568,17 @@ def emit_replay_code(
             continue
         name = names[node.key]
         if node.kind == "file_load":
+            if node.payload.get("backing") is not None:
+                versioned_files.add(name)
             if _is_extension_loader_node(node):
-                from erlab.interactive.imagetool._load_source import (
-                    _extension_loader_load_code,
-                )
+                from erlab._provenance._files import _extension_loader_load_code
 
                 module_name, function_name = extension_binding(node.key)
                 code = _extension_loader_load_code(
                     node.payload["load_source"],
                     assign=name,
                     loader_expression=f"{module_name}.{function_name}",
+                    backing=node.payload.get("backing"),
                 )
                 append_code(code, group_imports=True)
                 continue
@@ -3531,6 +3611,15 @@ def emit_replay_code(
             context_name = names[node.parents[1]]
             operation = node.payload["operation"]
             if isinstance(operation, ExtensionRoutineOperation):
+                if operation.execution_options is not None:
+                    path, _, _ = extension_references[node.key]
+                    call = operation.invocation(script=str(path))
+                    consume(node.parents)
+                    append_code(
+                        f"{name} = {call.expression({'data': parent_name})}",
+                        allowed_accesses=(parent_name,),
+                    )
+                    continue
                 module_name, function_name = extension_binding(node.key)
                 consume(node.parents)
                 append_code(
@@ -3548,19 +3637,23 @@ def emit_replay_code(
                     for slot, input_key in node.payload.get("input_bindings", ())
                 }
                 consume(node.parents)
-                append_code(
-                    _operation_replay_code(
-                        operation,
-                        active_name=name,
-                        context_name=context_name,
-                        parent_name=parent_name,
-                        bound_inputs=bound_input_names,
-                        reserved_names=(
-                            graph.reserved_names
-                            | reserved_binding_names
-                            | set(names.values())
-                        ),
+                statement = _operation_replay_code(
+                    operation,
+                    active_name=name,
+                    context_name=context_name,
+                    parent_name=parent_name,
+                    bound_inputs=bound_input_names,
+                    reserved_names=(
+                        graph.reserved_names
+                        | reserved_binding_names
+                        | set(names.values())
                     ),
+                )
+                settings = node.payload.get("execution_settings")
+                if settings is not None:
+                    statement = settings.wrap_code(statement)
+                append_code(
+                    statement,
                     allowed_accesses=(
                         parent_name,
                         context_name,
@@ -3596,11 +3689,14 @@ def emit_replay_code(
             inline_input_aliases: dict[str, str] = {}
             input_names: set[str] = set()
             input_assignments: list[tuple[str, str]] = []
+            bindings = typing.cast(
+                "tuple[tuple[str, str], ...]", node.payload["bindings"]
+            )
+            shared_inputs = node.payload.get("shared_inputs", {})
+            shared_owners = set(shared_inputs.values())
+            copies_by_owner: dict[str, str] = {}
             if external_load_script_name is not None and not any(
-                input_name == "load_script"
-                for input_name, _input_key in typing.cast(
-                    "tuple[tuple[str, str], ...]", node.payload["bindings"]
-                )
+                input_name == "load_script" for input_name, _input_key in bindings
             ):
                 codes = [
                     _replace_code_identifiers(
@@ -3610,19 +3706,25 @@ def emit_replay_code(
                 ]
                 if active_name == "load_script":
                     active_name = external_load_script_name
-            for input_name, input_key in typing.cast(
-                "tuple[tuple[str, str], ...]", node.payload["bindings"]
-            ):
+            for input_name, input_key in bindings:
                 input_names.add(input_name)
                 input_value_name = names[input_key]
                 binding = (node.key, input_name, input_key)
-                if (protected_graph and not graph.display) or (
-                    binding in copied_script_bindings
-                ):
+                if (
+                    protected_graph and not graph.display
+                ) or binding in copied_script_bindings:
                     generated_input_name = copied_binding_name(input_name)
-                    input_assignments.append(
-                        (generated_input_name, f"{input_value_name}.copy(deep=True)")
-                    )
+                    copy_expression = f"{input_value_name}.copy(deep=True)"
+                    if input_name in shared_inputs:
+                        owner_name = copies_by_owner[shared_inputs[input_name]]
+                        input_assignments.append((generated_input_name, owner_name))
+                    elif input_name in shared_owners:
+                        append_code(f"{generated_input_name} = {copy_expression}")
+                        copies_by_owner[input_name] = generated_input_name
+                    else:
+                        input_assignments.append(
+                            (generated_input_name, copy_expression)
+                        )
                     generated_copy_names.add(generated_input_name)
                     if generated_input_name != input_name:
                         input_replacements[input_name] = generated_input_name
@@ -3862,11 +3964,14 @@ def emit_replay_code(
             code,
             generated_copy_names=generated_copy_names,
             protected_names=required_public_bindings
-            | set(extension_script_bindings.values()),
+            | set(extension_script_bindings.values())
+            | versioned_files,
             compact_temporaries=not graph.display,
             code_analyzer=code_analyzer,
         ),
     )
+    if versioned_files:
+        cleaned_code = _format_long_call_assignments(cleaned_code)
     return "\n\n".join(part for part in (module_prologue, cleaned_code) if part)
 
 
@@ -4252,7 +4357,7 @@ def script_inputs_code(script_inputs: Sequence[typing.Any], *, display: bool) ->
         )
     graph = ReplayGraph(reserved_names=reserved_names, display=display)
     for script_input in script_inputs:
-        input_key = _compile_script_input(
+        input_key, _revision = _compile_script_input(
             graph,
             script_input,
             display=display,

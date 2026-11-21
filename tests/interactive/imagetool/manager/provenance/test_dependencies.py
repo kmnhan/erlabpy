@@ -18,13 +18,7 @@ import erlab.interactive.imagetool.manager._dependency as manager_dependency
 import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
-from erlab.interactive import _persistence_constants
-from erlab.interactive._fit2d import Fit2DTool
-from erlab.interactive.derivative import DerivativeTool
-from erlab.interactive.fermiedge import GoldTool
-from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._provenance._execution import rebuild_script_inputs
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     DerivationEntry,
     FileDataSelection,
     ScriptInput,
@@ -36,13 +30,19 @@ from erlab.interactive.imagetool._provenance._model import (
     script_inputs_dependency_refs,
     selection,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AssignAttrsOperation,
     GaussianFilterOperation,
     IselOperation,
     QSelOperation,
     ScriptCodeOperation,
 )
+from erlab.interactive import _persistence_constants
+from erlab.interactive._fit2d import Fit2DTool
+from erlab.interactive.derivative import DerivativeTool
+from erlab.interactive.fermiedge import GoldTool
+from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool._provenance._execution import rebuild_script_inputs
 from erlab.interactive.imagetool.dialogs import SelectionDialog
 from erlab.interactive.imagetool.manager import fetch, replace_data
 from erlab.interactive.imagetool.manager._dialogs import _RenameDialog
@@ -67,8 +67,7 @@ from tests.interactive.imagetool.manager.helpers import (
     set_transform_launch_mode,
     trigger_menu_action,
 )
-
-from ._common import (
+from tests.interactive.imagetool.manager.provenance._common import (
     _authorize_execution,
     _seed_fit2d_param_results,
     _set_selection_point,

@@ -33,8 +33,8 @@ from erlab.interactive.imagetool.manager._tutorial.framework import (
 )
 
 if typing.TYPE_CHECKING:
+    from erlab._provenance._model import ToolProvenanceOperation
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
-    from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
 
@@ -1766,10 +1766,8 @@ class _TutorialController(TourController):
         ]
         | None
     ):
+        from erlab._provenance._operations import AffineCoordOperation
         from erlab.interactive.imagetool import _kspace_conversion
-        from erlab.interactive.imagetool._provenance._operations import (
-            AffineCoordOperation,
-        )
         from erlab.interactive.imagetool.manager._widgets import (
             _METADATA_DERIVATION_ROW_ROLE,
         )

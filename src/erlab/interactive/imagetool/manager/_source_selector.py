@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import typing
 import weakref
 
@@ -18,6 +19,15 @@ if typing.TYPE_CHECKING:
 
     from erlab.interactive.imagetool.manager import ImageToolManager
     from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
+
+    _Eligibility = Callable[[_ManagedWindowNode], str | None]
+
+
+@dataclasses.dataclass(frozen=True)
+class _DeferredSourceEligibility:
+    """Prepare a fresh node check when the chooser first needs candidates."""
+
+    prepare: Callable[[], _Eligibility]
 
 
 class _ManagerSourceDelegate(QtWidgets.QStyledItemDelegate):
@@ -378,12 +388,15 @@ class ManagerSourceSelector(QtWidgets.QWidget):
         self,
         manager: ImageToolManager | None,
         *,
-        eligibility: Callable[[_ManagedWindowNode], str | None],
+        eligibility: _Eligibility | _DeferredSourceEligibility,
         parent: QtWidgets.QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._manager = None if manager is None else weakref.ref(manager)
         self._eligibility = eligibility
+        self._needs_initial_refresh = isinstance(
+            eligibility, _DeferredSourceEligibility
+        )
         self._current_uid: str | None = None
         self._button = _SourceButton(self)
         self._button.setToolButtonStyle(
@@ -428,7 +441,10 @@ class ManagerSourceSelector(QtWidgets.QWidget):
             ):
                 signal.connect(self._schedule_refresh)
             manager.destroyed.connect(self._schedule_refresh)
-        self.refresh()
+        if self._needs_initial_refresh:
+            self.set_current_uid(None)
+        else:
+            self.refresh()
 
     @property
     def current_uid(self) -> str | None:
@@ -436,10 +452,13 @@ class ManagerSourceSelector(QtWidgets.QWidget):
 
     @property
     def candidate_uids(self) -> tuple[str, ...]:
+        if self._needs_initial_refresh:
+            self.refresh()
         return self._content.candidate_uids
 
     def set_current_uid(self, uid: str | None) -> None:
-        uid = uid if uid in self.candidate_uids else None
+        if uid is not None and uid not in self.candidate_uids:
+            uid = None
         changed = uid != self._current_uid
         self._current_uid = uid
         self._button.setText(
@@ -453,15 +472,27 @@ class ManagerSourceSelector(QtWidgets.QWidget):
 
     @QtCore.Slot()
     def _schedule_refresh(self) -> None:
-        self._refresh_timer.start(0)
+        if not self._needs_initial_refresh:
+            self._refresh_timer.start(0)
+
+    def _current_manager(self) -> ImageToolManager | None:
+        manager = None if self._manager is None else self._manager()
+        if manager is not None and erlab.interactive.utils.qt_is_valid(manager):
+            return manager
+        return None
 
     @QtCore.Slot()
     def refresh(self) -> None:
-        manager = None if self._manager is None else self._manager()
-        if manager is not None and not erlab.interactive.utils.qt_is_valid(manager):
-            manager = None
-        previous = self.candidate_uids
-        self._content.refresh(manager, self._eligibility)
+        self._needs_initial_refresh = False
+        manager = self._current_manager()
+        previous = self._content.candidate_uids
+        eligibility = self._eligibility
+        if isinstance(eligibility, _DeferredSourceEligibility):
+            self._refresh_timer.stop()
+            eligibility = (
+                eligibility.prepare() if manager is not None else lambda _node: None
+            )
+        self._content.refresh(manager, eligibility)
         self.set_current_uid(self._current_uid)
         if previous != self.candidate_uids:
             self.candidatesChanged.emit()
@@ -492,6 +523,22 @@ class ManagerSourceSelector(QtWidgets.QWidget):
 
     @QtCore.Slot(str)
     def _accept_source(self, uid: str) -> None:
+        if (
+            isinstance(self._eligibility, _DeferredSourceEligibility)
+            and not self._refresh_timer.isActive()
+        ):
+            manager = self._current_manager()
+            node = None if manager is None else manager._tool_graph.nodes.get(uid)
+            if (
+                node is not None
+                and uid in self._content.candidate_uids
+                and self._eligibility.prepare()(node) is None
+            ):
+                if self._current_uid == uid:
+                    self.refreshed.emit()
+                self.set_current_uid(uid)
+                self._popup.hide()
+                return
         self.refresh()
         if uid in self.candidate_uids:
             self.set_current_uid(uid)

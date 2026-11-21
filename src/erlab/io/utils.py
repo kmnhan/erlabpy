@@ -4,22 +4,161 @@ __all__ = [
     "get_files",
     "load_hdf5",
     "open_hdf5",
+    "read_file_version",
     "save_as_hdf5",
     "save_as_netcdf",
     "showfitsinfo",
 ]
 
+import contextlib
+import functools
 import importlib.util
 import os
 import pathlib
+import typing
 import warnings
-from collections.abc import Iterable
+from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 
 import numpy as np
 import numpy.typing as npt
 import xarray as xr
 
 import erlab
+
+_FileSource = typing.TypeVar("_FileSource")
+_NO_FILE_VARIABLE = object()
+
+
+def _close_file_handles(callbacks: tuple[Callable[[], None], ...]) -> None:
+    with contextlib.ExitStack() as files:
+        for callback in callbacks:
+            files.callback(callback)
+
+
+def _take_file_closer(source: object) -> Callable[[], None] | None:
+    """Transfer xarray's file closers without retaining unrelated variables."""
+    items = (
+        source
+        if isinstance(source, Sequence) and not isinstance(source, (str, bytes))
+        else (source,)
+    )
+    callbacks = []
+    for item in items:
+        owners = item.subtree if isinstance(item, xr.DataTree) else (item,)
+        for owner in owners:
+            if (
+                isinstance(owner, (xr.DataArray, xr.Dataset, xr.DataTree))
+                and owner._close is not None
+            ):
+                # open_dataarray likewise transfers Dataset._close to its result.
+                callbacks.append(owner._close)
+                owner.set_close(None)
+    if not callbacks:
+        return None
+    if len(callbacks) == 1:
+        return callbacks[0]
+
+    return functools.partial(_close_file_handles, tuple(callbacks))
+
+
+def read_file_version(
+    path: str | os.PathLike[str],
+    read: Callable[..., _FileSource],
+    *,
+    read_kwargs: Mapping[str, typing.Any] | None = None,
+    variable: Hashable = _NO_FILE_VARIABLE,
+    node_path: str | None = None,
+    select: Callable[[_FileSource], xr.DataArray] | None = None,
+    dtype: npt.DTypeLike | None = None,
+    device: int,
+    inode: int,
+    size: int,
+    modified_ns: int,
+    changed_ns: int,
+) -> xr.DataArray:
+    """Read the selected array from a recorded version of a local file.
+
+    ImageTool's copied Python passes the original file identity and timestamps.
+    The reader receives the absolute path and any keyword arguments in
+    ``read_kwargs``. Use ``variable`` to select a Dataset variable, with
+    ``node_path`` to select a DataTree node. For other selections, pass a
+    ``select`` function that returns the desired DataArray. A reader that returns
+    a DataArray needs no selection. Closing the returned array
+    releases the opened files. All deferred variables must come from this file.
+    They verify its version on access. An optional dtype conversion is applied
+    after the file checks are attached.
+
+    The file identity is specific to its original filesystem. To analyze a copy
+    on another machine, open that copy as a new source. To reproduce the original
+    result after a file changes, supply an independent checkpoint of its data.
+
+    Raises
+    ------
+    OSError
+        If the path is missing or the file version has changed.
+    """
+    from erlab._provenance._checkpoint import (
+        FileVersion,
+        _guard_file_variables,
+        _native_file_options,
+    )
+
+    if select is not None and (
+        variable is not _NO_FILE_VARIABLE or node_path is not None
+    ):
+        raise ValueError("Use either select or a named file variable.")
+    if node_path is not None and variable is _NO_FILE_VARIABLE:
+        raise ValueError("A DataTree node path requires a variable name.")
+
+    version = FileVersion(
+        os.path.abspath(path), device, inode, size, modified_ns, changed_ns
+    )
+    version.verify()
+    options, token = _native_file_options(
+        read, read_kwargs or {}, version if select is None else None
+    )
+    try:
+        opened = read(version.path, **options)
+    except Exception:
+        version.verify()
+        raise
+    close_on_error = _take_file_closer(opened)
+    try:
+        if node_path is not None and not isinstance(opened, xr.DataTree):
+            raise TypeError("A node path requires a DataTree reader.")
+        if select is not None:
+            data = select(opened)
+        elif variable is _NO_FILE_VARIABLE:
+            data = opened
+        elif isinstance(opened, xr.DataTree):
+            node = opened if node_path is None else opened[node_path]
+            if not isinstance(node, xr.DataTree):
+                raise TypeError("The node path must identify a DataTree node.")
+            node_path = node.path
+            data = node.dataset[variable]
+        elif isinstance(opened, xr.Dataset):
+            data = opened[variable]
+        else:
+            raise TypeError("A named file variable requires a Dataset or DataTree.")
+        if not isinstance(data, xr.DataArray):
+            raise TypeError("The reader must select a DataArray.")
+        data_key = () if variable is _NO_FILE_VARIABLE else (variable,)
+        result = _guard_file_variables(
+            data,
+            version,
+            storage_key=token,
+            node_path=node_path or "/",
+            data_key=data_key,
+        )
+        if dtype is not None:
+            result = result.astype(dtype)
+        version.verify()
+        result.set_close(close_on_error)
+        close_on_error = None
+        return result
+    finally:
+        if close_on_error is not None:
+            close_on_error()
 
 
 def showfitsinfo(path: str | os.PathLike) -> None:  # pragma: no cover

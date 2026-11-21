@@ -11,14 +11,15 @@ from dataclasses import dataclass, replace
 
 import xarray as xr
 
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._checkpoint import FileVersion, checkpoint_data
+from erlab._provenance._model import (
     ReplayStep,
     ScriptInput,
     ToolProvenanceSpec,
     _normalize_legacy_script_input,
     parse_tool_provenance_spec,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AssignAttrsOperation,
     AssignScalarCoordOperation,
     ScriptCodeOperation,
@@ -31,7 +32,7 @@ from erlab.interactive.imagetool._provenance._trust import (
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
-    from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
+    from erlab._provenance._model import ToolProvenanceOperation
 
 
 def _copy_checkpoint_metadata(data: xr.DataArray) -> xr.DataArray:
@@ -176,6 +177,7 @@ class _ProvenanceRevisionStore:
     def __init__(self) -> None:
         self._records: dict[str, _ProvenanceRevision] = {}
         self._data: dict[str, xr.DataArray] = {}
+        self._graph_owned: set[str] = set()
         self._retained_roots: dict[object, set[str]] = {}
 
     def __contains__(self, revision_id: object) -> bool:
@@ -191,6 +193,8 @@ class _ProvenanceRevisionStore:
         revision_id: str | None = None,
         source: _RevisionCheckpointSource | None = None,
         primary_checkpoint_required: bool = True,
+        backing: FileVersion | None = None,
+        graph_owned: bool = False,
     ) -> str:
         revision_id = uuid.uuid4().hex if revision_id is None else revision_id
         if (
@@ -212,8 +216,7 @@ class _ProvenanceRevisionStore:
         checkpoint = None if source is None else _RevisionCheckpoint(source)
         protected = None
         if data is not None:
-            # A deep copy alone preserves graphs that can read mutable external data.
-            protected = data.copy(deep=True).load()
+            protected = checkpoint_data(data, backing=backing)
             checkpoint = _RevisionCheckpoint()
         record = _ProvenanceRevision(
             revision_id=revision_id,
@@ -226,7 +229,55 @@ class _ProvenanceRevisionStore:
         self._records[revision_id] = record
         if protected is not None:
             self._data[revision_id] = protected
+        if graph_owned:
+            self._graph_owned.add(revision_id)
+        elif self._graph_owned:
+            self.claim_graph_inputs(parsed_spec, primary_revision_id)
         return revision_id
+
+    def claim_graph_inputs(
+        self, spec: ToolProvenanceSpec | None, primary: str | None = None
+    ) -> None:
+        """Transfer revisions used by a legacy owner to its regular retention rules."""
+        if not self._graph_owned:
+            return
+        pending = list(_spec_revision_ids(spec))
+        if primary is not None:
+            pending.append(primary)
+        while pending:
+            key = pending.pop()
+            if key in self._graph_owned:
+                self._graph_owned.remove(key)
+                record = self._records[key]
+                pending.extend(_spec_revision_ids(record.provenance_spec))
+                if record.primary_revision_id is not None:
+                    pending.append(record.primary_revision_id)
+
+    def release_graph_result(self, revision_id: str) -> None:
+        if revision_id in self._graph_owned:
+            self.discard_unpublished(revision_id)
+
+    def discard_unpublished(self, revision_id: str) -> None:
+        """Release a candidate after its installation was cancelled or failed."""
+        self._graph_owned.discard(revision_id)
+        self._records.pop(revision_id, None)
+        self._data.pop(revision_id, None)
+
+    def adopt_result(
+        self,
+        revision_id: str,
+        protected: xr.DataArray,
+        spec: ToolProvenanceSpec,
+        owner: str,
+    ) -> None:
+        """Share graph-owned data with legacy readers under the same revision ID."""
+        self.add(
+            spec=spec, revision_id=revision_id, source_owner_uid=owner, graph_owned=True
+        )
+        self._records[revision_id] = replace(
+            self._records[revision_id], checkpoint=_RevisionCheckpoint()
+        )
+        self._data[revision_id] = protected
 
     def add_metadata_edit(
         self,
@@ -365,6 +416,7 @@ class _ProvenanceRevisionStore:
             raise KeyError(revision_id)
         if not _same_bound_provenance(record.provenance_spec, provenance_spec):
             raise ValueError("The bound recipe does not match the captured revision")
+        self.claim_graph_inputs(None, revision_id)
         return _BoundProvenanceRevision(record, copy.deepcopy(provenance_spec))
 
     def normalize_input(self, item: ScriptInput) -> ScriptInput:
@@ -484,6 +536,8 @@ class _ProvenanceRevisionStore:
         self._data = {
             key: data for key, data in self._data.items() if key in checkpoints
         }
+
+        self._graph_owned.intersection_update(self._records)
 
     def checkpoint_revision_ids(self, revision_ids: Iterable[str]) -> frozenset[str]:
         """Retain exact replay inputs and operation states, not superseded refreshes.

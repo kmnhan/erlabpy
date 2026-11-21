@@ -10,6 +10,7 @@ __all__ = [
     "metadata",
     "nexusutils",
     "open_hdf5",
+    "read_file_version",
     "save_as_hdf5",
     "save_as_netcdf",
     "set_data_dir",
@@ -28,4 +29,4 @@ from ._namespace import (
     summarize,
 )
 from .dataloader import loaders
-from .utils import load_hdf5, open_hdf5, save_as_hdf5, save_as_netcdf
+from .utils import load_hdf5, open_hdf5, read_file_version, save_as_hdf5, save_as_netcdf

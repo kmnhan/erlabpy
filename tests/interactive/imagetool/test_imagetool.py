@@ -22,9 +22,9 @@ from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtGui, QtTest, QtWidgets
 
 import erlab
+import erlab._provenance._files as imagetool_load_source
 import erlab.interactive.imagetool._highdim as imagetool_highdim
 import erlab.interactive.imagetool._itool as itool_mod
-import erlab.interactive.imagetool._load_source as imagetool_load_source
 import erlab.interactive.imagetool._mainwindow as imagetool_mainwindow
 import erlab.interactive.imagetool._provenance._execution as provenance_execution
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
@@ -32,37 +32,8 @@ import erlab.interactive.imagetool.manager._server as imagetool_manager_server
 import erlab.interactive.imagetool.viewer as imagetool_viewer
 import erlab.interactive.imagetool.viewer_linking as imagetool_viewer_linking
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
-from erlab.interactive import _persistence_constants
-from erlab.interactive._code_trust import (
-    issue_complete_execution_capability,
-    new_document_trust,
-)
-from erlab.interactive._figurecomposer import (
-    FigureDataSelectionState,
-    FigureOperationKind,
-    FigureOperationState,
-)
-from erlab.interactive._figurecomposer._exceptions import (
-    FigureComposerPlotSlicesSelectionError,
-)
-from erlab.interactive._widgets import _Separator
-from erlab.interactive.derivative import DerivativeTool, dtool
-from erlab.interactive.fermiedge import GoldTool, ResolutionTool
-from erlab.interactive.imagetool import ImageTool, itool
-from erlab.interactive.imagetool._figurecomposer_adapter import (
-    _multicursor_variable_key,
-    _norm_updates,
-    _operation_updates,
-    _plain_value,
-    _PlotOperationBuilder,
-    build_figure_composer_operation,
-)
-from erlab.interactive.imagetool._load_source import _register_local_callable_loader
-from erlab.interactive.imagetool._provenance._execution import (
-    replay_file_provenance,
-    replay_script_provenance,
-)
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._files import _register_local_callable_loader
+from erlab._provenance._model import (
     FileDataSelection,
     FileLoadSource,
     FileReplayCall,
@@ -76,7 +47,7 @@ from erlab.interactive.imagetool._provenance._model import (
     script,
     selection,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AffineCoordOperation,
     AssignAttrsOperation,
     AssignCoord1DOperation,
@@ -110,6 +81,35 @@ from erlab.interactive.imagetool._provenance._operations import (
     ThinOperation,
     UniformInterpolationOperation,
     _ModelFitParameterSpec,
+)
+from erlab.interactive import _persistence_constants
+from erlab.interactive._code_trust import (
+    issue_complete_execution_capability,
+    new_document_trust,
+)
+from erlab.interactive._figurecomposer import (
+    FigureDataSelectionState,
+    FigureOperationKind,
+    FigureOperationState,
+)
+from erlab.interactive._figurecomposer._exceptions import (
+    FigureComposerPlotSlicesSelectionError,
+)
+from erlab.interactive._widgets import _Separator
+from erlab.interactive.derivative import DerivativeTool, dtool
+from erlab.interactive.fermiedge import GoldTool, ResolutionTool
+from erlab.interactive.imagetool import ImageTool, itool
+from erlab.interactive.imagetool._figurecomposer_adapter import (
+    _multicursor_variable_key,
+    _norm_updates,
+    _operation_updates,
+    _plain_value,
+    _PlotOperationBuilder,
+    build_figure_composer_operation,
+)
+from erlab.interactive.imagetool._provenance._execution import (
+    replay_file_provenance,
+    replay_script_provenance,
 )
 from erlab.interactive.imagetool._viewer_dialogs import (
     _AssociatedCoordsDialog,
@@ -1948,7 +1948,7 @@ def test_extension_loader_execution_uses_public_runner(
         lambda path, **kwargs: calls.append((path, kwargs)) or xr.DataArray([1.0]),
     )
 
-    result = provenance_execution._load_file_source_object(source)
+    result = imagetool_load_source._load_file_source_object(source)
 
     xr.testing.assert_identical(result, xr.DataArray([1.0]))
     assert calls[0][0] == source_file
@@ -4653,6 +4653,76 @@ def test_itool_file_open_uses_selected_dataset_variable(
         win.slicer_area.reload()
     xr.testing.assert_identical(win.slicer_area.data, updated_second)
 
+    win.close()
+
+
+def test_itool_file_open_and_reload_keep_native_slice_reads(
+    qtbot, monkeypatch, accept_dialog, tmp_path, request
+) -> None:
+    from xarray.backends.h5netcdf_ import H5NetCDFArrayWrapper
+
+    grid = xr.DataArray(
+        np.arange(48.0).reshape(6, 8),
+        dims=("x", "y"),
+        coords={"x": np.arange(6.0), "y": np.arange(8.0)},
+        name="grid",
+    )
+    path = tmp_path / "grid.h5"
+    encoding = {"grid": {"chunksizes": (2, 4)}}
+    grid.to_netcdf(path, engine="h5netcdf", encoding=encoding)
+    menu_filter = "xarray HDF5 Files Chunked (*.h5)"
+    assert erlab.interactive.utils.file_loaders(path)[menu_filter] == (
+        xr.open_dataarray,
+        {"engine": "h5netcdf", "chunks": "auto"},
+    )
+    option = "io/dask/compute_threshold"
+    previous = erlab.interactive.options[option]
+    request.addfinalizer(lambda: erlab.interactive.options.set(option, previous))
+    erlab.interactive.options[option] = 0
+
+    win = itool(np.zeros((2, 2)), manager=False, execute=False)
+    qtbot.addWidget(win)
+
+    def choose(dialog: QtWidgets.QFileDialog) -> None:
+        dialog.setDirectory(str(tmp_path))
+        dialog.selectFile(str(path))
+        dialog.selectNameFilter(menu_filter)
+        focused = dialog.focusWidget()
+        if isinstance(focused, QtWidgets.QLineEdit):
+            focused.setText(path.name)
+
+    accept_dialog(lambda: win._open_file(native=False), pre_call=choose)
+    sizes = []
+    read = H5NetCDFArrayWrapper._getitem
+
+    def track(self, key):
+        result = read(self, key)
+        if self.variable_name == "grid":
+            sizes.append(result.size)
+        return result
+
+    monkeypatch.setattr(H5NetCDFArrayWrapper, "_getitem", track)
+    selected = win.slicer_area.displayed_data.isel(x=1, y=slice(1, 3))
+    xr.testing.assert_identical(selected.compute(), grid.isel(x=1, y=slice(1, 3)))
+    assert sizes == [2]
+
+    updated = (grid + 100).rename("grid")
+    replacement = tmp_path / "changed.nc"
+    updated.to_netcdf(replacement, engine="h5netcdf", encoding=encoding)
+    replacement.replace(path)
+    sizes.clear()
+    with pytest.raises(OSError, match="has changed"):
+        selected.compute()
+    assert not sizes
+
+    with qtbot.wait_signal(win.slicer_area.sigDataChanged):
+        win.slicer_area.reload()
+    sizes.clear()
+    xr.testing.assert_identical(
+        win.slicer_area.displayed_data.isel(x=1, y=slice(1, 3)).compute(),
+        updated.isel(x=1, y=slice(1, 3)),
+    )
+    assert sizes == [2]
     win.close()
 
 
@@ -14691,9 +14761,8 @@ def test_itool_assign_coords_affine(qtbot, accept_dialog) -> None:
     assert win.provenance_spec is not None
     display_code = win.provenance_spec.display_code(parent_data=data)
     assert display_code is not None
-    assert "['y'].values - 3.7" in display_code
-    assert "1.0 *" not in display_code
-    assert "+ -3.7" not in display_code
+    namespace = _exec_generated_code(display_code, {"data": data.copy(deep=True)})
+    xr.testing.assert_identical(namespace["derived"], win.slicer_area._data)
 
 
 def test_itool_assign_coords_affine_scalar_coordinate_offset(
@@ -16831,8 +16900,6 @@ def test_itool_normalize_filter_copies_code_and_records_display_provenance(
 
     expected = normalize(data, ("x",), 1)
     xarray.testing.assert_identical(win.slicer_area.data, expected)
-    assert ".min(" in pyperclip.paste()
-    assert ".max(" in pyperclip.paste()
     xarray.testing.assert_identical(
         _exec_data_fragment(data, pyperclip.paste()),
         expected,
@@ -16842,8 +16909,6 @@ def test_itool_normalize_filter_copies_code_and_records_display_provenance(
     assert display_code is not None
     code = display_code.display_code()
     assert code is not None
-    assert ".min(" in code
-    assert ".max(" in code
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
     xarray.testing.assert_identical(namespace["derived"], expected)
 

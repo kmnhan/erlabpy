@@ -19,9 +19,7 @@ import erlab.interactive.imagetool.manager._workspace._loading as workspace_load
 import erlab.interactive.imagetool.manager._workspace._pending as workspace_pending
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.viewer_linking as imagetool_viewer_linking
-from erlab.interactive import _persistence_constants
-from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     FileDataSelection,
     ScriptInput,
     compose_display_provenance,
@@ -29,12 +27,14 @@ from erlab.interactive.imagetool._provenance._model import (
     full_data,
     parse_script_inputs,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AssignAttrsOperation,
     AverageOperation,
     ImageToolSelectionSourceBinding,
     IselOperation,
 )
+from erlab.interactive import _persistence_constants
+from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
 from tests.interactive.imagetool.manager.helpers import (
     _exec_generated_code,
@@ -2574,7 +2574,7 @@ def test_manager_save_as_repoints_imported_pending_payload(
 def test_import_retains_reachable_revision_checkpoint_source(
     qtbot, monkeypatch, tmp_path, manager_context, finish
 ) -> None:
-    from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
+    from erlab._provenance._model import ToolProvenanceSpec
     from erlab.interactive.imagetool.manager._workspace import (
         _storage as workspace_storage,
     )

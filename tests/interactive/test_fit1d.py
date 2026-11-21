@@ -18,6 +18,7 @@ import xarray_lmfit
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab._provenance._model import ScriptInput
 from erlab.analysis.fit import _serialization as fit_serialization
 from erlab.interactive import _fit1d as fit1d
 from erlab.interactive._code_trust import (
@@ -43,7 +44,6 @@ from erlab.interactive._fit_code_trust import (
     lmfit_parameter_expression_entries,
     lmfit_result_code_entry,
 )
-from erlab.interactive.imagetool._provenance._model import ScriptInput
 from tests._qt_helpers import signal_receiver_count
 
 

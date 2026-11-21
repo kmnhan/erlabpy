@@ -39,7 +39,11 @@ def gaussian_convolution(
 ```
 
 The first parameter receives the selected ImageTool data. Manager creates controls for
-`sigma` and `mode`. It opens the returned array in a new ImageTool.
+`sigma` and `mode`. It opens the returned array in a new ImageTool. Manager runs the routine in a
+separate Python process so that the script and its deferred Dask calculations
+use the xarray settings recorded at submission. The first call can take longer
+while that process starts. Calls with the same settings can reuse it until it
+closes after an idle period.
 
 Call the decorated function directly with an existing {class}`~xarray.DataArray` named
 `data`:

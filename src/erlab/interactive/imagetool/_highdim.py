@@ -8,11 +8,8 @@ import typing
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool._provenance._model import (
-    ToolProvenanceOperation,
-    operations_expression_code,
-)
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._model import ToolProvenanceOperation, operations_expression_code
+from erlab._provenance._operations import (
     IselOperation,
     QSelAggregationOperation,
     QSelOperation,

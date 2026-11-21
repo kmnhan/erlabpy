@@ -26,10 +26,10 @@ import erlab.interactive.imagetool.manager._workspace._format as workspace_forma
 import erlab.interactive.imagetool.manager._workspace._revisions as workspace_revisions
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
+from erlab._provenance._files import _serialize_loader_kwargs
 from erlab.interactive import _persistence_constants, _qt_state
 from erlab.interactive._code_trust import document_trust_has_trusted_lineage
 from erlab.interactive.imagetool import _serialization
-from erlab.interactive.imagetool._load_source import _serialize_loader_kwargs
 from erlab.interactive.imagetool.manager._widgets import (
     _strip_workspace_modified_placeholder,
 )
@@ -41,8 +41,8 @@ from erlab.interactive.imagetool.manager._wrapper import (
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, MutableMapping
 
+    from erlab._provenance._model import ToolProvenanceSpec
     from erlab.interactive._options.schema import WorkspaceCompressionMode
-    from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
     from erlab.interactive.imagetool.manager._extensions._models import (
         _WorkspaceScriptRequirement,
     )
@@ -629,8 +629,15 @@ class _WorkspaceSaver:
         path: str,
         *,
         include_children: bool,
+        capture_pending_image: Callable[[_ManagedWindowNode, str], xr.Dataset | None]
+        | None = None,
     ) -> None:
-        if node.is_imagetool:
+        pending_ds = (
+            None if capture_pending_image is None else capture_pending_image(node, path)
+        )
+        if pending_ds is not None:
+            constructor[f"{path}/imagetool"] = pending_ds
+        elif node.is_imagetool:
             target: int | str = (
                 node.index if isinstance(node, _ImageToolWrapper) else node.uid
             )
@@ -692,10 +699,16 @@ class _WorkspaceSaver:
                 child,
                 f"{path}/childtools/{child_uid}",
                 include_children=include_children,
+                capture_pending_image=capture_pending_image,
             )
 
     def _to_datatree(
-        self, close: bool = False, include_children: bool = True
+        self,
+        close: bool = False,
+        include_children: bool = True,
+        *,
+        capture_pending_image: Callable[[_ManagedWindowNode, str], xr.Dataset | None]
+        | None = None,
     ) -> xr.DataTree:
         """Convert the current state of the manager to a DataTree object."""
         constructor: dict[str, xr.Dataset] = {}
@@ -705,6 +718,7 @@ class _WorkspaceSaver:
                 self._manager._tool_graph.root_wrappers[index],
                 str(index),
                 include_children=include_children,
+                capture_pending_image=capture_pending_image,
             )
             if close:
                 self._manager.remove_imagetool(index)
@@ -1243,10 +1257,14 @@ class _WorkspaceSaver:
         return attrs
 
     def _pending_workspace_imagetool_attrs(
-        self, node: _ImageToolWrapper | _ManagedWindowNode
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        *,
+        stored_attrs: Mapping[str, typing.Any] | None = None,
     ) -> dict[str, typing.Any]:
+        attrs = node.pending_workspace_payload_attrs
         attrs = self._pending_workspace_node_attrs(
-            node, node.pending_workspace_payload_attrs, kind="imagetool"
+            node, stored_attrs if attrs is None else attrs, kind="imagetool"
         )
         attrs["itool_name"] = node.name
         attrs["itool_title"] = node.name

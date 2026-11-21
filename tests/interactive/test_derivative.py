@@ -12,13 +12,7 @@ from pydantic import BaseModel, ValidationError
 from qtpy import QtCore, QtWidgets
 
 import erlab
-from erlab.interactive.derivative import DerivativeTool, dtool
-from erlab.interactive.imagetool._provenance._execution import (
-    execute_replay_graph,
-    script_provenance_replayable,
-)
-from erlab.interactive.imagetool._provenance._graph import compile_replay_graph
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ScriptInput,
     decode_provenance_value,
     encode_provenance_value,
@@ -27,7 +21,7 @@ from erlab.interactive.imagetool._provenance._model import (
     script,
     selection,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     BoxcarFilterOperation,
     FillNaOperation,
     GaussianFilterOperation,
@@ -40,6 +34,12 @@ from erlab.interactive.imagetool._provenance._operations import (
     TransposeOperation,
     UniformInterpolationOperation,
 )
+from erlab.interactive.derivative import DerivativeTool, dtool
+from erlab.interactive.imagetool._provenance._execution import (
+    execute_replay_graph,
+    script_provenance_replayable,
+)
+from erlab.interactive.imagetool._provenance._graph import compile_replay_graph
 
 
 def _exec_generated_code(

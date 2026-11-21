@@ -39,6 +39,14 @@ repos:
       # Run the linter.
       - id: ruff-check
         args: [--fix, --show-fixes]
+      - id: ruff-check
+        alias: absolute-package-imports
+        name: Check absolute imports in package Python files
+        files: ^src/erlab/.*\.py$
+        args:
+          - --select=TID252
+          - --config
+          - 'lint.flake8-tidy-imports.ban-relative-imports="all"'
       # Run the formatter.
       - id: ruff-format
 

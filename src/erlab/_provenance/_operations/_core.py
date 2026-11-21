@@ -9,11 +9,8 @@ import pydantic
 import xarray as xr
 
 import erlab
-from erlab.interactive.imagetool._provenance._code import (
-    _format_selection_expr,
-    _provenance_value_code,
-)
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._code import _format_selection_expr, _provenance_value_code
+from erlab._provenance._model import (
     DerivationEntry,
     NullableProvenanceHashable,
     ProvenanceHashable,
@@ -517,7 +514,7 @@ class ModelFitOperation(ToolProvenanceOperation):
         model_kwargs_values = typing.cast(
             "dict[typing.Hashable, typing.Any]", dict(self.model_kwargs)
         )
-        model_kwargs = erlab.interactive.utils.format_call_kwargs(model_kwargs_values)
+        model_kwargs = erlab.utils._code.format_call_kwargs(model_kwargs_values)
         model_code = f"era.fit.models.{self.model}({model_kwargs})"
         parameters_code = _model_fit_parameters_code(
             self.parameters,
@@ -539,9 +536,7 @@ class ModelFitOperation(ToolProvenanceOperation):
         else:
             lines.append(f"    model=era.fit.models.{self.model}(")
             lines.extend(
-                "        "
-                + erlab.interactive.utils.format_call_kwargs({key: value})
-                + ","
+                "        " + erlab.utils._code.format_call_kwargs({key: value}) + ","
                 for key, value in model_kwargs_values.items()
             )
             lines.append("    ),")

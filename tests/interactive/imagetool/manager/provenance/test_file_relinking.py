@@ -9,7 +9,7 @@ from qtpy import QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     DerivationEntry,
     FileLoadSource,
     FileReplayCall,
@@ -23,7 +23,7 @@ from erlab.interactive.imagetool._provenance._model import (
     script,
     selection,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AverageOperation,
     IselOperation,
     RenameOperation,
@@ -36,8 +36,7 @@ from erlab.interactive.imagetool.manager._provenance_edit import (
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _files as provenance_edit_files,
 )
-
-from ._common import (
+from tests.interactive.imagetool.manager.provenance._common import (
     _fake_edit_controller,
     _fake_edit_node,
     _manager_provenance_file_spec,
@@ -3513,3 +3512,92 @@ def test_manager_provenance_edit_controller_private_error_branches() -> None:
             ),
             operation_row,
         )
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_manager_file_reload_restores_the_recorded_source_and_refreshes_its_view(
+    qtbot, manager_context, tmp_path, monkeypatch, request, chunked
+):
+    import numpy as np
+
+    from erlab.interactive.imagetool import itool
+    from erlab.interactive.imagetool.manager._io import _MultiFileHandler
+
+    counts = xr.DataArray(
+        np.arange(24.0).reshape(4, 6),
+        dims=("x", "y"),
+        coords={"x": np.arange(4), "y": np.arange(6)},
+        name="counts",
+    )
+    path = tmp_path / "spectrum.nc"
+
+    def save(data):
+        data.to_netcdf(
+            path, engine="h5netcdf", encoding={"counts": {"chunksizes": (2, 3)}}
+        )
+
+    save(counts)
+    with manager_context() as manager:
+        option = "io/dask/compute_threshold"
+        previous = erlab.interactive.options[option]
+        request.addfinalizer(lambda: erlab.interactive.options.set(option, previous))
+        erlab.interactive.options[option] = 0
+        loader = xr.open_dataset if chunked else xr.load_dataset
+        kwargs = {"engine": "h5netcdf"}
+        if chunked:
+            kwargs["chunks"] = {}
+        handler = _MultiFileHandler(manager, [path], loader, kwargs)
+        with qtbot.waitSignal(handler.sigFinished, timeout=10000):
+            handler.start()
+        source = manager._node_for_target(0)
+        operations = manager._operations
+        output = operations.submit(
+            RenameOperation(name="spectrum"),
+            {"data": source.uid},
+            placement="detach",
+            make_window=lambda data: itool(data, manager=False, execute=False),
+            output_name="renamed",
+        )
+        child = manager._node_for_target(output)
+        graph = operations.graph
+        first = graph.current_revision(source.uid)
+        before = child.slicer_area.displayed_data
+        expected = counts
+        if not chunked:
+            path.unlink()
+            warnings = []
+            monkeypatch.setattr(
+                erlab.interactive.utils,
+                "_show_reload_unavailable_dialog",
+                lambda parent, reason: warnings.append(reason),
+            )
+            assert not operations.update(source.uid, reload=True)
+            assert len(warnings) == 1
+            assert str(path) in warnings[0]
+            assert graph.current_revision(source.uid) == first
+            xr.testing.assert_identical(source.slicer_area.displayed_data, counts)
+            expected = counts + 9
+            save(expected)
+        source.slicer_area.reload()
+        current = graph.current_revision(source.uid)
+        assert current != first
+        assert graph.is_stale(output)
+        data = source.slicer_area.displayed_data
+        xr.testing.assert_identical(data, expected)
+        captured = manager._provenance_revisions._captured_data(current)
+        if chunked:
+            assert data.chunks == captured.chunks
+        else:
+            assert np.shares_memory(data.values, captured.values)
+        manager._set_metadata_node(child)
+        manager.refresh_revision_button.click()
+        after = child.slicer_area.displayed_data
+        assert not graph.is_stale(output)
+        if chunked:
+            assert before.chunks == after.chunks == ((2, 2), (3, 3))
+        xr.testing.assert_identical(after, expected.rename("spectrum"))
+        # Reload with compatible cursors updates the result in its existing window.
+        published = graph.current_revision(output)
+        assert child.reload_source_data()
+        assert graph.current_revision(output) != published
+        xr.testing.assert_identical(child.slicer_area.displayed_data, after)

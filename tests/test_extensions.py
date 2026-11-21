@@ -1285,3 +1285,436 @@ def label(
         run_routine(xr.DataArray([1]), script=script, routine_id="label"),
         xr.DataArray([1], attrs={"output": "result.nc"}),
     )
+
+
+def test_recorded_extension_culls_chunks_and_shares_reductions(
+    tmp_path: pathlib.Path,
+) -> None:
+    source = tmp_path / "blocks.py"
+    source.write_text(
+        """import dask.array as da
+from dask import delayed
+import numpy as np
+import xarray as xr
+from erlab.extensions import routine
+
+def read(log, index):
+    with open(log, "a") as stream:
+        print(index, file=stream)
+    return np.array([index], dtype=np.float32)
+
+@routine()
+def make(data: xr.DataArray, log: str, center: bool) -> xr.DataArray:
+    blocks = [
+        da.from_delayed(delayed(read)(log, i), (1,), dtype="f4") for i in range(4)
+    ]
+    values = da.concatenate(blocks)
+    return xr.DataArray(values - values.mean() if center else values, name="signal")
+"""
+    )
+    data = xr.DataArray(0)
+    log = tmp_path / "reads"
+    for center in (False, True):
+        result = run_routine(
+            data,
+            script=source,
+            routine_id="make",
+            execution_options={"keep_attrs": True},
+            parameters={"log": str(log), "center": center},
+        )
+        assert not log.exists()
+        if center:
+            xr.testing.assert_identical(
+                result.compute(),
+                xr.DataArray(np.arange(4, dtype="f4") - 1.5, name="signal"),
+            )
+            assert sorted(log.read_text().splitlines()) == ["0", "1", "2", "3"]
+        else:
+            assert result[2].compute().item() == 2
+            assert log.read_text().splitlines() == ["2"]
+        log.unlink()
+
+
+@pytest.fixture
+def recorded_worker_owner(monkeypatch):
+    from erlab.extensions import _routine
+
+    owner = _routine.RoutineProcesses()
+    monkeypatch.setattr(_routine, "routine_processes", owner)
+    owner.acquire()
+    try:
+        yield owner
+    finally:
+        owner.release()
+
+
+@pytest.fixture
+def recorded_echo_script(tmp_path):
+    path = tmp_path / "stop.py"
+    path.write_text(
+        "import os\nimport xarray as xr\nfrom erlab.extensions import routine\n"
+        "@routine()\n"
+        "def echo(data: xr.DataArray, stop: bool = False) -> xr.DataArray:\n"
+        "    if stop:\n        os._exit(1)\n"
+        "    keep = xr.get_options()['keep_attrs']\n"
+        "    return data.assign_attrs(pid=os.getpid(), keep=keep)\n"
+    )
+    return path
+
+
+@pytest.mark.parametrize("packaged", [False, True])
+def test_recorded_routine_recovers_after_worker_exit(
+    recorded_echo_script, monkeypatch, recorded_worker_owner, packaged
+) -> None:
+    from erlab.extensions import _routine
+
+    if packaged:
+        # Select the packaged executor while the host Python uses its normal
+        # multiprocessing bootstrap. The executor and its child are real.
+        monkeypatch.setattr(
+            _routine, "sys", types.SimpleNamespace(frozen=True, path=sys.path)
+        )
+    data = xr.DataArray([0.0], attrs={"sample": "A"})
+
+    def submit(stop=False):
+        return run_routine(
+            data,
+            script=recorded_echo_script,
+            routine_id="echo",
+            execution_options={"keep_attrs": True},
+            parameters={"stop": stop},
+        )
+
+    with xr.set_options(keep_attrs=False):
+        first = submit()
+        assert submit().attrs["pid"] == first.attrs["pid"]
+        with pytest.raises(ExtensionExecutionError, match="process stopped"):
+            submit(stop=True)
+        recovered = submit()
+        assert xr.get_options()["keep_attrs"] is False
+    assert recovered.attrs.pop("pid") != first.attrs["pid"]
+    assert recovered.attrs.pop("keep") is True
+    xr.testing.assert_identical(recovered, data)
+
+
+def test_recorded_extension_computes_on_distributed_workers(
+    tmp_path: pathlib.Path,
+) -> None:
+    from distributed import Client, LocalCluster
+
+    script = tmp_path / "distributed_routine.py"
+    script.write_text(
+        """import numpy as np
+import xarray as xr
+from erlab.extensions import routine
+
+def offset(block):
+    print("computing block")
+    return block + int(xr.get_options()["keep_attrs"])
+
+@routine()
+def calculate(data: xr.DataArray) -> xr.DataArray:
+    chunks = data.chunk({"x": 2})
+    return chunks.copy(data=chunks.data.map_blocks(offset, dtype=chunks.dtype))
+"""
+    )
+    data = xr.DataArray(np.arange(4), dims="x")
+    result = run_routine(
+        data,
+        script=script,
+        routine_id="calculate",
+        execution_options={"keep_attrs": True},
+    )
+    with (
+        LocalCluster(
+            n_workers=1,
+            threads_per_worker=2,
+            dashboard_address=":0",
+            scheduler_kwargs={"dashboard": False},
+        ) as cluster,
+        Client(cluster),
+        xr.set_options(keep_attrs=False),
+    ):
+        xr.testing.assert_identical(result.compute(), data + 1)
+
+
+def test_recorded_options_apply_to_imported_extension_helpers(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.syspath_prepend(str(tmp_path))
+    (tmp_path / "lab_keep_attrs.py").write_text(
+        'import xarray as xr\nKEEP = xr.get_options()["keep_attrs"]\n'
+        "def offset(block):\n    return block + int(KEEP)\n"
+    )
+    script = tmp_path / "settings.py"
+    script.write_text(
+        "import xarray as xr\nfrom erlab.extensions import routine\n"
+        "from lab_keep_attrs import KEEP, offset\n"
+        "@routine()\ndef calculate(data: xr.DataArray) -> xr.DataArray:\n"
+        "    chunks = data.chunk({'x': 1})\n"
+        "    values = chunks.data.map_blocks(offset, dtype=chunks.dtype)\n"
+        "    return chunks.copy(data=values).assign_attrs(imported=KEEP)\n"
+    )
+    data = xr.DataArray([0], dims="x")
+    results = []
+    for keep_attrs in (True, False):
+        result = run_routine(
+            data,
+            script=script,
+            routine_id="calculate",
+            execution_options={"keep_attrs": keep_attrs},
+        )
+        assert result.attrs["imported"] is keep_attrs
+        assert "lab_keep_attrs" not in sys.modules
+        results.append(result)
+    # Calculating the first result again starts a cold interpreter. Its deferred
+    # function references the importable helper module by name.
+    for keep_attrs, result in zip((True, False), results, strict=True):
+        with xr.set_options(keep_attrs=not keep_attrs):
+            assert result.compute().item() == int(keep_attrs)
+            assert "lab_keep_attrs" not in sys.modules
+
+
+def test_recorded_worker_expires_after_the_last_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+    import time
+
+    import psutil
+
+    from erlab._provenance._settings import ExecutionSettings
+    from erlab.extensions import _subprocess
+
+    monkeypatch.setattr(_subprocess, "_IDLE_SECONDS", 0.5)
+    worker = _subprocess.SubprocessWorker(ExecutionSettings.capture())
+    try:
+        pid = worker.run(os.getpid)
+        child = psutil.Process(pid)
+        # The first idle deadline passes during a calculation.
+        worker.run(time.sleep, 0.75)
+        assert worker.run(os.getpid) == pid
+        child.wait(timeout=10)
+        assert worker.run(os.getpid) != pid
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize(
+    ("at_import", "error"),
+    [(True, erlab.extensions.ExtensionImportError), (False, ExtensionExecutionError)],
+)
+def test_recorded_script_can_stop_without_exiting_the_caller(
+    tmp_path, at_import, error
+):
+    path = tmp_path / "stop.py"
+    path.write_text(
+        "import xarray as xr\nfrom erlab.extensions import routine\n"
+        + ("raise SystemExit(3)\n" if at_import else "")
+        + "@routine()\ndef stop(data: xr.DataArray) -> xr.DataArray:\n"
+        "    raise KeyboardInterrupt\n"
+    )
+    with pytest.raises(error, match="stopped"):
+        run_routine(
+            xr.DataArray([1]), script=path, routine_id="stop", execution_options={}
+        )
+
+
+def test_nested_recorded_call_computes_deferred_input_in_same_interpreter(tmp_path):
+    path = tmp_path / "nested.py"
+    path.write_text(
+        "import os\nimport xarray as xr\n"
+        "from erlab.extensions import routine, run_routine\n"
+        "@routine()\ndef child(data: xr.DataArray) -> xr.DataArray:\n"
+        "    value = data + int(xr.get_options()['keep_attrs'])\n"
+        "    return value.assign_attrs(child=os.getpid())\n"
+        "@routine()\ndef parent(data: xr.DataArray) -> xr.DataArray:\n"
+        "    answer = run_routine(data.chunk({'x': 2}), script=__file__, "
+        "routine_id='child', "
+        "execution_options={'keep_attrs': True})\n"
+        "    return answer.compute().assign_attrs(parent=os.getpid())\n"
+    )
+    data = xr.DataArray(np.arange(4), dims="x")
+    with xr.set_options(keep_attrs=False):
+        result = run_routine(
+            data,
+            script=path,
+            routine_id="parent",
+            execution_options={"keep_attrs": True},
+        )
+    assert result.attrs.pop("child") == result.attrs.pop("parent")
+    xr.testing.assert_identical(result, data + 1)
+
+
+def test_unserializable_input_retires_worker_and_next_request_succeeds(
+    recorded_echo_script, recorded_worker_owner
+):
+    import threading
+
+    def run(data):
+        return run_routine(
+            data,
+            script=recorded_echo_script,
+            routine_id="echo",
+            execution_options={"keep_attrs": True},
+        )
+
+    data = xr.DataArray([1, 2])
+    first = run(data)
+    with pytest.raises(TypeError, match="pickle"):
+        run(data.assign_attrs(lock=threading.Lock()))
+    recovered = run(data)
+    assert recovered.attrs.pop("pid") != first.attrs["pid"]
+    assert recovered.attrs.pop("keep") is True
+    xr.testing.assert_identical(recovered, data)
+
+
+def test_packaged_daemon_explains_how_to_run_a_recorded_routine(recorded_echo_script):
+    import multiprocessing
+
+    from joblib.externals.loky import wrap_non_picklable_objects
+
+    @wrap_non_picklable_objects
+    def run_in_packaged_daemon(path):
+        from erlab.extensions import _routine
+
+        with pytest.MonkeyPatch.context() as context:
+            context.setattr(
+                _routine, "sys", types.SimpleNamespace(frozen=True, path=sys.path)
+            )
+            return run_routine(
+                xr.DataArray([2]), script=path, routine_id="echo", execution_options={}
+            )
+
+    # Spawned Pool workers are daemons. They cannot start the packaged executor.
+    with (
+        multiprocessing.get_context("spawn").Pool(1) as pool,
+        pytest.raises(
+            ExtensionExecutionError, match=r"threaded scheduler.*non-daemonic"
+        ),
+    ):
+        pool.apply_async(run_in_packaged_daemon, (recorded_echo_script,)).get(
+            timeout=20
+        )
+
+
+def test_manager_can_acquire_worker_while_last_owner_closes(tmp_path, monkeypatch):
+    import socket
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    import psutil
+
+    from erlab.extensions import _routine
+
+    path = tmp_path / "background.py"
+    path.write_text(
+        """import os
+import socket
+import threading
+import xarray as xr
+from erlab.extensions import routine
+
+@routine()
+def background(data: xr.DataArray, port: int = 0) -> xr.DataArray:
+    if port:
+        with socket.create_connection(("127.0.0.1", port), timeout=20) as peer:
+            peer.recv(1)
+        event = threading.Event()
+        threading.Thread(target=event.wait, args=(30,), daemon=False).start()
+    return data.assign_attrs(pid=os.getpid())
+"""
+    )
+    owner = _routine.RoutineProcesses()
+    monkeypatch.setattr(_routine, "routine_processes", owner)
+    finished = threading.Event()
+    close_unowned = owner._close_unowned
+
+    def observe_close():
+        close_unowned()
+        finished.set()
+
+    monkeypatch.setattr(owner, "_close_unowned", observe_close)
+
+    def submit(port=0):
+        return run_routine(
+            xr.DataArray([3]),
+            script=path,
+            routine_id="background",
+            execution_options={},
+            parameters={"port": port},
+        )
+
+    owner.acquire()
+    try:
+        with socket.socket() as listener, ThreadPoolExecutor(max_workers=1) as executor:
+            listener.bind(("127.0.0.1", 0))
+            listener.settimeout(20)
+            listener.listen()
+            job = executor.submit(submit, listener.getsockname()[1])
+            with listener.accept()[0] as peer:
+                owner.release()
+                owner.acquire()
+                peer.sendall(b"x")
+            result = job.result(timeout=20)
+        assert finished.wait(10)
+        child = psutil.Process(result.attrs["pid"])
+        assert submit().attrs["pid"] == child.pid
+        assert result.item() == 3
+    finally:
+        owner.release()
+    # The final release must also stop a user thread that outlives the routine.
+    child.wait(timeout=10)
+    assert not child.is_running()
+
+
+def test_deferred_extension_graph_can_be_saved_and_run_without_its_script(tmp_path):
+    import pickle
+
+    import dask
+    from dask.highlevelgraph import HighLevelGraph
+
+    path = tmp_path / "deferred.py"
+    path.write_text(
+        """import dask.array as da
+import xarray as xr
+from erlab.extensions import routine
+
+def counts(values):
+    return values + int(xr.get_options()["keep_attrs"])
+
+@routine()
+def spectrum(data: xr.DataArray) -> xr.DataArray:
+    graph = {}
+    for index, values in enumerate((data.values[:2], data.values[2:])):
+        seed = (17, index)
+        graph[seed] = values
+        graph["signal", index] = (counts, seed)
+    result = da.Array(graph, "signal", ((2, 2),), dtype=data.dtype)
+    return data.copy(data=result)
+"""
+    )
+    data = xr.DataArray([1, 3, 5, 7], dims="x")
+    recorded = run_routine(
+        data, script=path, routine_id="spectrum", execution_options={"keep_attrs": True}
+    )
+    path.unlink()
+    graph = recorded.data.__dask_graph__()
+    (layer,) = graph.layers.values()
+    assert len(graph) == 4
+    assert not layer.is_materialized()
+    output = recorded.data.__dask_keys__()[0]
+    # A scheduler may request only keys from its merged graph, then serialize
+    # the materialized tasks for later execution.
+    unrelated = ("other", 0)
+    merged = HighLevelGraph.merge(
+        graph, HighLevelGraph({"other": {unrelated: 99}}, {"other": set()})
+    )
+    selected = merged.cull({unrelated, output})
+    tasks = pickle.loads(pickle.dumps(selected.to_dict()))
+    assert not layer.is_materialized()
+    assert len(tasks) == 3  # One source, the selected chunk and the unrelated value.
+    with xr.set_options(keep_attrs=False):
+        values, other = dask.get(tasks, [output, unrelated])
+    np.testing.assert_array_equal(values, [2, 4])
+    assert other == 99

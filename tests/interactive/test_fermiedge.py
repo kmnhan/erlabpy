@@ -17,6 +17,7 @@ import xarray_lmfit as xlm
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab._provenance._model import ScriptInput
 from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive.fermiedge import (
     EdgeFitSignals,
@@ -27,7 +28,6 @@ from erlab.interactive.fermiedge import (
     goldtool,
     restool,
 )
-from erlab.interactive.imagetool._provenance._model import ScriptInput
 from erlab.io.exampledata import generate_gold_edge
 
 

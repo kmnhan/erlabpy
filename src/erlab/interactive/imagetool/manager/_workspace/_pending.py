@@ -23,15 +23,15 @@ import erlab.interactive.imagetool.manager._workspace._arrays as workspace_array
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.imagetool.viewer_linking
-from erlab.interactive import _persistence_constants
-from erlab.interactive.imagetool import _serialization
-from erlab.interactive.imagetool._colorlevels import resolve_image_levels
-from erlab.interactive.imagetool._mainwindow import ImageTool
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ScriptInputDataRole,
     mark_promoted_1d_source,
     parse_tool_provenance_operation,
 )
+from erlab.interactive import _persistence_constants
+from erlab.interactive.imagetool import _serialization
+from erlab.interactive.imagetool._colorlevels import resolve_image_levels
+from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._trust import (
     provenance_operation_requires_code_trust,
 )
@@ -46,7 +46,7 @@ from erlab.interactive.imagetool.viewer_state import _ColorMapSettings
 if typing.TYPE_CHECKING:
     import os
     import pathlib
-    from collections.abc import Hashable, Mapping, Sequence
+    from collections.abc import Callable, Hashable, Mapping, Sequence
 
     import h5py
     import xarray as xr
@@ -223,6 +223,57 @@ class _PendingWorkspacePayloads:
         return data.transpose(*ordered_dims, transpose_coords=True)
 
     @staticmethod
+    def _saved_display_filter(raw_state: object) -> object:
+        if isinstance(raw_state, bytes):
+            with contextlib.suppress(UnicodeDecodeError):
+                raw_state = raw_state.decode()
+        if isinstance(raw_state, str):
+            try:
+                state = json.loads(raw_state)
+            except Exception:
+                logger.debug("Ignoring invalid pending ImageTool state", exc_info=True)
+            else:
+                if isinstance(state, collections.abc.Mapping):
+                    return state.get("filter_operation")
+        return None
+
+    def _pending_coordinate_check(
+        self, check: Callable[[xr.DataArray], str | None]
+    ) -> Callable[[_ManagedWindowNode], str | None]:
+        errors: dict[tuple[object, ...], str | None] = {}
+        objects = _persistence_constants.WORKSPACE_OBJECTS_GROUP + "/"
+
+        @functools.cache
+        def has_filter(state: str | bytes | None) -> bool:
+            return self._saved_display_filter(state) is not None
+
+        def inspect(node: _ManagedWindowNode) -> str | None:
+            payload = node.pending_workspace_memory_payload
+            if payload is None:
+                raise ValueError("Node has no pending ImageTool workspace payload")
+            attrs = node.pending_workspace_payload_attrs
+            key = None
+            if attrs is not None and payload[1].startswith(objects):
+                state = attrs.get("itool_state")
+                state = state if isinstance(state, (str, bytes)) else None
+                if not has_filter(state):
+                    key = (payload, str(attrs.get("erlab_version", "0.0.0")), state)
+                    if key in errors:
+                        return errors[key]
+            # Unfiltered coordinates ignore the display name. A saved filter can
+            # inspect it or other inputs. Legacy files can store filters on disk.
+            with workspace_arrays.open_workspace_dataset(*payload, chunks={}) as ds:
+                data = self._workspace_imagetool_source_data(
+                    node, ds, attrs=attrs, data_role="displayed"
+                )
+                error = check(data)
+            if key is not None:
+                errors[key] = error
+            return error
+
+        return inspect
+
+    @staticmethod
     def _apply_pending_workspace_filter(
         data: xr.DataArray, filter_payload: object
     ) -> xr.DataArray:
@@ -309,22 +360,9 @@ class _PendingWorkspacePayloads:
         )
         data = cls._pending_workspace_data_with_saved_dim_order(data, attrs)
         if data_role == "displayed":
-            raw_state = attrs.get("itool_state")
-            if isinstance(raw_state, bytes):
-                with contextlib.suppress(UnicodeDecodeError):
-                    raw_state = raw_state.decode()
-            if isinstance(raw_state, str):
-                try:
-                    state = json.loads(raw_state)
-                except Exception:
-                    logger.debug(
-                        "Ignoring invalid pending ImageTool state", exc_info=True
-                    )
-                else:
-                    if isinstance(state, collections.abc.Mapping):
-                        data = cls._apply_pending_workspace_filter(
-                            data, state.get("filter_operation")
-                        )
+            data = cls._apply_pending_workspace_filter(
+                data, cls._saved_display_filter(attrs.get("itool_state"))
+            )
         if source_input_ndim == 1:
             data = mark_promoted_1d_source(data)
         return data.copy(deep=False)

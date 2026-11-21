@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from erlab.interactive.imagetool._provenance._code import (
+from erlab._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
     _expression_receiver_code,
     _validate_script_replay_code,
 )
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ConsoleCall,
     ScriptInput,
     ToolProvenanceOperation,
@@ -15,7 +15,7 @@ from erlab.interactive.imagetool._provenance._model import (
     operation_from_console_call,
     script,
 )
-from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
+from erlab._provenance._operations import ScriptCodeOperation
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 
 __all__ = ["ToolNamespace", "ToolsNamespace", "_ImageToolManagerJupyterConsole"]
@@ -1832,6 +1832,10 @@ class ToolsNamespace:
         if manager:
             return manager
         raise LookupError("Parent was destroyed")
+
+    def checkpoint(self, revision_id: str) -> xr.DataArray:
+        """Return an independent copy of a recorded graph input for notebook replay."""
+        return self._manager._operations.graph.data(revision_id)
 
     @property
     def selected_data(self) -> list[xr.DataArray]:

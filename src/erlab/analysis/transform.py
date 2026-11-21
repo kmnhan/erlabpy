@@ -1,6 +1,8 @@
 """Transformations."""
 
 __all__ = [
+    "affine_coord",
+    "normalize",
     "rotate",
     "rotateinplane",
     "rotatestackinplane",
@@ -1323,3 +1325,142 @@ def rotatestackinplane(data: xr.DataArray, rotate, **interp_kwargs):  # pragma: 
     x = xr.DataArray(data[d0] * np.cos(theta) - data[d1] * np.sin(theta))
     y = xr.DataArray(data[d0] * np.sin(theta) + data[d1] * np.cos(theta))
     return data.interp({d0: x, d1: y}, **interp_kwargs)
+
+
+def _coordinate_offset(
+    data: xr.DataArray, offset: float, offset_coord: str | None, offset_coord_sign: int
+) -> float:
+    if offset_coord is None:
+        return offset
+    if offset_coord not in data.coords:
+        raise ValueError(
+            f"Offset coordinate {offset_coord!r} is not present in the data."
+        )
+    coord = data.coords[offset_coord]
+    values = np.asarray(coord.values)
+    if values.ndim != 0:
+        raise ValueError(f"Offset coordinate {offset_coord!r} must be scalar.")
+    if values.dtype.kind not in "iuf":
+        raise ValueError(
+            f"Offset coordinate {offset_coord!r} must contain a real number."
+        )
+    value = float(values)
+    if not np.isfinite(value):
+        raise ValueError(f"Offset coordinate {offset_coord!r} must be finite.")
+    return offset + offset_coord_sign * value
+
+
+def affine_coord(
+    data: xr.DataArray,
+    coord_name: str,
+    *,
+    scale: float = 1.0,
+    offset: float = 0.0,
+    offset_coord: str | None = None,
+    offset_coord_sign: typing.Literal[-1, 1] = 1,
+) -> xr.DataArray:
+    """Scale a coordinate and add a constant and an optional signed scalar coordinate.
+
+    The offsets are combined before adding them to the scaled coordinate. The
+    result retains the coordinate attributes and the original coordinate order.
+    """
+    coord = data.coords[coord_name]
+    shift = _coordinate_offset(data, offset, offset_coord, offset_coord_sign)
+    return erlab.utils.array.sort_coord_order(
+        data.assign_coords({coord_name: coord.copy(data=scale * coord.values + shift)}),
+        keys=data.coords.keys(),
+        dims_first=False,
+    )
+
+
+def _safe_denominator(
+    denominator: xr.DataArray, scale: xr.DataArray, rtol: float
+) -> xr.DataArray:
+    threshold = np.maximum(
+        scale * rtol,
+        np.finfo(np.float64).tiny,
+    )
+    return denominator.where(
+        np.isfinite(denominator)
+        & np.isfinite(scale)
+        & (np.abs(denominator) > threshold)
+    )
+
+
+def _finite_abs_scale(data: xr.DataArray, dims: tuple[Hashable, ...]) -> xr.DataArray:
+    if data.chunks is not None or data.dtype.kind != "f":
+        return abs(data).where(np.isfinite(data)).max(dims, skipna=True)
+    finite = np.isfinite(data.data)
+    minimum = data.reduce(np.min, dims, where=finite, initial=np.inf)
+    maximum = data.reduce(np.max, dims, where=finite, initial=-np.inf)
+    return typing.cast("xr.DataArray", np.maximum(abs(minimum), abs(maximum)))
+
+
+def _subtract_and_divide(
+    data: xr.DataArray, minimum: xr.DataArray, denominator: xr.DataArray
+) -> xr.DataArray:
+    shifted = data - minimum
+    if (
+        shifted.dtype.kind in "fc"
+        and np.result_type(shifted.dtype, denominator.dtype) == shifted.dtype
+    ):
+        shifted /= denominator
+        return shifted
+    return shifted / denominator
+
+
+def normalize(
+    data: xr.DataArray,
+    dims: tuple[Hashable, ...],
+    *,
+    mode: typing.Literal["area", "minmax", "min", "min_area"] = "area",
+    denominator_rtol: float = 1e-12,
+) -> xr.DataArray:
+    """Normalize an array along the given dimensions.
+
+    Area normalization divides by the mean. Min-max normalization subtracts
+    the minimum and divides by the range. Min normalization only subtracts
+    the minimum. Min-area normalization subtracts the minimum and divides by
+    the original mean. Nonfinite or near-zero denominators give NaN.
+    """
+    if mode not in {"area", "minmax", "min", "min_area"}:
+        raise ValueError(f"Unknown normalization mode {mode!r}")
+    if not dims:
+        return data
+
+    if mode == "area":
+        finite_abs_scale = _finite_abs_scale(data, dims)
+        area = _safe_denominator(
+            data.mean(dims),
+            finite_abs_scale,
+            denominator_rtol,
+        )
+        return data / area
+
+    if mode == "minmax":
+        minimum = data.min(dims)
+        maximum = data.max(dims)
+        finite_abs_scale = xr.where(
+            abs(minimum) > abs(maximum),
+            abs(minimum),
+            abs(maximum),
+        )
+        denominator = _safe_denominator(
+            maximum - minimum,
+            finite_abs_scale,
+            denominator_rtol,
+        )
+        return _subtract_and_divide(data, minimum, denominator)
+
+    if mode == "min":
+        minimum = data.min(dims)
+        return data - minimum
+
+    minimum = data.min(dims)
+    finite_abs_scale = _finite_abs_scale(data, dims)
+    area = _safe_denominator(
+        data.mean(dims),
+        finite_abs_scale,
+        denominator_rtol,
+    )
+    return _subtract_and_divide(data, minimum, area)

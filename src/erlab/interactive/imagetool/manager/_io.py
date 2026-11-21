@@ -18,9 +18,10 @@ import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool._load_source import _extension_loader_identity
+from erlab._provenance._checkpoint import _read_versioned_file
+from erlab._provenance._files import _capture_loader_file, _extension_loader_identity
+from erlab._provenance._model import FileDataSelection
 from erlab.interactive.imagetool._mainwindow import ImageTool
-from erlab.interactive.imagetool._provenance._model import FileDataSelection
 from erlab.interactive.imagetool.manager._acquisition_context import (
     ContextIngressSummary,
 )
@@ -40,8 +41,9 @@ class _ExtensionLoaderPublication(typing.Protocol):
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
+    from erlab._provenance._checkpoint import FileVersion
+    from erlab._provenance._model import ToolProvenanceOperation
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
-    from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
 
@@ -531,7 +533,7 @@ class _DataIngressController:
 
 
 class _DataLoaderSignals(QtCore.QObject):
-    sigLoaded = QtCore.Signal(pathlib.Path, object)
+    sigLoaded = QtCore.Signal(pathlib.Path, object, object)
     sigFailed = QtCore.Signal(pathlib.Path, str)
 
 
@@ -539,7 +541,7 @@ class _DataLoader(QtCore.QRunnable):
     """Load data from a file and emit signals when the loading is complete.
 
     - If the loading process is successful, the signal ``sigLoaded`` is emitted with the
-      file path and the loaded data.
+      file path, loaded data, and optional file version.
 
     - If the loading process fails, the signal ``sigFailed`` is emitted with the file
       path and the formatted exception message string.
@@ -568,14 +570,17 @@ class _DataLoader(QtCore.QRunnable):
 
     def run(self) -> None:
         try:
-            data = self._func(self._file_path, **self._kwargs)
+            backing = _capture_loader_file(self._file_path, self._func, self._kwargs)
+            data = _read_versioned_file(
+                self._func, self._file_path, self._kwargs, backing
+            )
         except Exception:
             logger.debug(
                 "Error loading data from %s", self._file_path
             )  # Use debug level to avoid duplicate popup
             self.signals.sigFailed.emit(self._file_path, traceback.format_exc())
         else:
-            self.signals.sigLoaded.emit(self._file_path, data)
+            self.signals.sigLoaded.emit(self._file_path, data, backing)
 
 
 class _MultiFileHandler(QtCore.QObject):
@@ -676,11 +681,15 @@ class _MultiFileHandler(QtCore.QObject):
         loader.signals.sigFailed.connect(self._on_failed)
         self._threadpool.start(loader)
 
-    @QtCore.Slot(pathlib.Path, object)
-    def _on_loaded(self, file_path: pathlib.Path, data: object) -> None:
+    @QtCore.Slot(pathlib.Path, object, object)
+    def _on_loaded(
+        self, file_path: pathlib.Path, data: object, backing: FileVersion | None
+    ) -> None:
         self.manager._status_bar.showMessage("")
         self.manager._recent_directory = str(file_path.parent)
         try:
+            if backing is not None:
+                backing.verify()
             selected_data = (
                 erlab.interactive.imagetool.viewer_state._select_input_dataarrays(
                     typing.cast(
@@ -699,13 +708,14 @@ class _MultiFileHandler(QtCore.QObject):
             return
 
         erlab.interactive.utils.single_shot(
-            self, 0, lambda: self._deliver_and_queue(file_path, selected_data)
+            self, 0, lambda: self._deliver_and_queue(file_path, selected_data, backing)
         )
 
     def _deliver_and_queue(
         self,
         file_path: pathlib.Path,
         selected_data: tuple[typing.Any, ...],
+        backing: FileVersion | None,
     ) -> None:
         func: Callable | str = self._func
         func_instance = getattr(func, "__self__", None)
@@ -719,6 +729,7 @@ class _MultiFileHandler(QtCore.QObject):
             inserted = self.manager._data_ingress.receive_data(
                 [prepared.data for prepared in selected_data],
                 kwargs={
+                    **({"_file_backing": backing} if backing is not None else {}),
                     "file_path": file_path,
                     "load_func": (func, self._kwargs.copy()),
                     "load_selections": tuple(

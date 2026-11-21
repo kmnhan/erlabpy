@@ -15,6 +15,21 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
+from erlab._provenance._model import (
+    ReplayStep,
+    ScriptInput,
+    ScriptInputDataRole,
+    ScriptInputDependencyRef,
+    ToolProvenanceOperation,
+    ToolProvenanceSpec,
+    has_file_load_source,
+    rebase_script_input_node_uids,
+    rebase_script_inputs_node_uids,
+    recipe,
+    script,
+    to_replay_provenance_spec,
+)
+from erlab._provenance._operations import ScriptCodeOperation
 from erlab.interactive import _persistence_constants
 from erlab.interactive._code_trust import execution_capability_allows
 from erlab.interactive.imagetool._mainwindow import ImageTool
@@ -31,21 +46,6 @@ from erlab.interactive.imagetool._provenance._graph import (
     ReplayGraphError,
     ResolvedReplayInput,
 )
-from erlab.interactive.imagetool._provenance._model import (
-    ReplayStep,
-    ScriptInput,
-    ScriptInputDataRole,
-    ScriptInputDependencyRef,
-    ToolProvenanceOperation,
-    ToolProvenanceSpec,
-    has_file_load_source,
-    rebase_script_input_node_uids,
-    rebase_script_inputs_node_uids,
-    recipe,
-    script,
-    to_replay_provenance_spec,
-)
-from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 from erlab.interactive.imagetool.manager._dependency import _combine_source_states
 from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
@@ -1659,6 +1659,8 @@ class _LineageController:
         return reload_boundary
 
     def _reload_target_for_child(self, uid: str) -> int | str | None:
+        if self._manager._operations.graph.has_recipe(uid):
+            return uid
         boundary = self._reload_boundary_for_child(uid)
         if boundary is None:
             return None
@@ -1694,6 +1696,8 @@ class _LineageController:
             node = self._manager._node_for_target(target)
         except KeyError:
             return "The selected item is no longer available. Select an open item."
+        if self._manager._operations.graph.has_recipe(node.uid):
+            return self._manager._operations.reload_problem(node.uid)
         if isinstance(target, str):
             if self._reload_target_for_child(target) is not None:
                 return None
@@ -1720,6 +1724,8 @@ class _LineageController:
         reloaded_uids = set() if reloaded_uids is None else reloaded_uids
         if node.uid in reloaded_uids:
             reloaded = True
+        elif self._manager._operations.graph.has_recipe(node.uid):
+            reloaded = self._manager._operations.update(node.uid, reload=True)
         elif node.tool_script_inputs:
             reloaded = self._refresh_tool_inputs(
                 node.uid,
@@ -1763,6 +1769,8 @@ class _LineageController:
         self._manager._child_node(uid).show_source_update_dialog(parent=self._manager)
 
     def _refresh_source_chain_to_uid(self, uid: str) -> bool:
+        if self._manager._operations.graph.has_recipe(uid):
+            return self._manager._operations.update(uid)
         node = self._manager._tool_graph.nodes.get(uid)
         if (
             node is not None

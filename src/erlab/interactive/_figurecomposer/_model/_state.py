@@ -10,14 +10,11 @@ from collections.abc import Mapping
 
 import pydantic
 
+from erlab._provenance._model import ScriptInput, ScriptInputDataRole
 from erlab.interactive._figurecomposer._defaults import (
     _default_figsize,
     _default_figure_dpi,
     _default_layout,
-)
-from erlab.interactive.imagetool._provenance._model import (
-    ScriptInput,
-    ScriptInputDataRole,
 )
 
 if typing.TYPE_CHECKING:

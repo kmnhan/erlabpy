@@ -10,8 +10,10 @@ import warnings
 import numpy as np
 import numpy.typing as npt
 from qtpy import QtCore, QtWidgets
+from xarray.indexes import PandasIndex
 
 import erlab
+from erlab._provenance._checkpoint import protected_data
 from erlab.interactive import _shortcut_sequences
 from erlab.interactive.imagetool._colorlevels import (
     display_safe_values,
@@ -27,7 +29,7 @@ if typing.TYPE_CHECKING:
     import dask.array
     import xarray as xr
 
-    from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
+    from erlab._provenance._model import ToolProvenanceOperation
 
 
 class ArraySlicerState(typing.TypedDict):
@@ -391,8 +393,10 @@ class ArraySlicer(QtCore.QObject):
         parent: QtCore.QObject,
         *,
         display_value_abs_limit: float | None = None,
+        protect_values: bool = False,
     ) -> None:
         super().__init__(parent)
+        self._protect_values = protect_values
         self.display_value_abs_limit = float(
             display_value_abs_limit
             if display_value_abs_limit is not None
@@ -466,7 +470,11 @@ class ArraySlicer(QtCore.QObject):
             obj_original = self._to_physical_data(obj_original.copy(deep=False))
 
         if validate:
-            self._obj = self.validate_array(xarray_obj, copy_values=copy_values)
+            self._obj = self.validate_array(
+                xarray_obj,
+                copy_values=copy_values,
+                copy_coords=not self._protect_values,
+            )
             self._dimension_mapping: dict[Hashable, Hashable] = {
                 f"{dim}_idx": dim
                 for dim in xarray_obj.dims
@@ -481,6 +489,9 @@ class ArraySlicer(QtCore.QObject):
             )
         else:
             self._obj = xarray_obj
+
+        if self._protect_values:
+            self._obj = protected_data(self._obj)
 
         if (
             preserve_dims is not None
@@ -639,6 +650,19 @@ class ArraySlicer(QtCore.QObject):
         return self.coords_uniform
 
     @property
+    def dims(self) -> tuple[Hashable, ...]:
+        """Dimension names in the renderer's axis order."""
+        return self._obj.dims
+
+    @property
+    def ndim(self) -> int:
+        return self._obj.ndim
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self._obj.shape
+
+    @property
     def physical_dims(self) -> tuple[Hashable, ...]:
         """Dimension names for analysis, in the current displayed axis order."""
         return self._physical_dims
@@ -672,10 +696,7 @@ class ArraySlicer(QtCore.QObject):
         self, indexers: Mapping[Hashable, slice]
     ) -> tuple[ToolProvenanceOperation, ...]:
         """Normalize inclusive display bounds into physical data selections."""
-        from erlab.interactive.imagetool._provenance._operations import (
-            IselOperation,
-            SelOperation,
-        )
+        from erlab._provenance._operations import IselOperation, SelOperation
 
         sel_indexers: dict[Hashable, slice] = {}
         isel_indexers: dict[Hashable, slice] = {}
@@ -876,7 +897,9 @@ class ArraySlicer(QtCore.QObject):
         # something... reproduce by archiving a 3D array with one non-uniform axis.
 
     @staticmethod
-    def validate_array(data: xr.DataArray, copy_values: bool = True) -> xr.DataArray:
+    def validate_array(
+        data: xr.DataArray, copy_values: bool = True, *, copy_coords: bool = True
+    ) -> xr.DataArray:
         """Validate a given :class:`xarray.DataArray`.
 
         If data has two momentum axes (``kx`` and ``ky``), set them (and ``eV`` if
@@ -895,6 +918,9 @@ class ArraySlicer(QtCore.QObject):
             If `True`, copy the underlying values while validating. Set to `False` when
             the caller intentionally wants the validated array to share the same values
             buffer as the source array.
+        copy_coords
+            Copy dimension coordinates. A managed viewer can reuse an already owned,
+            contiguous coordinate with a standard index.
 
         Returns
         -------
@@ -926,18 +952,24 @@ class ArraySlicer(QtCore.QObject):
         if data.ndim > 4:
             raise ValueError("Data must have at most four dimensions.")
 
-        for d in data.dims:
-            if data[d].ndim != 1:
-                raise ValueError(f"Coordinate of dimension {d} is not one-dimensional.")
-
-        # Convert coords to C-contiguous array
-        data = erlab.utils.array.sort_coord_order(
-            data.assign_coords(
-                {d: data[d].astype(data[d].dtype, order="C") for d in data.dims}
-            ),
-            keys=data.coords.keys(),
-            dims_first=False,
-        )
+        coords = {}
+        for dim in data.dims:
+            coord = data[dim]
+            if coord.ndim != 1:
+                raise ValueError(
+                    f"Coordinate of dimension {dim} is not one-dimensional."
+                )
+            # Reassigning even an unchanged dimension rebuilds its pandas index.
+            if (
+                copy_coords
+                or type(data.xindexes.get(dim)) is not PandasIndex
+                or not coord.values.flags.c_contiguous
+            ):
+                coords[dim] = coord.astype(coord.dtype, order="C")
+        if coords:
+            data = erlab.utils.array.sort_coord_order(
+                data.assign_coords(coords), keys=data.coords.keys(), dims_first=False
+            )
 
         # Cast to float64 if not a floating point type (e.g. int)
         display_dtype = image_display_dtype(data.dtype)
@@ -1088,31 +1120,8 @@ class ArraySlicer(QtCore.QObject):
         return has_nonuniform
 
     def values_of_dim(self, dim: Hashable) -> npt.NDArray[np.floating]:
-        """Fast equivalent of :code:`self._obj[dim].values`.
-
-        Returns the cached pointer of the underlying coordinate array, achieving a ~80x
-        speedup. This should work most of the time since we only assume floating point
-        values, but does require further testing. May break for future versions of
-        :obj:`pandas` or :obj:`xarray`. See Notes.
-
-        Parameters
-        ----------
-        dim
-            Name of the dimension to get the values from.
-
-        Returns
-        -------
-        numpy.ndarray
-
-        Notes
-        -----
-        Looking at the implementation, I think this may return a pandas array in some
-        cases, but I'm not sure so I'll just leave it this way. When something breaks,
-        replacing with :code:`self._obj._coords[dim]._data.array.array._ndarray` may
-        do the trick.
-
-        """
-        return self._obj._coords[dim]._data.array._data  # type: ignore[union-attr]
+        """Get axis values without constructing an intermediate DataArray."""
+        return self._obj._coords[dim].values
 
     def get_significant(self, axis: int, uniform: bool = False) -> int:
         """Return the number of significant digits for a given axis."""
@@ -1446,7 +1455,7 @@ class ArraySlicer(QtCore.QObject):
     def selection_operations(
         self, cursor: int, disp: Sequence[int], *, prefer_qsel: bool = True
     ) -> tuple[ToolProvenanceOperation, ...]:
-        from erlab.interactive.imagetool._provenance._operations import (
+        from erlab._provenance._operations import (
             IselOperation,
             QSelAggregationOperation,
             QSelOperation,
@@ -1467,18 +1476,14 @@ class ArraySlicer(QtCore.QObject):
         return tuple(operations)
 
     def qsel_code(self, cursor: int, disp: Sequence[int]) -> str:
-        from erlab.interactive.imagetool._provenance._model import (
-            operations_expression_code,
-        )
+        from erlab._provenance._model import operations_expression_code
 
         return operations_expression_code(
             self.selection_operations(cursor, disp), "data"
         ).removeprefix("data")
 
     def isel_code(self, cursor: int, disp: Sequence[int]) -> str:
-        from erlab.interactive.imagetool._provenance._model import (
-            operations_expression_code,
-        )
+        from erlab._provenance._model import operations_expression_code
 
         return operations_expression_code(
             self.selection_operations(cursor, disp, prefer_qsel=False), "data"

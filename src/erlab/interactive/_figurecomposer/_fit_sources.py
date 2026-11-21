@@ -36,13 +36,8 @@ class FigureFitParameterSourceSnapshot:
         errors = data.modelfit_stderr
         data["modelfit_stderr"] = errors.where(np.isfinite(errors) & (errors > 0))
         if provenance_spec is not None:
-            from erlab.interactive.imagetool._provenance._model import (
-                ReplayStep,
-                parse_tool_provenance_spec,
-            )
-            from erlab.interactive.imagetool._provenance._operations import (
-                ScriptCodeOperation,
-            )
+            from erlab._provenance._model import ReplayStep, parse_tool_provenance_spec
+            from erlab._provenance._operations import ScriptCodeOperation
 
             spec = parse_tool_provenance_spec(dict(provenance_spec))
             if spec is None or spec.active_name is None:
