@@ -2140,6 +2140,242 @@ def test_foreign_dask_graph_with_guarded_name_keeps_its_actual_tasks(tmp_path):
             guarded.compute()
 
 
+@pytest.mark.parametrize("command", ["refresh", "reload"])
+def test_closed_producer_retains_last_displayed_revision_for_each_slot(graph, command):
+    source = graph.add_source("input", xr.DataArray(2))
+    assert graph.next_inputs("input") == ()
+    produced = graph.derive("scale", Recipe.bind(Scale(3), Follow("input")))
+    graph.derive("sum", Recipe.bind(Add(), Follow("scale"), other=Follow("scale")))
+    graph.replace("input", Recipe.bind(Scale(5), Follow("input")))
+    assert graph.is_stale("scale")
+    graph.remove_entry("scale")
+
+    expected_slots = (("data", produced), ("other", produced))
+    assert graph.next_inputs("sum") == expected_slots
+    assert graph.is_virtual(produced)
+    plan = graph.plan_update("sum", command=command)
+    assert plan.current_inputs == (("scale", produced),)
+    assert plan.entries == ("sum",)
+    updated = getattr(graph, command)("sum")
+    assert graph.revision(updated).producer.inputs == expected_slots
+    assert [r.revision_id for r in graph.recorded_lineage(updated)] == [
+        source,
+        produced,
+        updated,
+    ]
+    xr.testing.assert_identical(graph.data(updated), xr.DataArray(12))
+
+    graph.remove_entry("sum")
+    for query in (graph.auto_error, graph.is_stale):
+        with pytest.raises(KeyError, match="sum"):
+            query("sum")
+    with pytest.raises(KeyError, match=updated):
+        graph.is_virtual(updated)
+
+
+def test_checkpoint_notifications_and_editor_errors_preserve_current_data(graph):
+    from erlab._provenance._operations import RenameOperation
+
+    data = xr.DataArray([1, 2], name="input")
+    graph.adopt_checkpoint("source", "saved", data)
+    graph.derive("copy", Recipe.bind(RenameOperation(name="first"), Follow("source")))
+    graph.adopt_checkpoint("source", "saved", data)
+    assert not graph.is_stale("copy")
+    before = graph.current_revision("copy")
+    sources = graph.followed_entries("copy")
+    with pytest.raises(TypeError, match="checkpoint must be a DataArray"):
+        graph.adopt_checkpoint("source", "invalid", [3, 4])
+    with pytest.raises(TypeError, match="no editable operation"):
+        graph.edit_application("source", "saved", RenameOperation(name="bad"))
+    with pytest.raises(ValueError, match="Reopen the editor"):
+        graph.edit_application("copy", "obsolete", RenameOperation(name="bad"))
+    with pytest.raises(KeyError, match="missing-parent"):
+        graph.add_source("other", data, parent_id="missing-parent")
+    with pytest.raises(ValueError, match="Expected refresh or reload"):
+        graph.plan_update("copy", command="replace")
+
+    assert graph.entry_ids == ("source", "copy")
+    assert graph.revision_ids == {"saved", before}
+    assert graph.current_revision("source") == "saved"
+    assert graph.followed_entries("copy") == sources == {"source"}
+    assert not graph.is_stale("copy")
+    xr.testing.assert_identical(graph.data(before), data.rename("first"))
+
+
+def test_admission_rechecks_row_after_copying_external_metadata(graph):
+    class LateArrival:
+        def __deepcopy__(self, memo):
+            graph.add_source("row", xr.DataArray([17]))
+            return "copied"
+
+    arriving = xr.DataArray([99], attrs={"metadata": LateArrival()})
+    with pytest.raises(ValueError, match="already exists"):
+        graph.add_source("row", arriving)
+    current = graph.current_revision("row")
+    assert graph.revision_ids == {current}
+    xr.testing.assert_identical(graph.data(current), xr.DataArray([17]))
+
+
+def test_failed_file_admission_and_replacement_preserve_existing_row(file_graph):
+    from erlab._provenance import FileLoad, MissingFileSource
+
+    graph, path, load, reads = file_graph
+    path.unlink()
+    with pytest.raises(MissingFileSource) as failure:
+        graph.derive("file", load)
+    assert failure.value.source == load.source
+    assert failure.value.displayed_revision_id is None
+    assert graph.entry_ids == ()
+    assert graph.revision_ids == set()
+    xr.DataArray([2]).to_netcdf(path, engine="h5netcdf")
+    source = graph.add_source("existing", xr.DataArray([3]))
+    loaded = graph.replace("existing", load)
+    assert loaded != source
+    assert graph.next_inputs("existing") == (("file", load.source.source_id),)
+    xr.testing.assert_identical(graph.data(loaded), xr.DataArray([2]))
+
+    unknown = ProvenanceGraph()
+    with pytest.raises(ValueError, match="needs a path"):
+        unknown.file_source("")
+    with pytest.raises(ValueError, match="Unknown file source"):
+        unknown.derive("file", load)
+    with pytest.raises(ValueError, match="No file reader"):
+        unknown.derive("file", FileLoad(unknown.file_source(str(path)), load.call))
+    assert not unknown.revision_ids
+    assert reads == [str(path), str(path)]
+
+
+@pytest.mark.parametrize("failure", ["non-array", "missing-operation-input"])
+def test_operation_failures_do_not_publish_or_report_an_unrelated_source(
+    graph, failure
+):
+    from erlab._provenance import MissingFileSource
+
+    class Fails(Scale):
+        def apply(self, data):
+            if failure == "non-array":
+                return data.values
+            raise FileNotFoundError("analysis calibration")
+
+    original = graph.add_source("source", xr.DataArray(7))
+    old = graph.derive("child", Recipe.bind(Scale(2), Follow("source")))
+    graph.set_recipe("child", Recipe.bind(Fails(2), Follow("source")))
+    error = TypeError if failure == "non-array" else FileNotFoundError
+    message = (
+        "must produce a DataArray" if failure == "non-array" else "analysis calibration"
+    )
+    with pytest.raises(error, match=message) as caught:
+        graph.refresh("child")
+    assert not isinstance(caught.value, MissingFileSource)
+    assert graph.current_revision("child") == old
+    assert graph.is_stale("child")
+    assert graph.revision_ids == {old, original}
+    xr.testing.assert_identical(graph.data(old), xr.DataArray(14))
+
+
+@pytest.mark.parametrize("when", ["choosing", "installing"])
+def test_reload_destination_conflict_preserves_independent_publication(
+    file_graph, when
+):
+    from contextlib import contextmanager
+
+    from erlab._provenance import FileLoad
+
+    _, path, load, _ = file_graph
+    active = False
+
+    @contextmanager
+    def install(updates):
+        if active and when == "installing":
+            assert {u.entry_id for u in updates} == {"fork"}
+            graph.add_source("fork", xr.DataArray(19))
+        yield
+
+    graph = ProvenanceGraph(
+        read_file=lambda source, call: xr.load_dataarray(source.path, **call.kwargs),
+        install=install,
+    )
+    original = graph.derive("source", FileLoad(graph.file_source(str(path)), load.call))
+    xr.DataArray([3, 5]).to_netcdf(path, engine="h5netcdf")
+    active = True
+
+    def choose(array):
+        xr.testing.assert_identical(array, xr.DataArray([3, 5]))
+        if when == "choosing":
+            graph.add_source("fork", xr.DataArray(19))
+        return "fork"
+
+    with pytest.raises(ValueError, match="already exists"):
+        graph.reload("source", choose_destination=choose)
+    fork = graph.current_revision("fork")
+    assert graph.revision_ids == {original, fork}
+    assert graph.current_revision("source") == original
+    xr.testing.assert_identical(graph.data(original), xr.DataArray([1, 2]))
+    xr.testing.assert_identical(graph.data(fork), xr.DataArray(19))
+
+
+@pytest.mark.parametrize("edited", [False, True])
+def test_repeated_producer_compares_nested_coordinate_selections(
+    graph, monkeypatch, edited
+):
+    from erlab._provenance import EarlierStep
+    from erlab._provenance._operations import SelOperation
+
+    coords = [0.5, 1.5, 2.5]
+    graph.add_source(
+        "source",
+        xr.DataArray(
+            np.arange(9).reshape(3, 3),
+            dims=("x", "y"),
+            coords={"x": coords, "y": coords},
+        ),
+    )
+
+    def selection(end):
+        return Recipe.bind(
+            SelOperation(kwargs={"x": slice(0.5, end), "y": [0.5, 2.5]}),
+            Follow("source"),
+        )
+
+    old = graph.derive("selected", selection(2.5))
+    graph.derive("sum", Recipe.bind(Add(), Follow("selected"), other=EarlierStep(old)))
+    graph.set_recipe("selected", selection(1.5 if edited else 2.5))
+    calls = []
+    apply = SelOperation.apply
+
+    def count_apply(operation, data):
+        calls.append(operation.kwargs["x"].stop)
+        return apply(operation, data)
+
+    monkeypatch.setattr(SelOperation, "apply", count_apply)
+    refreshed = graph.reload("sum")
+    expected = np.array([[0, 4], [6, 10], [12, 16]])
+    if edited:
+        expected = expected[:2]
+    actual = graph.data(refreshed)
+    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(actual.x, coords[: expected.shape[0]])
+    np.testing.assert_array_equal(actual.y, [0.5, 2.5])
+    assert sorted(calls) == ([1.5, 2.5] if edited else [2.5])
+
+
+def test_invalid_refresh_bindings_preserve_the_previous_recipe_and_value(graph):
+    from erlab._provenance import EarlierStep
+
+    source = graph.add_source("source", xr.DataArray(5))
+    child = graph.derive("child", Recipe.bind(Scale(3), Follow("source")))
+    with pytest.raises(ValueError, match="source revision has no earlier"):
+        graph.set_recipe("child", Recipe.bind(Scale(7), EarlierStep(source)))
+    with pytest.raises(TypeError, match="Invalid refresh binding"):
+        graph.set_recipe("child", Recipe.bind(Scale(7), "source"))
+    with pytest.raises(TypeError, match="Expected an operation recipe"):
+        graph.set_recipe("child", Follow("source"))
+    assert graph.revision_ids == {source, child}
+    assert not graph.is_stale("child")
+    assert graph.next_inputs("child") == (("data", source),)
+    xr.testing.assert_identical(graph.data(graph.refresh("child")), xr.DataArray(15))
+
+
 def test_derived_revision_captures_buffers_retained_by_operation(graph):
     retained = []
 
@@ -2158,3 +2394,32 @@ def test_derived_revision_captures_buffers_retained_by_operation(graph):
     original.detector.values[:] = -2
     original.attrs["labels"].clear()
     xr.testing.assert_identical(graph.data(key), expected)
+
+
+def test_repeated_earlier_producer_updates_once_while_an_unrelated_row_changes(graph):
+    from erlab._provenance import EarlierStep
+
+    calls = []
+    updating = False
+
+    class RecordScale(Scale):
+        def apply(self, data):
+            if updating:
+                calls.append(data.item())
+                graph.adopt_checkpoint("independent", "second", xr.DataArray(17))
+            return super().apply(data)
+
+    graph.add_source("source", xr.DataArray(2))
+    graph.adopt_checkpoint("independent", "first", xr.DataArray(11))
+    earlier = graph.derive("scaled", Recipe.bind(RecordScale(3), Follow("source")))
+    last = EarlierStep(earlier)
+    graph.derive("sum", Recipe.bind(Add(), last, other=last))
+    graph.replace("source", Recipe.bind(Scale(5), Follow("source")))
+    updating = True
+    result = graph.reload("sum")
+    used = dict(graph.revision(result).producer.inputs)
+    assert used["data"] == used["other"] != earlier
+    assert calls == [10]
+    assert graph.current_revision("independent") == "second"
+    assert graph.current_revision("scaled") == earlier
+    xr.testing.assert_identical(graph.data(result), xr.DataArray(60))
