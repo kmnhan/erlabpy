@@ -249,12 +249,12 @@ def test_manager_console(
         )
         xr.testing.assert_identical(manager.get_imagetool(1).slicer_area.data, data * 2)
 
-        manager.console._console_widget.execute("tools[1].data += 1")
+        manager.console._console_widget.execute("tools[1].data = tools[1] + 1")
         xr.testing.assert_identical(
             manager.get_imagetool(1).slicer_area.data, data * 2 + 1
         )
 
-        manager.console._console_widget.execute("tools[1].data[0, 0] = -5.0")
+        manager.console._console_widget.execute("tools[1][0, 0] = -5.0")
         assert float(manager.get_imagetool(1).slicer_area._data.values[0, 0]) == -5.0
         assert float(manager.get_imagetool(1).slicer_area.data.values[0, 0]) == -5.0
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, data)

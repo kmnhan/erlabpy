@@ -34,6 +34,7 @@ from erlab._provenance._operations import (
 )
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import fetch, replace_data
+from erlab.interactive.imagetool.manager._console import ToolNamespace
 from tests.interactive.imagetool.manager.helpers import (
     _exec_generated_code,
     metadata_derivation_texts,
@@ -1159,7 +1160,10 @@ def test_manager_recorded_input_edit_uses_captured_data_and_open_input_is_indepe
         assert manager.ntools == previous_count + 1
         opened = manager._node_for_target(manager._tool_graph.next_index - 1)
         xr.testing.assert_identical(opened.current_public_data(), correction)
-        opened.slicer_area.data.values[:] = 100.0
+        ToolNamespace(opened)[:] = 100.0
+        xr.testing.assert_identical(
+            opened.current_public_data(), xr.full_like(correction, 100.0)
+        )
         xr.testing.assert_identical(
             manager._provenance_revisions.resolve_data(
                 spec.script_inputs[1].revision_id
