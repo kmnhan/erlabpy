@@ -11564,6 +11564,63 @@ def test_manager_adopts_filtered_eager_source_and_preserves_preview(
         xr.testing.assert_identical(area.main_image.current_data, rendered)
 
 
+def test_accepted_filter_updates_followers_once_and_preview_keeps_history(
+    qtbot, manager_context
+) -> None:
+    raw = _batch_data("source", offset=1.0)
+    grid = raw.isel(x=[0, 2], y=[1, 3]).rename("grid")
+    filtered = raw.copy(data=raw.values - raw.values.min(axis=0, keepdims=True))
+    with manager_context() as manager:
+        for array in (raw, grid):
+            manager.add_imagetool(
+                itool(array, manager=False, execute=False), show=False
+            )
+        source, target = (manager._node_for_target(i) for i in (0, 1))
+        area = source.slicer_area
+        dialog = imagetool_dialogs.InterpolationDialog(area)
+        qtbot.addWidget(dialog)
+        dialog.target_tabs.setCurrentIndex(1)
+        dialog.target_tool_selector.set_current_uid(target.uid)
+        dialog.accept()
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+        child = manager._child_node(source._childtool_indices[-1])
+        graph = manager._operations.graph
+        original = graph.current_revision(source.uid)
+        changes = []
+        area.sigSourceDataReplaced.connect(changes.append)
+        operation = NormalizeOperation(dims=("x",), mode="min")
+
+        area.apply_filter_operation(operation, preview=True)
+        assert not changes
+        assert graph.current_revision(source.uid) == original
+        assert not graph.is_stale(child.uid)
+        xr.testing.assert_identical(area.main_image.current_data, filtered)
+        xr.testing.assert_identical(area.displayed_data, raw)
+
+        def check_display(expected, revision, count):
+            assert len(changes) == count
+            assert graph.current_revision(source.uid) != revision
+            assert graph.is_stale(child.uid)
+            assert manager._operations.update(child.uid)
+            xr.testing.assert_identical(area.displayed_data, expected)
+            xr.testing.assert_identical(
+                child.slicer_area.displayed_data, expected.isel(x=[0, 2], y=[1, 3])
+            )
+            return graph.current_revision(source.uid)
+
+        area.apply_filter_operation(operation)
+        accepted = check_display(filtered, original, 1)
+        area.apply_filter_operation(None)
+        cleared = check_display(raw, accepted, 2)
+
+        normalize = imagetool_dialogs.NormalizeDialog(area)
+        qtbot.addWidget(normalize)
+        normalize.restore_filter_operation(operation)
+        normalize.accept()
+        assert normalize.result() == QtWidgets.QDialog.DialogCode.Accepted
+        check_display(filtered, cleared, 3)
+
+
 @pytest.mark.parametrize("layout", ["promoted", "transposed"])
 def test_manager_adopts_eager_image_without_changing_its_layout(
     manager_context, layout
