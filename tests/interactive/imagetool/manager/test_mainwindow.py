@@ -12171,6 +12171,125 @@ def test_managed_file_operand_keeps_lazy_checkpoint_and_reloads_origin(
         assert str(path) in node.slicer_area._reload_unavailable_reason()
 
 
+@pytest.mark.parametrize("action", ["viewer", "manager"])
+def test_interpolation_file_reload_prefers_recorded_origin_over_viable_local_loader(
+    qtbot, manager_context, tmp_path, monkeypatch, accept_dialog, action
+):
+    from functools import wraps
+
+    from xarray.backends.h5netcdf_ import H5netcdfBackendEntrypoint
+
+    from erlab._provenance import FileLoad
+    from erlab._provenance._files import _load_provenance_from_file_details
+    from erlab.interactive.imagetool.manager._io import _MultiFileHandler
+
+    source = _batch_data("signal")
+    recorded_path = tmp_path / "recorded.h5"
+    other_path = tmp_path / "other.h5"
+    options = {"engine": "h5netcdf"}
+    source.to_netcdf(recorded_path, **options)
+    other = (source - 1000.0).rename("background")
+    other.to_netcdf(other_path, **options)
+    local_loader = (xr.load_dataarray, options, FileDataSelection(kind="dataarray"))
+    local_spec = _load_provenance_from_file_details(other_path, local_loader)
+    assert local_spec is not None
+
+    with manager_context() as manager:
+        handler = _MultiFileHandler(manager, [recorded_path], xr.load_dataset, options)
+        with qtbot.waitSignal(handler.sigFinished, timeout=10000):
+            handler.start()
+        node = manager._node_for_target(0)
+        grid = source.isel(x=[0, 2], y=[0, 2]).rename("grid")
+        target = manager._node_for_target(
+            manager.add_imagetool(itool(grid, manager=False, execute=False), show=False)
+        )
+        graph = manager._operations.graph
+        assert node.uid not in graph
+
+        # A viable, contradictory legacy origin exists before the graph sees this row.
+        area = node.slicer_area
+        area._file_path = other_path
+        area._load_func = local_loader
+        node.set_displayed_provenance(local_spec)
+        assert area._direct_reloadable()
+        dialog = imagetool_dialogs.InterpolationDialog(area)
+        qtbot.addWidget(dialog)
+        dialog.target_tabs.setCurrentIndex(1)
+        dialog.target_tool_selector.set_current_uid(target.uid)
+        dialog.accept()
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+        result = manager._child_node(node._childtool_indices[-1])
+        first = graph.current_revision(node.uid)
+        origin = graph.revision(first).producer
+        assert isinstance(origin, FileLoad)
+        assert pathlib.Path(origin.source.path) == recorded_path
+        assert area._file_path == other_path
+        assert area._load_func == local_loader
+        initial_result = graph.current_revision(result.uid)
+        assert dict(graph.revision(initial_result).producer.inputs)["data"] == first
+        expected = source.interp_like(grid)
+        xr.testing.assert_identical(result.slicer_area.displayed_data, expected)
+
+        changed = (source + 50.0).rename(source.name)
+        opened = []
+        original_open = H5netcdfBackendEntrypoint.open_dataset
+
+        @wraps(original_open)
+        def record_open(backend, filename_or_obj, **kwargs):
+            opened.append(pathlib.Path(filename_or_obj))
+            return original_open(backend, filename_or_obj, **kwargs)
+
+        monkeypatch.setattr(H5netcdfBackendEntrypoint, "open_dataset", record_open)
+        reload_action = area.reload_act
+        if action == "manager":
+            manager.tree_view.clearSelection()
+            select_tools(manager, [0])
+            manager._update_info(uid=node.uid)
+            reload_action = manager.reload_action
+        assert reload_action.isEnabled()
+        recorded_path.unlink()
+        assert area._direct_reloadable()
+        assert not area.reloadable
+
+        def confirm_missing(message):
+            assert str(recorded_path) in message.informativeText()
+            message.accept()
+
+        accept_dialog(reload_action.trigger, accept_call=confirm_missing)
+        assert not opened
+        assert graph.current_revision(node.uid) == first
+        changed.to_netcdf(recorded_path, **options)
+        reload_action.trigger()
+        assert opened == [recorded_path]
+        current = graph.current_revision(node.uid)
+        assert current != first
+        xr.testing.assert_identical(area.displayed_data, changed)
+        assert graph.is_stale(result.uid)
+        xr.testing.assert_identical(result.slicer_area.displayed_data, expected)
+        manager._set_metadata_node(result)
+        manager.refresh_revision_button.click()
+        refreshed = graph.revision(graph.current_revision(result.uid))
+        assert dict(refreshed.producer.inputs)["data"] == current
+        xr.testing.assert_identical(
+            result.slicer_area.displayed_data, changed.interp_like(grid)
+        )
+        assert opened == [recorded_path]
+
+        # The same local metadata opens the other file in a standalone viewer.
+        standalone = itool(
+            source,
+            manager=False,
+            execute=False,
+            file_path=other_path,
+            load_func=local_loader,
+        )
+        qtbot.addWidget(standalone)
+        standalone.set_provenance_spec(local_spec)
+        standalone.slicer_area.reload_act.trigger()
+        assert opened == [recorded_path, other_path]
+        xr.testing.assert_identical(standalone.slicer_area.displayed_data, other)
+
+
 def test_manager_repeated_graph_refresh_releases_superseded_payloads(
     manager_context,
 ) -> None:
