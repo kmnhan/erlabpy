@@ -189,17 +189,35 @@ def editable_data(data: xr.DataArray) -> xr.DataArray:
     return _own_index_data(data.copy(deep=True), copy_object_chunks=True)
 
 
-def _immutable_values(values: np.ndarray) -> np.ndarray:
+# Used only while adopting several live views of the same external arrays.
+_BufferMemo = dict[
+    tuple[int, np.dtype, tuple[int, ...], tuple[int, ...]],
+    tuple[np.ndarray, np.ndarray],
+]
+
+
+def _immutable_values(
+    values: np.ndarray, memo: _BufferMemo | None = None
+) -> np.ndarray:
     """Share an immutable byte buffer or copy the input into one."""
     if isinstance(_buffer_owner(values), bytes):
         return values.view()
+    if memo is not None:
+        # Pandas and xarray may return a new ndarray header for the same view.
+        layout = (values.ctypes.data, values.dtype, values.shape, values.strides)
+        if (saved := memo.get(layout)) is not None:
+            return saved[1].view(values.dtype)
     order: typing.Literal["F", "C"] = "F" if values.flags.f_contiguous else "C"
-    return np.frombuffer(values.tobytes(order), dtype=values.dtype).reshape(
+    result = np.frombuffer(values.tobytes(order), dtype=values.dtype).reshape(
         values.shape, order=order
     )
+    if memo is not None:
+        # Keep the original alive while its address is in use.
+        memo[layout] = (values, result)
+    return result
 
 
-def _protected_variable(variable: xr.Variable) -> xr.Variable:
+def _protected_variable(variable: xr.Variable, memo: _BufferMemo | None) -> xr.Variable:
     if not variable._in_memory:
         # A Dask Array supports assignment by replacing its graph. Give the caller
         # its own collection object. Keep unchunked backend variables deferred.
@@ -207,7 +225,7 @@ def _protected_variable(variable: xr.Variable) -> xr.Variable:
     else:
         values = variable.data
         if isinstance(values, np.ndarray) and not values.dtype.hasobject:
-            result = variable.copy(deep=False, data=_immutable_values(values))
+            result = variable.copy(deep=False, data=_immutable_values(values, memo))
         else:
             result = variable.copy(deep=True)
     result.attrs = copy.deepcopy(variable.attrs)
@@ -215,12 +233,14 @@ def _protected_variable(variable: xr.Variable) -> xr.Variable:
     return result
 
 
-def protected_data(data: xr.DataArray) -> xr.DataArray:
+def protected_data(
+    data: xr.DataArray, *, memo: _BufferMemo | None = None
+) -> xr.DataArray:
     """Isolate xarray metadata and indexes and share immutable eager buffers."""
     coords = dict(data.coords.variables)
     indexes = dict(data.xindexes)
     for key in coords.keys() - indexes.keys():
-        coords[key] = _protected_variable(coords[key])
+        coords[key] = _protected_variable(coords[key], memo)
     for index, variables in data.xindexes.group_by_index():
         if (
             type(index) is PandasIndex
@@ -230,7 +250,9 @@ def protected_data(data: xr.DataArray) -> xr.DataArray:
         ):
             idx = index.index
             owned = index._replace(
-                pd.Index(_immutable_values(idx.to_numpy()), name=idx.name, copy=False)
+                pd.Index(
+                    _immutable_values(idx.to_numpy(), memo), name=idx.name, copy=False
+                )
             )
         else:
             owned = index.copy(deep=True)
@@ -243,7 +265,9 @@ def protected_data(data: xr.DataArray) -> xr.DataArray:
             coords[key] = coord
             indexes[key] = owned
     return _own_index_data(
-        data._replace(_protected_variable(data.variable), coords, indexes=indexes),
+        data._replace(
+            _protected_variable(data.variable, memo), coords, indexes=indexes
+        ),
         copy_object_chunks=True,
     )
 

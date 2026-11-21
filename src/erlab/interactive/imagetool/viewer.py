@@ -86,6 +86,7 @@ if typing.TYPE_CHECKING:
 
     import qtawesome
 
+    from erlab._provenance._checkpoint import _BufferMemo
     from erlab.extensions._api import _CapabilityStatus
     from erlab.interactive._options.schema import AppOptions
     from erlab.interactive.imagetool.plot_items import (
@@ -1306,34 +1307,22 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if self.array_slicer._protect_values:
             return
         self.array_slicer._protect_values = True
-        self._data = protected_data(self._data)
+        memo: _BufferMemo = {}
+        self._data = protected_data(self._data, memo=memo)
         self._data_shares_external_values = False
-        applied = self._applied_filter_data
-        accepted = self._accepted_filter_data
-        if applied is not None:
-            self._applied_filter_data = protected_data(applied)
-        if accepted is not None:
-            if (
-                applied is not None
-                and self._applied_filter_data is not None
-                and accepted.variable._data is applied.variable._data
-            ):
-                self._accepted_filter_data = protected_data(
-                    accepted.copy(deep=False, data=self._applied_filter_data.data)
-                )
-            else:
-                self._accepted_filter_data = protected_data(accepted)
+        if self._applied_filter_data is not None:
+            self._applied_filter_data = protected_data(
+                self._applied_filter_data, memo=memo
+            )
+        if self._accepted_filter_data is not None:
+            self._accepted_filter_data = protected_data(
+                self._accepted_filter_data, memo=memo
+            )
         if self._obj_shares_data_values:
             self._restore_obj_from_source(update=False)
         else:
             self._clear_plot_data()
-            current = self._rendered_data
-            if (
-                applied is not None
-                and self._applied_filter_data is not None
-                and current.variable._data is applied.variable._data
-            ):
-                current = current.copy(deep=False, data=self._applied_filter_data.data)
+            current = protected_data(self._rendered_data, memo=memo)
             self.array_slicer.set_array(current, validate=False, reset=False)
         self.refresh_all(only_plots=True)
 
