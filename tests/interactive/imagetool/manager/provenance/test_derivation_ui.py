@@ -3748,9 +3748,13 @@ def test_failed_refresh_preserves_the_display_until_target_is_usable(
     assert graph.is_stale(node.uid)
     assert graph.current_revision(node.uid) == original
     xr.testing.assert_identical(node.slicer_area.displayed_data, displayed)
+    manager.update_auto_check.click()
+    qtbot.wait_until(lambda: node.source_state == "unavailable")
+    assert graph.current_revision(node.uid) == original
+    xr.testing.assert_identical(node.slicer_area.displayed_data, displayed)
     changed = grid.assign_coords(x=[0.5, 1.5])
     target.slicer_area.replace_source_data(changed)
-    manager.refresh_revision_button.click()
+    qtbot.wait_until(lambda: node.source_state == "fresh")
     assert not graph.is_stale(node.uid)
     xr.testing.assert_identical(
         node.slicer_area.displayed_data,

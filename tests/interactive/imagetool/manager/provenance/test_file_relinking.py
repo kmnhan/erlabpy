@@ -3596,3 +3596,8 @@ def test_manager_file_reload_restores_the_recorded_source_and_refreshes_its_view
         if chunked:
             assert before.chunks == after.chunks == ((2, 2), (3, 3))
         xr.testing.assert_identical(after, expected.rename("spectrum"))
+        # Reload with compatible cursors updates the result in its existing window.
+        published = graph.current_revision(output)
+        assert child.reload_source_data()
+        assert graph.current_revision(output) != published
+        xr.testing.assert_identical(child.slicer_area.displayed_data, after)
