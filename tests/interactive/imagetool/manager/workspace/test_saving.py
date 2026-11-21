@@ -8036,8 +8036,12 @@ def test_manager_workspace_load_keeps_visible_saved_data_in_memory(
         assert not loaded.data_file_backed
         assert loaded.data_loadable is False
         assert workspace_arrays.dataarray_is_numpy_backed(loaded._data)
-        assert loaded._data.values.flags.writeable
-        np.testing.assert_array_equal(loaded._data.values, data.values)
+        restored = loaded.data
+        assert not restored.values.flags.writeable
+        np.testing.assert_array_equal(restored.values, data.values)
+        manager._data_replace([data + 1.0], [0])
+        xr.testing.assert_identical(loaded.displayed_data, data + 1.0)
+        np.testing.assert_array_equal(restored.values, data.values)
 
 
 def test_manager_workspace_lazy_data_delta_save_uses_pending_group_before_replacing(

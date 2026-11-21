@@ -4379,7 +4379,8 @@ def test_batch_dialog_accept_wrappers(
         qtbot.addWidget(single_dialog)
         assert single_dialog.batch_manager is None
         assert single_dialog.source_spec().kind == "public_data"
-        assert single_dialog._itool_kwargs(area.data)["data"] is area.data
+        display = area.data
+        assert single_dialog._itool_kwargs(display)["data"] is display
 
         transform_dialog = imagetool_dialogs.RotationDialog(
             area,
