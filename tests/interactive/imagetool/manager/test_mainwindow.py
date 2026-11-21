@@ -11539,7 +11539,11 @@ def test_manager_adopts_filtered_eager_source_and_preserves_preview(
         source = manager._node_for_target(manager.add_imagetool(window, show=False))
         raw.values[:] = -1000.0
         raw.detector.values[:] = 255.0
-        xr.testing.assert_identical(source.data_for_role("source"), expected)
+        captured = source.data_for_role("source")
+        xr.testing.assert_identical(captured, expected)
+        assert not np.shares_memory(captured.detector.data, raw.detector.data)
+        for view in (area.displayed_data, area.data, area.main_image.current_data):
+            assert np.shares_memory(view.detector.data, captured.detector.data)
         xr.testing.assert_identical(area.displayed_data, accepted)
         rendered = previewed if preview else accepted
         xr.testing.assert_identical(area.main_image.current_data, rendered)
