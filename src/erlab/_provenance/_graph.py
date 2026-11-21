@@ -16,7 +16,12 @@ from graphlib import TopologicalSorter
 import pydantic
 import xarray as xr
 
-from erlab._provenance._checkpoint import FileVersion, checkpoint_data, editable_data
+from erlab._provenance._checkpoint import (
+    FileVersion,
+    checkpoint_data,
+    editable_data,
+    protected_data,
+)
 from erlab._provenance._records import (
     Application,
     Binding,
@@ -1178,6 +1183,10 @@ class ProvenanceGraph:
             data = producer.apply(values)
             if not isinstance(data, xr.DataArray):
                 raise TypeError("An operation must produce a DataArray")
+            if not isinstance(binding, Pin):
+                # A callback may return its own mutable buffers. Capture the result
+                # before handing it to a viewer or evaluating another step.
+                data = protected_data(data)
         if isinstance(binding, Pin):
             result.values[binding] = (binding.revision_id, data)
             return

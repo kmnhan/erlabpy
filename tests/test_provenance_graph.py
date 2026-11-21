@@ -2138,3 +2138,23 @@ def test_foreign_dask_graph_with_guarded_name_keeps_its_actual_tasks(tmp_path):
         replacement.replace(path)
         with pytest.raises(OSError, match="has changed"):
             guarded.compute()
+
+
+def test_derived_revision_captures_buffers_retained_by_operation(graph):
+    retained = []
+
+    class RetainResult(Scale):
+        def apply(self, data):
+            result = (self.factor * data).assign_coords(detector=("x", [2.0, 4.0]))
+            result.attrs["labels"] = ["accepted"]
+            retained.append(result)
+            return result
+
+    graph.add_source("input", xr.DataArray([3.0, 5.0], dims="x"))
+    key = graph.derive("output", Recipe.bind(RetainResult(2), Follow("input")))
+    original = retained.pop()
+    expected = original.copy(deep=True)
+    original.values[:] = -1
+    original.detector.values[:] = -2
+    original.attrs["labels"].clear()
+    xr.testing.assert_identical(graph.data(key), expected)

@@ -2842,8 +2842,10 @@ class _ManagedWindowNode(QtCore.QObject):
         on_commit: Callable[[], None] | None = None,
         metadata_operations: Sequence[ToolProvenanceOperation] = (),
         restored_revision_id: str | None = None,
+        materialize: bool = True,
     ) -> None:
-        data = data.compute()
+        if materialize:
+            data = data.compute()
         previous_revision_id = self.revision_id_for_role("source")
         accepted_filter_operation = None
         filtered = None
@@ -2925,6 +2927,7 @@ class _ManagedWindowNode(QtCore.QObject):
         on_commit: Callable[[], None] | None = None,
         metadata_operations: Sequence[ToolProvenanceOperation] = (),
         restored_revision_id: str | None = None,
+        materialize: bool = True,
     ) -> None:
         """Replace displayed ImageTool data with detached provenance."""
         if (
@@ -2956,6 +2959,7 @@ class _ManagedWindowNode(QtCore.QObject):
             on_commit=on_commit,
             metadata_operations=metadata_operations,
             restored_revision_id=restored_revision_id,
+            materialize=materialize,
         )
 
     def _handle_tool_data_changed(self) -> None:

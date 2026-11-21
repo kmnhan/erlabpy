@@ -784,3 +784,58 @@ def test_graph_captures_the_signaled_public_data(manager_context, monkeypatch, c
         with pytest.raises(ValueError, match="read-only"):
             expected.values[:] = -123
         xr.testing.assert_identical(operations.graph.data(key), stored)
+
+
+def test_managed_operation_shares_published_result_on_create_and_refresh(
+    qtbot, manager_context
+):
+    from erlab.interactive.imagetool.dialogs import InterpolationDialog
+
+    def window(data):
+        return itool(data, manager=False, execute=False)
+
+    spectrum = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        coords={"x": np.arange(3.0), "y": np.arange(4.0)},
+        name="source",
+    )
+    spectrum = spectrum.assign_coords(detector=spectrum + 100)
+    grid = spectrum.isel(x=[0, 2], y=[0, 2]).drop_vars("detector").rename("grid")
+    with manager_context() as manager:
+        source = manager._node_for_target(
+            manager.add_imagetool(window(spectrum), show=False)
+        )
+        target = manager._node_for_target(
+            manager.add_imagetool(window(grid), show=False)
+        )
+        dialog = InterpolationDialog(source.slicer_area)
+        qtbot.addWidget(dialog)
+        dialog.target_tabs.setCurrentIndex(1)
+        dialog.target_tool_selector.set_current_uid(target.uid)
+        dialog.accept()
+        child = manager._child_node(source._childtool_indices[-1])
+        graph = manager._operations.graph
+
+        def check_published(expected):
+            key = graph.current_revision(child.uid)
+            public = child.slicer_area.displayed_data
+            stored = manager._provenance_revisions._captured_data(key)
+            xr.testing.assert_identical(public, expected)
+            captured = graph._displayed[key]
+            for value in (public, stored):
+                for actual, reference in (
+                    (value, captured),
+                    (value.detector, captured.detector),
+                ):
+                    assert np.shares_memory(actual.values, reference.values)
+                    assert not actual.values.flags.writeable
+            return public
+
+        before = check_published(spectrum.interp_like(grid))
+        changed = grid.assign_coords(x=[0.5, 1.5])
+        target.slicer_area.replace_source_data(changed)
+        manager._set_metadata_node(child)
+        manager.refresh_revision_button.click()
+        check_published(spectrum.interp_like(changed))
+        xr.testing.assert_identical(before, spectrum.interp_like(grid))

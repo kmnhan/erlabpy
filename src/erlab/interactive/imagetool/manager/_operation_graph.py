@@ -21,6 +21,7 @@ from erlab._provenance import (
     ProvenanceGraph,
     Recipe,
 )
+from erlab._provenance._checkpoint import protected_data
 from erlab._provenance._files import (
     _SUPPORTED_CALLABLE_LOADERS,
     _capture_loader_file,
@@ -330,7 +331,7 @@ class _ManagedOperations:
             raise ValueError(f"Cannot describe the recorded load from {path!s}")
         with node._suspend_descendant_propagation(), node._suspend_snapshot_updates():
             node.slicer_area.replace_source_data(
-                update.data.copy(deep=True),
+                protected_data(update.data),
                 file_path=path,
                 load_func=loader,
                 _file_backing=update.revision.backing,
@@ -359,7 +360,7 @@ class _ManagedOperations:
                 spec = self._install_file(node, update, update.revision.producer)
             else:
                 spec = self._legacy_projection(update, name)
-                data = update.data.copy(deep=True)
+                data = protected_data(update.data)
                 if node is None:
                     if destination is None:
                         raise RuntimeError(
@@ -387,6 +388,7 @@ class _ManagedOperations:
                         preserve_filter=False,
                         replay_source_data=None,
                         restored_revision_id=update.revision.revision_id,
+                        materialize=False,
                     )
                     self.manager.tree_view.refresh(uid)
             self.manager._provenance_revisions.adopt_result(
