@@ -189,6 +189,65 @@ def editable_data(data: xr.DataArray) -> xr.DataArray:
     return _own_index_data(data.copy(deep=True), copy_object_chunks=True)
 
 
+def _immutable_values(values: np.ndarray) -> np.ndarray:
+    """Share an immutable byte buffer or copy the input into one."""
+    if isinstance(_buffer_owner(values), bytes):
+        return values.view()
+    order: typing.Literal["F", "C"] = "F" if values.flags.f_contiguous else "C"
+    return np.frombuffer(values.tobytes(order), dtype=values.dtype).reshape(
+        values.shape, order=order
+    )
+
+
+def _protected_variable(variable: xr.Variable) -> xr.Variable:
+    if not variable._in_memory:
+        # A Dask Array supports assignment by replacing its graph. Give the caller
+        # its own collection object. Keep unchunked backend variables deferred.
+        result = variable.copy(deep=variable.chunks is not None)
+    else:
+        values = variable.data
+        if isinstance(values, np.ndarray) and not values.dtype.hasobject:
+            result = variable.copy(deep=False, data=_immutable_values(values))
+        else:
+            result = variable.copy(deep=True)
+    result.attrs = copy.deepcopy(variable.attrs)
+    result.encoding = copy.deepcopy(variable.encoding)
+    return result
+
+
+def protected_data(data: xr.DataArray) -> xr.DataArray:
+    """Isolate xarray metadata and indexes and share immutable eager buffers."""
+    coords = dict(data.coords.variables)
+    indexes = dict(data.xindexes)
+    for key in coords.keys() - indexes.keys():
+        coords[key] = _protected_variable(coords[key])
+    for index, variables in data.xindexes.group_by_index():
+        if (
+            type(index) is PandasIndex
+            and type(index.index) is pd.Index
+            and isinstance(index.index.dtype, np.dtype)
+            and not index.index.dtype.hasobject
+        ):
+            idx = index.index
+            owned = index._replace(
+                pd.Index(_immutable_values(idx.to_numpy()), name=idx.name, copy=False)
+            )
+        else:
+            owned = index.copy(deep=True)
+        created = owned.create_variables(variables)
+        for key, var in created.items():
+            # A custom index can return one of its input variables.
+            coord = var.copy(deep=False)
+            coord.attrs = copy.deepcopy(var.attrs)
+            coord.encoding = copy.deepcopy(var.encoding)
+            coords[key] = coord
+            indexes[key] = owned
+    return _own_index_data(
+        data._replace(_protected_variable(data.variable), coords, indexes=indexes),
+        copy_object_chunks=True,
+    )
+
+
 # Dask copies preserve their graph. Keep no file, array or graph alive here.
 _guarded_graphs: weakref.WeakValueDictionary[
     tuple[int, str, FileVersion], typing.Any
@@ -374,11 +433,7 @@ def checkpoint_data(
         # A delayed task can close over a mutable buffer. Evaluate all variables
         # together so data and coordinates that share a task only read it once.
         data = data.compute()
-    # The computation can still return mutable objects. Copy them and all
-    # metadata. Only a numeric buffer backed by immutable bytes can be shared.
-    values = data.data
-    shared = values if isinstance(_buffer_owner(values), bytes) else None
-    captured = _own_index_data(data.copy(deep=True, data=shared))
+    captured = protected_data(data)
     if backing is not None:
         backing.verify()
     return captured
