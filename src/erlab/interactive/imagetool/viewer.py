@@ -29,7 +29,9 @@ import erlab
 from erlab._provenance._checkpoint import (
     FileVersion,
     _guard_file_variables,
+    _immutable_values,
     _read_versioned_file,
+    protected_data,
 )
 from erlab._provenance._files import (
     _capture_loader_file,
@@ -406,7 +408,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._data_shares_external_values: bool = False
 
         # If the following flag is True, `self._data` shares memory with
-        # `self.array_slicer._obj`. It turns False when user actions such as a call to
+        # `self._rendered_data`. It turns False when user actions such as a call to
         # `self.apply_func` cause the data to detach.
         self._obj_shares_data_values: bool = False
 
@@ -579,7 +581,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return specs[index].copy()
 
     def _slice_axes_indices(self) -> tuple[int, ...]:
-        match self.data.ndim:
+        match self._rendered_data.ndim:
             case 2:
                 return ()
             case 3:
@@ -590,7 +592,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 raise ValueError("Data must have 2 to 4 dimensions")
 
     def _profile_axes_indices(self) -> tuple[int, ...]:
-        match self.data.ndim:
+        match self._rendered_data.ndim:
             case 2:
                 return (1, 2)
             case 3:
@@ -912,7 +914,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             logger.debug("Restored current cursor")
 
             self.array_slicer.state = state["slice"]
-            self.sigBinChanged.emit(self.current_cursor, tuple(range(self.data.ndim)))
+            self.sigBinChanged.emit(
+                self.current_cursor, tuple(range(self._rendered_data.ndim))
+            )
             for ax in self._materialized_axes():
                 if ax.is_image:
                     ax.sync_guidelines_to_active_cursor()
@@ -1025,7 +1029,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _set_linked_splitter_sizes(
         self, sizes: list[list[int]], source_ndim: int
     ) -> None:
-        if self.data.ndim != source_ndim:
+        if self._rendered_data.ndim != source_ndim:
             return
         self.splitter_sizes = sizes
 
@@ -1076,7 +1080,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     # at the gesture boundary.
                     self._set_linked_splitter_sizes(
                         self._capture_splitter_layout(self._splitter_move_indices),
-                        self.data.ndim,
+                        self._rendered_data.ndim,
                     )
                 elif self._splitter_layout is not None:
                     # Closing the tool can discard the history group before the
@@ -1278,14 +1282,66 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return self.array_slicer.get_values(self.current_cursor, uniform=True)
 
     @property
-    def data(self) -> xr.DataArray:
+    def _rendered_data(self) -> xr.DataArray:
         return self.array_slicer._obj
+
+    def _public_data(self, data: xr.DataArray) -> xr.DataArray:
+        return protected_data(data) if self._in_manager else data
+
+    @property
+    def data(self) -> xr.DataArray:
+        """Return the data in the current slicer layout.
+
+        In a managed ImageTool, eager numerical values and coordinates are
+        read-only. Make an editable copy with ``data.copy(deep=True)``. Assign
+        through the Manager to publish a change and retain the earlier revision.
+        """
+        return self._public_data(self._rendered_data)
+
+    def _take_manager_ownership(self) -> None:
+        """Adopt a live window with its current preview and accepted filter."""
+        if self._in_manager:
+            return
+        self._in_manager = True
+        if self.array_slicer._protect_values:
+            return
+        self.array_slicer._protect_values = True
+        self._data = protected_data(self._data)
+        self._data_shares_external_values = False
+        applied = self._applied_filter_data
+        accepted = self._accepted_filter_data
+        if applied is not None:
+            self._applied_filter_data = protected_data(applied)
+        if accepted is not None:
+            if (
+                applied is not None
+                and self._applied_filter_data is not None
+                and accepted.variable._data is applied.variable._data
+            ):
+                self._accepted_filter_data = protected_data(
+                    accepted.copy(deep=False, data=self._applied_filter_data.data)
+                )
+            else:
+                self._accepted_filter_data = protected_data(accepted)
+        if self._obj_shares_data_values:
+            self._restore_obj_from_source(update=False)
+        else:
+            self._clear_plot_data()
+            current = self._rendered_data
+            if (
+                applied is not None
+                and self._applied_filter_data is not None
+                and current.variable._data is applied.variable._data
+            ):
+                current = current.copy(deep=False, data=self._applied_filter_data.data)
+            self.array_slicer.set_array(current, validate=False, reset=False)
+        self.refresh_all(only_plots=True)
 
     @property
     def displayed_data(self) -> xr.DataArray:
         """Return the public data values committed for derived outputs."""
-        accepted = self._accepted_data_for_dims(tuple(self.data.dims))
-        return self._restore_public_source_layout(accepted)
+        accepted = self._accepted_data_for_dims(tuple(self._rendered_data.dims))
+        return self._public_data(self._restore_public_source_layout(accepted))
 
     def _public_source_dims_for_current_layout(self) -> tuple[Hashable, ...]:
         """Merge the saved slicer order with source-only singleton dimensions."""
@@ -1368,8 +1424,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def persistence_data_and_state(self) -> tuple[xr.DataArray, ImageSlicerState]:
         """Return public source data in the saved slicer layout and its state."""
-        source = self._data_aligned_to_dims(self._data, tuple(self.data.dims))
-        return self._restore_public_source_layout(source), self.state
+        source = self._data_aligned_to_dims(self._data, tuple(self._rendered_data.dims))
+        return self._public_data(self._restore_public_source_layout(source)), self.state
 
     def displayed_live_source_spec(
         self,
@@ -1444,12 +1500,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _filtered_data_for_dims(
         self, func: Callable[[xr.DataArray], xr.DataArray], dims: tuple[Hashable, ...]
     ) -> xr.DataArray:
-        return self._normalize_filter_result_for_dims(func(self._data), dims)
+        return self._normalize_filter_result_for_dims(
+            func(self._public_data(self._data)), dims
+        )
 
     def _filtered_data_for_display(
         self, func: Callable[[xr.DataArray], xr.DataArray]
     ) -> xr.DataArray:
-        return self._filtered_data_for_dims(func, tuple(self.data.dims))
+        return self._filtered_data_for_dims(func, tuple(self._rendered_data.dims))
 
     def _filter_operation_result_for_data(
         self,
@@ -1477,7 +1535,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.displayed_data,
             data,
         ):
-            return tuple(self.data.dims)
+            return tuple(self._rendered_data.dims)
         return tuple(validated.dims)
 
     def _filter_operation_result_for_replacement(
@@ -1551,9 +1609,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _restore_obj_from_source(self, update: bool = True) -> None:
         """Rebuild the internal slicer array so it shares the current source values."""
         preserve_dims = (
-            tuple(self.array_slicer._obj.dims)
-            if hasattr(self, "_array_slicer")
-            else None
+            tuple(self._rendered_data.dims) if hasattr(self, "_array_slicer") else None
         )
         self._clear_plot_data()
         self._applied_filter_data = None
@@ -1570,6 +1626,25 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def _set_source_item(self, key, value, *, emit_signals: bool = True) -> None:
         """Safely update a subset of the public source array in place."""
+        if self._in_manager:
+            # Assignment is the managed edit boundary. Build the new revision before
+            # changing the viewer so a failed assignment leaves its filter intact.
+            edited = self._data.copy(
+                deep=False, data=self._owned_values_copy(self._data)
+            )
+            edited[key] = value
+            self._data = protected_data(edited)
+            self._applied_func = None
+            self._applied_provenance_operation = None
+            self._applied_filter_data = None
+            self._restore_obj_from_source(update=True)
+            self._set_accepted_filter(None, None)
+            if emit_signals:
+                self.sigSourceDataChanged.emit()
+                self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
+                self.sigDataEdited.emit()
+            return
+
         need_restore = (
             self._applied_func is not None or not self._obj_shares_data_values
         )
@@ -1863,7 +1938,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         current = self._history_state_snapshot()
         if entry is None:
             if (
-                self.data.ndim != source_ndim
+                self._rendered_data.ndim != source_ndim
                 or not self._is_splitter_history_entry(source_entry)
                 or not _history.entry_matches_current(source_entry, current, undo=undo)
             ):
@@ -1893,7 +1968,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             for target in tuple(self.linked_slicers):
                 target._apply_matching_linked_history_entry(
                     entry,
-                    self.data.ndim,
+                    self._rendered_data.ndim,
                     undo=undo,
                 )
         if any(path and path[0] == "splitter_sizes" for path in entry.changed_paths):
@@ -1901,9 +1976,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 "_set_linked_splitter_sizes",
                 {
                     "sizes": self.splitter_sizes,
-                    "source_ndim": self.data.ndim,
+                    "source_ndim": self._rendered_data.ndim,
                 },
-                tuple(self.data.dims),
+                tuple(self._rendered_data.dims),
                 False,
                 False,
                 False,
@@ -2364,7 +2439,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             Tuple of axis indices to refresh. If `None`, all axes are refreshed.
 
         """
-        if self.array_slicer._obj.chunks is None:
+        if self._rendered_data.chunks is None:
             return
         if self._state_refresh_deferred():
             # The delayed initial update will compute all plots from the final state.
@@ -2662,9 +2737,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 data_resource_closer()
                 data_resource_closer = None
 
-        self._data = source.copy(deep=False)
+        self._data = (
+            protected_data(source) if self._in_manager else source.copy(deep=False)
+        )
         self._data_resource_closer = data_resource_closer
-        self._data_shares_external_values = shares_external_values
+        self._data_shares_external_values = (
+            shares_external_values and not self._in_manager
+        )
         self._obj_shares_data_values = True
         self._applied_func = None
         self._applied_provenance_operation = None
@@ -2692,6 +2771,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 self._array_slicer = erlab.interactive.imagetool.slicer.ArraySlicer(
                     self._data,
                     self,
+                    protect_values=self._in_manager,
                     display_value_abs_limit=(
                         self._options_model.colors.max_rendered_abs_value
                     ),
@@ -3409,43 +3489,47 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         """
         if isinstance(values, xr.DataArray):
-            if self.data.ndim != values.ndim:
+            if self._rendered_data.ndim != values.ndim:
                 raise ValueError("DataArray dimensions do not match")
-            if set(self.data.dims) != set(values.dims):
+            if set(self._rendered_data.dims) != set(values.dims):
                 raise ValueError("DataArray dimensions do not match")
 
-            if self.data.dims != values.dims:
-                values = values.transpose(*self.data.dims)
-            if self.data.shape != values.shape:
+            if self._rendered_data.dims != values.dims:
+                values = values.transpose(*self._rendered_data.dims)
+            if self._rendered_data.shape != values.shape:
                 raise ValueError("DataArray shape does not match")
 
             values = values.values
-        elif self.data.shape != values.shape:
+        elif self._rendered_data.shape != values.shape:
             raise ValueError(
                 "Data shape does not match. Array is "
-                f"{self.data.shape} but {values.shape} given"
+                f"{self._rendered_data.shape} but {values.shape} given"
             )
         accepted = self._accepted_filter_data
         shares_accepted = (
             accepted is not None
             and accepted.chunks is None
-            and self.data.chunks is None
-            and np.may_share_memory(self.data.data, accepted.data)
+            and self._rendered_data.chunks is None
+            and np.may_share_memory(self._rendered_data.data, accepted.data)
         )
         self._applied_filter_data = None
         if (
             not self._obj_shares_data_values
-            and self.data.chunks is None
+            and self._rendered_data.chunks is None
             and not shares_accepted
-            and self.data.data.flags.writeable
+            and self._rendered_data.data.flags.writeable
         ):
-            self.array_slicer._obj[:] = values
+            self._rendered_data[:] = values
         else:
             # Copy replacement values once when the old renderer shares source or
             # committed filter data. Do not copy old values only to overwrite them.
-            replacement = np.array(values, dtype=self.data.dtype, copy=True)
+            replacement = (
+                _immutable_values(np.asarray(values, dtype=self._rendered_data.dtype))
+                if self._in_manager
+                else np.array(values, dtype=self._rendered_data.dtype, copy=True)
+            )
             self._clear_plot_data()
-            self._replace_data_values(self.array_slicer._obj, replacement)
+            self._replace_data_values(self._rendered_data, replacement)
         self._obj_shares_data_values = False
         self.array_slicer.clear_val_cache()
 
@@ -3559,15 +3643,17 @@ class ImageSlicerArea(QtWidgets.QWidget):
         emit_edited: bool = False,
     ) -> None:
         if filtered is not self._applied_filter_data:
-            if (
+            if self._in_manager:
+                filtered = protected_data(filtered)
+            elif (
                 filtered.chunks is None
                 and self._data.chunks is None
                 and np.may_share_memory(filtered.data, self._data.data)
             ):
                 filtered = filtered.copy(deep=False, data=filtered.data.copy())
             display_data = filtered
-            if filtered.chunks is None and filtered.dtype != self.data.dtype:
-                display_data = filtered.astype(self.data.dtype)
+            if filtered.chunks is None and filtered.dtype != self._rendered_data.dtype:
+                display_data = filtered.astype(self._rendered_data.dtype)
             self._clear_plot_data()
             self.array_slicer.set_array(
                 self._restore_public_source_layout(display_data),
@@ -3609,7 +3695,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         filtered = self._filter_operation_result_for_data(
             self._data,
             operation,
-            tuple(self.data.dims),
+            tuple(self._rendered_data.dims),
         )
         self._apply_filter_result(
             filtered,
@@ -3626,7 +3712,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         Replaces the current manual limits with the given limits dictionary and updates
         all child axes accordingly.
         """
-        valid_dims = set(self.data.dims)
+        valid_dims = set(self._rendered_data.dims)
         self.manual_limits = {
             dim: copy.deepcopy(limits)
             for dim, limits in manual_limits.items()
@@ -3640,7 +3726,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     ) -> dict[str, bool]:
         if axis_inversions is None:
             return {}
-        valid_dims = {str(dim) for dim in self.data.dims}
+        valid_dims = {str(dim) for dim in self._rendered_data.dims}
         return {
             str(dim): True
             for dim, inverted in axis_inversions.items()
@@ -3668,7 +3754,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @link_slicer
     @record_history
     def set_axis_inverted(self, dim: str, inverted: bool) -> None:
-        valid_dims = {str(dim_name) for dim_name in self.data.dims}
+        valid_dims = {str(dim_name) for dim_name in self._rendered_data.dims}
         if dim not in valid_dims:
             return
         if bool(self.axis_inversions.get(dim, False)) == inverted:
@@ -3710,9 +3796,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """
         slice_dict: dict[Hashable, slice] = {}
         for k, v in self.manual_limits.items():
-            if k not in self.data.dims:
+            if k not in self._rendered_data.dims:
                 continue
-            ax_idx = self.data.dims.index(k)
+            ax_idx = self._rendered_data.dims.index(k)
             start, end = min(v), max(v)
             if self.array_slicer.incs_uniform[ax_idx] < 0:
                 start, end = end, start
@@ -3878,7 +3964,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     ) -> None:
         if cursor is None:  # pragma: no branch
             cursor = self.current_cursor
-        new_bins: list[int | None] = [None] * self.data.ndim
+        new_bins: list[int | None] = [None] * self._rendered_data.ndim
         new_bins[axis] = value
         self.array_slicer.set_bins(cursor, new_bins, update)
 
@@ -3886,7 +3972,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @link_slicer(indices=True, steps=True)
     @record_history
     def set_bin_all(self, axis: int, value: int, update: bool = True) -> None:
-        new_bins: list[int | None] = [None] * self.data.ndim
+        new_bins: list[int | None] = [None] * self._rendered_data.ndim
         new_bins[axis] = value
         for c in range(self.n_cursors):
             self.array_slicer.set_bins(c, new_bins, update)
@@ -4432,10 +4518,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         r0, r1, r2, r3 = r
 
         # TODO: automate this based on ItoolPlotItem.display_axis
-        if self.data.ndim == 2:
+        if self._rendered_data.ndim == 2:
             invalid = [4, 5, 6, 7]
             r1 = r0 / 6
-        elif self.data.ndim == 3:
+        elif self._rendered_data.ndim == 3:
             invalid = [6, 7]
 
         r01 = r0 / r1
@@ -4450,7 +4536,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             (r2,),
             ((r3 * (r0 + r1) - d) / r01, (r3 * (r0 + r1) - d) * r01),
         ]
-        if self.data.ndim == 4:
+        if self._rendered_data.ndim == 4:
             full = r0 + r1 - d
             sizes[3] = (full / 4, full / 4, full / 2)
         splitter_sizes = [[round(size * scale) for size in row] for row in sizes]
@@ -4467,7 +4553,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         # reserve space, only hide plotItem
         if self._plots[3] is not None:
-            self.get_axes(3).setVisible(self.data.ndim != 2)
+            self.get_axes(3).setVisible(self._rendered_data.ndim != 2)
 
         self._colorbar.set_dimensions(
             width=self.HORIZ_PAD + 30,

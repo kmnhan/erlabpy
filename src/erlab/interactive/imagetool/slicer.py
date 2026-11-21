@@ -12,6 +12,7 @@ import numpy.typing as npt
 from qtpy import QtCore, QtWidgets
 
 import erlab
+from erlab._provenance._checkpoint import protected_data
 from erlab.interactive import _shortcut_sequences
 from erlab.interactive.imagetool._colorlevels import (
     display_safe_values,
@@ -391,8 +392,10 @@ class ArraySlicer(QtCore.QObject):
         parent: QtCore.QObject,
         *,
         display_value_abs_limit: float | None = None,
+        protect_values: bool = False,
     ) -> None:
         super().__init__(parent)
+        self._protect_values = protect_values
         self.display_value_abs_limit = float(
             display_value_abs_limit
             if display_value_abs_limit is not None
@@ -481,6 +484,9 @@ class ArraySlicer(QtCore.QObject):
             )
         else:
             self._obj = xarray_obj
+
+        if self._protect_values:
+            self._obj = protected_data(self._obj)
 
         if (
             preserve_dims is not None
@@ -1085,31 +1091,8 @@ class ArraySlicer(QtCore.QObject):
         return has_nonuniform
 
     def values_of_dim(self, dim: Hashable) -> npt.NDArray[np.floating]:
-        """Fast equivalent of :code:`self._obj[dim].values`.
-
-        Returns the cached pointer of the underlying coordinate array, achieving a ~80x
-        speedup. This should work most of the time since we only assume floating point
-        values, but does require further testing. May break for future versions of
-        :obj:`pandas` or :obj:`xarray`. See Notes.
-
-        Parameters
-        ----------
-        dim
-            Name of the dimension to get the values from.
-
-        Returns
-        -------
-        numpy.ndarray
-
-        Notes
-        -----
-        Looking at the implementation, I think this may return a pandas array in some
-        cases, but I'm not sure so I'll just leave it this way. When something breaks,
-        replacing with :code:`self._obj._coords[dim]._data.array.array._ndarray` may
-        do the trick.
-
-        """
-        return self._obj._coords[dim]._data.array._data  # type: ignore[union-attr]
+        """Get axis values without constructing an intermediate DataArray."""
+        return self._obj._coords[dim].values
 
     def get_significant(self, axis: int, uniform: bool = False) -> int:
         """Return the number of significant digits for a given axis."""

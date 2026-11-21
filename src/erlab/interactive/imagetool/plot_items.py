@@ -1296,8 +1296,10 @@ class ItoolPlotItem(pg.PlotItem):
             data, self.slicer_area._data
         )
 
-        return erlab.utils.array.sort_coord_order(
-            data, self.slicer_area._data.coords.keys()
+        return self.slicer_area._public_data(
+            erlab.utils.array.sort_coord_order(
+                data, self.slicer_area._data.coords.keys()
+            )
         )
 
     def _selection_operations(self, cursor: int) -> tuple[ToolProvenanceOperation, ...]:

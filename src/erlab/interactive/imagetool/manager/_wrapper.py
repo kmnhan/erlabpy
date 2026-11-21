@@ -694,6 +694,7 @@ class _ManagedWindowNode(QtCore.QObject):
             self._recent_geometry = value.saveGeometry()
 
         if isinstance(value, ImageTool):
+            value.slicer_area._take_manager_ownership()
             self._window_kind = "imagetool"
             self._imagetool = value
             self._tool_window = None
@@ -726,7 +727,6 @@ class _ManagedWindowNode(QtCore.QObject):
             value.slicer_area.sigDisplayedProvenanceChanged.connect(
                 self._handle_imagetool_provenance_changed
             )
-            value.slicer_area._in_manager = True
             value.remove_act.setVisible(True)
             value._set_managed_reveal_callback(self.reveal_in_manager)
             for plot in value.slicer_area._materialized_axes():
