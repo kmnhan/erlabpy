@@ -1208,7 +1208,7 @@ class ItoolPlotItem(pg.PlotItem):
 
     def _get_axis_dims(self, uniform: bool) -> tuple[str | None, str | None]:
         source_dims = (
-            self.slicer_area.data.dims if uniform else self.array_slicer.physical_dims
+            self.array_slicer.dims if uniform else self.array_slicer.physical_dims
         )
         dim_list = [str(source_dims[axis]) for axis in self.display_axis]
 
@@ -1250,7 +1250,7 @@ class ItoolPlotItem(pg.PlotItem):
         """Whether the current view limits are smaller than the full data range."""
         manual_limits = dict(self.slicer_area.manual_limits)
         for ax_idx in self.display_axis:
-            dim_name = str(self.slicer_area.data.dims[ax_idx])
+            dim_name = str(self.array_slicer.dims[ax_idx])
             if dim_name in manual_limits:
                 mn, mx = sorted(self.slicer_area.array_slicer.lims_uniform[ax_idx])
                 manual_mn, manual_mx = sorted(manual_limits[dim_name])
@@ -1266,7 +1266,7 @@ class ItoolPlotItem(pg.PlotItem):
         limits = self.slicer_area.make_slice_dict()
         indexers: dict[Hashable, slice] = {}
         for axis in self.display_axis:
-            display_dim = self.slicer_area.data.dims[axis]
+            display_dim = self.array_slicer.dims[axis]
             if display_dim in limits:
                 indexers[display_dim] = limits[display_dim]
         return self.array_slicer.crop_selection(indexers)
@@ -2331,7 +2331,7 @@ class ItoolPlotItem(pg.PlotItem):
     def _get_label_unit(self, index: int | None = None):
         if index is None:
             return "", ""
-        dim = self.slicer_area.data.dims[self.display_axis[index]]
+        dim = self.array_slicer.dims[self.display_axis[index]]
         if dim == "eV":
             return dim, "eV"
         return dim, ""

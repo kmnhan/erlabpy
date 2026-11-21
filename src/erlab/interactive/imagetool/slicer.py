@@ -645,6 +645,19 @@ class ArraySlicer(QtCore.QObject):
         return self.coords_uniform
 
     @property
+    def dims(self) -> tuple[Hashable, ...]:
+        """Dimension names in the renderer's axis order."""
+        return self._obj.dims
+
+    @property
+    def ndim(self) -> int:
+        return self._obj.ndim
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self._obj.shape
+
+    @property
     def physical_dims(self) -> tuple[Hashable, ...]:
         """Dimension names for analysis, in the current displayed axis order."""
         return self._physical_dims
