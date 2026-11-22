@@ -567,7 +567,7 @@ class _WorkspaceController:
             for uid in self._manager._tool_graph.nodes
         }
         revision_caches = {
-            uid: (node._current_revision_id, node._revision_ids_by_role.copy())
+            uid: node.snapshot_revision_bindings()
             for uid, node in self._manager._tool_graph.nodes.items()
         }
         previous_pending = self._code_trust_manifest_binding_pending
@@ -602,11 +602,10 @@ class _WorkspaceController:
         except Exception:
             # A failed action must not retain checkpoint copies that were never
             # published. Their immutable records can be collected when unreachable.
-            for uid, (current, roles) in revision_caches.items():
+            for uid, bindings in revision_caches.items():
                 node = self._manager._tool_graph.nodes.get(uid)
                 if node is not None:
-                    node._current_revision_id = current
-                    node._revision_ids_by_role = roles
+                    node.restore_revision_bindings(bindings)
             raise
         finally:
             self._local_provenance_changes = None

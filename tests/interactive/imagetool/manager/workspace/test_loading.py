@@ -5222,6 +5222,7 @@ def test_workspace_replacement_owns_interpolation_history_and_pending_auto(
 ):
     import gc
 
+    from erlab._provenance._operations import NormalizeOperation
     from erlab.interactive.imagetool.dialogs import InterpolationDialog
     from erlab.interactive.imagetool.manager._console import ToolsNamespace
 
@@ -5252,6 +5253,11 @@ def test_workspace_replacement_owns_interpolation_history_and_pending_auto(
         child_uid = source._childtool_indices[-1]
         session = manager._operations
         graph = session.graph
+        child_source = graph.source_revision(child_uid)
+        if broken:
+            manager._node_for_target(child_uid).slicer_area.apply_filter_operation(
+                NormalizeOperation(dims=("x",), mode="min")
+            )
         child_revision = graph.current_revision(child_uid)
         original = graph.current_revision(source.uid)
         loader = manager._workspace_controller.loading
@@ -5308,14 +5314,25 @@ def test_workspace_replacement_owns_interpolation_history_and_pending_auto(
             assert child.source_auto_update
             manager._set_metadata_node(child)
             assert not manager.next_inputs_box.isHidden()
-            assert child.current_revision_id == child_revision
+            assert child.current_revision_id == child_source
+            assert (
+                child.revision_id_for_role("displayed", graph_owned=True)
+                == child_revision
+            )
             xr.testing.assert_identical(
                 ToolsNamespace(manager).checkpoint(original), raw
             )
-            xr.testing.assert_identical(graph.data(child_revision), expected)
+            xr.testing.assert_identical(graph.data(child_source), expected)
+            np.testing.assert_array_equal(
+                graph.data(child_revision), expected - expected.min("x")
+            )
             qtbot.wait_until(
                 lambda: graph.current_revision(child_uid) != child_revision
             )
+            np.testing.assert_array_equal(
+                child.slicer_area.displayed_data, xr.zeros_like(expected)
+            )
+            child.slicer_area.apply_filter_operation(None)
             xr.testing.assert_identical(
                 child.slicer_area.displayed_data, xr.full_like(expected, 40)
             )

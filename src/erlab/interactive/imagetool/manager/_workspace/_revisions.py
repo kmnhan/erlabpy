@@ -43,11 +43,7 @@ def retained_revision_ids(
     for node in manager._tool_graph.nodes.values():
         if node._current_revision_id is not None:
             ids.add(node._current_revision_id)
-        ids.update(
-            revision_id
-            for role, (token, revision_id) in node._revision_ids_by_role.items()
-            if token == node.snapshot_token_for_role(role)
-        )
+        ids.update(node.active_revision_ids())
         ids.update(_spec_revision_ids(node.passive_displayed_provenance_spec))
         ids.update(_spec_revision_ids(node.source_spec))
         ids.update(_script_input_revision_ids(node.active_tool_script_inputs))

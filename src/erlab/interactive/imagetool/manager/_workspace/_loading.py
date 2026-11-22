@@ -1004,7 +1004,7 @@ class _WorkspaceLoader:
         graph = self._manager._tool_graph
         previous_bindings = (
             {
-                uid: (node.current_revision_id, node._revision_ids_by_role.copy())
+                uid: node.snapshot_revision_bindings()
                 for uid, node in graph.nodes.items()
             }
             if replace
@@ -1077,11 +1077,10 @@ class _WorkspaceLoader:
                                 previous_scripts
                             )
                         if replace:
-                            for uid, (revision_id, roles) in previous_bindings.items():
+                            for uid, bindings in previous_bindings.items():
                                 node = graph.nodes.get(uid)
                                 if node is not None:
-                                    node._current_revision_id = revision_id
-                                    node._revision_ids_by_role = roles
+                                    node.restore_revision_bindings(bindings)
                     raise
         finally:
             self._revision_load_roots = previous_roots

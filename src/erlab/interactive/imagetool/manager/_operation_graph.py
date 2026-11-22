@@ -192,10 +192,7 @@ class _ManagedOperations:
             if manager is None or manager._provenance_revisions is not store
             else manager._tool_graph.nodes.get(uid)
         )
-        if node is not None and any(
-            revision == key and token == node.snapshot_token_for_role(role)
-            for role, (token, key) in node._revision_ids_by_role.items()
-        ):
+        if node is not None and revision in node.active_revision_ids():
             return
         store.release_graph_result(revision)
 
@@ -247,7 +244,7 @@ class _ManagedOperations:
                         uid, operation, revision_id=key, data=store._captured_data(key)
                     )
                     self._retain_host_revision(key, uid)
-                node._revision_ids_by_role["displayed"] = (node.snapshot_token, key)
+                node.bind_displayed_revision(key)
                 self._tokens[uid] = node.snapshot_token
                 return
         self.observe(node, displayed_data=displayed_data)
@@ -509,10 +506,7 @@ class _ManagedOperations:
                     ),
                     uid,
                 )
-                node._revision_ids_by_role["displayed"] = (
-                    node.snapshot_token,
-                    displayed.revision.revision_id,
-                )
+                node.bind_displayed_revision(displayed.revision.revision_id)
             self._tokens[uid] = node.snapshot_token
 
     def reload_problem(self, uid: str) -> str | None:

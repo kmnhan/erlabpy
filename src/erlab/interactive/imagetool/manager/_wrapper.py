@@ -2146,6 +2146,25 @@ class _ManagedWindowNode(QtCore.QObject):
                 revision_id,
             )
 
+    def bind_displayed_revision(self, revision_id: str) -> None:
+        self._revision_ids_by_role["displayed"] = (self.snapshot_token, revision_id)
+
+    def active_revision_ids(self) -> Iterator[str]:
+        for role, (token, revision_id) in self._revision_ids_by_role.items():
+            if token == self.snapshot_token_for_role(role):
+                yield revision_id
+
+    def snapshot_revision_bindings(
+        self,
+    ) -> tuple[str | None, dict[ScriptInputDataRole, tuple[str, str]]]:
+        return self._current_revision_id, self._revision_ids_by_role.copy()
+
+    def restore_revision_bindings(
+        self,
+        previous: tuple[str | None, dict[ScriptInputDataRole, tuple[str, str]]],
+    ) -> None:
+        self._current_revision_id, self._revision_ids_by_role = previous
+
     def revision_id_for_role(
         self,
         data_role: ScriptInputDataRole,
