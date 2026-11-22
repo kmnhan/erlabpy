@@ -38,7 +38,7 @@ from erlab._provenance._records import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Hashable, Iterable, Iterator
+    from collections.abc import Callable, Hashable, Iterable, Iterator, Sequence
 
     from erlab._provenance._model import FileReplayCall, ToolProvenanceOperation
 
@@ -480,40 +480,154 @@ class ProvenanceGraph:
         current = self._entries.get(entry_id)
         if current is not None and current.revision_id == revision_id:
             return
-        stored = self._revisions.get(revision_id)
-        if stored is None:
-            stored = _StoredRevision(
+        self._publish_adopted(
+            entry_id,
+            _StoredRevision(
                 DataRevision(revision_id, file_load, True, backing),
                 revision_id,
                 file_load,
                 owned,
                 (),
+            ),
+            owned,
+        )
+
+    def adopt_application(
+        self,
+        entry_id: str,
+        revision_id: str,
+        owned: xr.DataArray,
+        operation: ToolProvenanceOperation,
+    ) -> None:
+        """Record a completed unary operation on this entry's previous revision."""
+        self._write_generation()
+        check_id(revision_id)
+        if not isinstance(owned, xr.DataArray):
+            raise TypeError("An application result must be a DataArray")
+        previous = self.current_revision(entry_id)
+        if previous == revision_id:
+            return
+        parent = self._revisions[previous]
+        entry = self._entries[entry_id]
+        previous_recipe = (
+            entry.recipe if entry.source_revision_id == previous else parent.recipe
+        )
+        binding = self._previous_step(previous, previous_recipe)
+        stored = self._record_unary(parent, revision_id, operation, binding)
+        self._publish_adopted(entry_id, stored, owned, auto=entry.auto)
+
+    @staticmethod
+    def _record_unary(
+        parent: _StoredRevision,
+        revision_id: str,
+        operation: ToolProvenanceOperation,
+        binding: Binding,
+    ) -> _StoredRevision:
+        check_id(revision_id)
+        recipe = Recipe.bind(operation, binding)
+        application = Application(
+            recipe._captured.operation,
+            (("data", parent.record.revision_id),),
+            recipe._captured.execution,
+        )
+        return _StoredRevision(
+            DataRevision(revision_id, application, False),
+            revision_id,
+            recipe,
+            None,
+            (parent,),
+        )
+
+    def adopt_file_view(
+        self,
+        entry_id: str,
+        file_load: FileLoad,
+        backing: FileVersion,
+        *,
+        raw: xr.DataArray,
+        steps: Sequence[ToolProvenanceOperation],
+        source: tuple[str, xr.DataArray],
+        display: tuple[str, ToolProvenanceOperation, xr.DataArray] | None,
+    ) -> None:
+        """Publish a prepared file source and its displayed value in one change."""
+        self._write_generation()
+        check_id(entry_id)
+        source_key, source_data = source
+        check_id(source_key)
+        raw_key = uuid.uuid4().hex if steps else source_key
+        stored = self._revisions.get(raw_key)
+        if stored is None:
+            owned = checkpoint_data(raw, backing=backing) if steps else source_data
+            stored = _StoredRevision(
+                DataRevision(raw_key, file_load, True, backing),
+                raw_key,
+                file_load,
+                owned,
+                (),
             )
-            self._revisions[revision_id] = stored
+        self._revisions[raw_key] = stored
+        for index, operation in enumerate(steps):
+            key = source_key if index + 1 == len(steps) else uuid.uuid4().hex
+            stored = self._revisions.get(key) or self._record_unary(
+                stored, key, operation, EarlierStep(stored.record.revision_id)
+            )
+            self._revisions[key] = stored
+        shown = None
+        if display is not None:
+            key, operation, values = display
+            if key == source_key:
+                raise ValueError("An accepted filter needs its own revision ID")
+            shown = (
+                self._record_unary(stored, key, operation, EarlierStep(source_key)),
+                values,
+            )
+        self._publish_adopted(entry_id, stored, source_data, display=shown)
+
+    def _publish_adopted(
+        self,
+        entry_id: str,
+        stored: _StoredRevision,
+        owned: xr.DataArray,
+        *,
+        display: tuple[_StoredRevision, xr.DataArray] | None = None,
+        auto: bool = False,
+    ) -> None:
+        source_id = stored.record.revision_id
+        stored = self._revisions.get(source_id, stored)
+        shown, values = (stored, owned) if display is None else display
+        revision_id = shown.record.revision_id
+        current = self._entries.get(entry_id)
+        recipe = stored.recipe
+        sources = self._sources(recipe)
         if current is None:
             self._check_new_entry(entry_id, None)
             entry = ImageToolEntry(
                 entry_id,
                 revision_id,
-                file_load,
-                False,
+                recipe,
+                auto,
                 None,
                 len(self._entries),
-                revision_id,
+                source_id,
             )
         else:
-            self._index_sources(entry_id, current.recipe, set())
             self._drop_entry_values(current)
             entry = replace(
                 current,
                 revision_id=revision_id,
-                source_revision_id=revision_id,
-                recipe=file_load,
-                auto=False,
+                source_revision_id=source_id,
+                recipe=recipe,
+                auto=auto,
             )
+        self._index_sources(
+            entry_id, None if current is None else current.recipe, sources
+        )
+        self._revisions[source_id] = stored
+        self._revisions[revision_id] = shown
         self._entries[entry_id] = entry
-        self._displayed[revision_id] = owned
-        self._entry_roots[entry_id] = (stored,)
+        self._displayed[source_id] = owned
+        self._displayed[revision_id] = values
+        self._entry_roots[entry_id] = (shown,)
         self._stale.discard(entry_id)
         self._auto_pending.pop(entry_id, None)
         self._auto_errors.pop(entry_id, None)
@@ -562,18 +676,13 @@ class ProvenanceGraph:
             check_id(key)
             if key in self._revisions:
                 raise ValueError("An accepted filter needs its own revision ID")
-            recipe = Recipe.bind(operation, self._previous_step(base_id, entry.recipe))
-            application = Application(
-                recipe._captured.operation,
-                (("data", base_id),),
-                recipe._captured.execution,
+            shown = self._record_unary(
+                base, key, operation, self._previous_step(base_id, entry.recipe)
             )
             if data is None:
+                application = typing.cast("Application", shown.record.producer)
                 data = application.apply({base_id: self._displayed[base_id]})
             values = protected_data(data)
-            shown = _StoredRevision(
-                DataRevision(key, application, False), key, recipe, None, (base,)
-            )
         if self._generation != generation and self._entries.get(entry_id) is not entry:
             raise _SupersededEvaluation("The filter source changed during evaluation")
         if entry.revision_id != base_id:

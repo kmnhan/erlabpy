@@ -1236,7 +1236,18 @@ class _ManagedWindowNode(QtCore.QObject):
             self.manager._mark_node_state_dirty(self.uid)
             return
         if self.imagetool is not None:
-            self._rename_imagetool_data(name, record_provenance=manual)
+            if (
+                name_changed
+                and self.uid in self.manager._operations.graph
+                and not self.slicer_area.has_active_filter
+            ):
+                from erlab._provenance._operations import RenameOperation
+
+                operation = RenameOperation(name=_normalize_dataarray_name(name))
+                with self.manager._operations.authored_edit(self, operation):
+                    self._rename_imagetool_data(name, record_provenance=manual)
+            else:
+                self._rename_imagetool_data(name, record_provenance=manual)
             return
         self._name = name
         self._invalidate_info_text_cache()
@@ -2180,7 +2191,11 @@ class _ManagedWindowNode(QtCore.QObject):
             if not graph_owned and not self.manager._operations.installing(self.uid):
                 self.manager._provenance_revisions.claim_graph_inputs(None, cached[1])
             return cached[1]
-        if data_role == "displayed" and token == self.source_snapshot_token:
+        if (
+            data_role == "displayed"
+            and token == self.source_snapshot_token
+            and (self.imagetool is None or not self.slicer_area.has_active_filter)
+        ):
             source = self._revision_ids_by_role.get("source")
             if source is not None and source[0] == token:
                 self._revision_ids_by_role[data_role] = source
@@ -2206,10 +2221,12 @@ class _ManagedWindowNode(QtCore.QObject):
                     self.set_displayed_provenance(normalized, advance_snapshot=False)
             spec = self.provenance_for_role(data_role)
             backing = None
-            if self.imagetool is not None and (
-                data_role == "source" or not self.slicer_area.has_active_filter
+            if (
+                self.imagetool is not None
+                and self.slicer_area._file_input is not None
+                and (data_role == "source" or not self.slicer_area.has_active_filter)
             ):
-                backing = self.slicer_area._file_backing
+                backing = self.slicer_area._file_input.backing
             data = (
                 self._finalize_script_input_data(displayed_data)
                 if displayed_data is not None and data_role == "displayed"
@@ -2813,10 +2830,7 @@ class _ManagedWindowNode(QtCore.QObject):
         """Retain the references needed to undo a pending graph installation."""
         source, state = self.slicer_area.persistence_data_and_state()
         owners = self._provenance_owner_snapshot()
-        file_backing, file_call = (
-            self.slicer_area._file_backing,
-            self.slicer_area._file_call,
-        )
+        file_input = self.slicer_area._file_input
         snapshot = self._snapshot_token
         source_token = self._source_snapshot_token
         binding = self._source_binding
@@ -2832,10 +2846,7 @@ class _ManagedWindowNode(QtCore.QObject):
             ):
                 self.slicer_area.replace_source_data(source)
                 self.slicer_area._restore_state(state)
-                self.slicer_area._file_backing, self.slicer_area._file_call = (
-                    file_backing,
-                    file_call,
-                )
+                self.slicer_area._file_input = file_input
                 self._source_binding, self._source_auto_update = binding, auto
                 self._source_state, self._output_id = previous_state, output
                 self._snapshot_token, self._source_snapshot_token = (

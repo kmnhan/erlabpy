@@ -12007,6 +12007,110 @@ def test_manager_failed_graph_install_restores_prerequisites(
         assert not ops.graph.is_stale(second)
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        "edit",
+        "rename",
+        "filter",
+        "rename_filter",
+        "transpose",
+        "edit_after_submit",
+        "opaque",
+    ],
+)
+def test_interpolation_from_changed_file_exports_displayed_input(
+    qtbot, manager_context, tmp_path, monkeypatch, change
+):
+    from erlab.interactive.imagetool.manager._console import ToolsNamespace
+    from erlab.interactive.imagetool.manager._io import _MultiFileHandler
+
+    source = _batch_data("signal")
+    grid = source.isel(x=[0, 2], y=[1, 3]).rename("grid")
+    paths = [tmp_path / "source.h5", tmp_path / "grid.h5"]
+    source.to_netcdf(paths[0], engine="h5netcdf")
+    grid.to_netcdf(paths[1], engine="h5netcdf")
+    with manager_context() as manager:
+        for path in paths:
+            handler = _MultiFileHandler(
+                manager, [path], xr.load_dataset, {"engine": "h5netcdf"}
+            )
+            with qtbot.waitSignal(handler.sigFinished, timeout=10000):
+                handler.start()
+        node, target = (manager._node_for_target(i) for i in (0, 1))
+        console = ToolsNamespace(manager)
+        expected = source.copy(deep=True)
+        if change == "opaque":
+            console[0][0, [1]] = np.array([1234.0])
+            expected[0, 1] = 1234.0
+        if change == "edit":
+            console[0][0, 1] = 1234.0
+            expected[0, 1] = 1234.0
+        if "rename" in change:
+            node.name = "calibrated"
+            expected = expected.rename("calibrated")
+        if change == "transpose":
+            node.slicer_area.transpose_main_image()
+            expected = expected.transpose()
+        if "filter" in change:
+            node.slicer_area.apply_filter_operation(
+                NormalizeOperation(dims=("x",), mode="min")
+            )
+            expected = expected - expected.min("x")
+
+        dialog = imagetool_dialogs.InterpolationDialog(node.slicer_area)
+        qtbot.addWidget(dialog)
+        dialog.target_tabs.setCurrentIndex(1)
+        dialog.target_tool_selector.set_current_uid(target.uid)
+        dialog.accept()
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+        child = manager._child_node(node._childtool_indices[-1])
+        if change == "edit_after_submit":
+            console[0][0, 1] = 1234.0
+            expected[0, 1] = 1234.0
+            assert manager._operations.update(child.uid)
+        expected = expected.isel(x=[0, 2], y=[1, 3])
+        xr.testing.assert_identical(child.slicer_area.displayed_data, expected)
+        # Retain the displayed result while the source moves to a different revision.
+        node.name = "later"
+        assert manager._operations.graph.is_stale(child.uid)
+        copied = []
+        inputs = {}
+
+        def checkpoint(key, _reserved):
+            inputs["edited_signal"] = console.checkpoint(key)
+            return "edited_signal"
+
+        monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)
+        monkeypatch.setattr(manager._details_panel, "_checkpoint_name", checkpoint)
+        manager._set_metadata_node(child)
+        manager._copy_full_derivation_code()
+        assert len(copied) == 1
+        assert bool(inputs) == (change == "opaque")
+        xr.testing.assert_identical(
+            _exec_generated_code(copied[0], inputs)["interpolated"], expected
+        )
+        if change == "edit_after_submit":
+            new_signal = (3 * source).rename("signal")
+            fresh_path = tmp_path / "replacement.h5"
+            new_signal.to_netcdf(fresh_path, engine="h5netcdf")
+            fresh_path.replace(paths[0])
+            assert manager._operations.update(child.uid, reload=True)
+            new_signal[0, 1] = 1234.0
+            updated = new_signal.rename("later").isel(x=[0, 2], y=[1, 3])
+            xr.testing.assert_identical(child.slicer_area.displayed_data, updated)
+            manager._set_metadata_node(child)
+            manager._copy_full_derivation_code()
+            assert not inputs
+            xr.testing.assert_identical(
+                _exec_generated_code(copied[-1], {})["interpolated"], updated
+            )
+        if change != "opaque":
+            paths[0].unlink()
+            with pytest.raises(OSError, match=r"source\.h5"):
+                _exec_generated_code(copied[0], inputs)
+
+
 @pytest.mark.parametrize("chunked_filter", [False, True])
 def test_managed_file_operand_keeps_lazy_checkpoint_and_reloads_origin(
     qtbot,
@@ -12155,7 +12259,7 @@ def test_managed_file_operand_keeps_lazy_checkpoint_and_reloads_origin(
         node.slicer_area.reload()
         new = graph.current_revision(node.uid)
         assert new != old
-        assert graph.revision(new).backing == node.slicer_area._file_backing
+        assert graph.revision(new).backing == node.slicer_area._file_input.backing
         assert node.slicer_area._file_path == path
         new_values = graph.data(new)
         for data in (node.slicer_area.displayed_data, new_values):

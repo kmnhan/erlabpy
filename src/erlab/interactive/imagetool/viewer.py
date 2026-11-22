@@ -18,6 +18,7 @@ import time
 import typing
 import uuid
 import weakref
+from dataclasses import dataclass
 
 import numpy as np
 import numpy.typing as npt
@@ -48,6 +49,7 @@ from erlab._provenance._files import (
 )
 from erlab._provenance._model import (
     FileDataSelection,
+    FileReplayCall,
     ScriptInput,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
@@ -144,6 +146,16 @@ def _repeatable_xarray_resource_closer(
             break
         closer = owner_closer
     return closer if callable(closer) else None
+
+
+@dataclass(frozen=True)
+class _FileInput:
+    """Identity of the source data received from a versioned loader."""
+
+    backing: FileVersion
+    call: FileReplayCall | None
+    name: Hashable | None
+    dims: tuple[Hashable, ...]
 
 
 class ImageSlicerArea(QtWidgets.QWidget):
@@ -273,6 +285,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
     sigDataEdited = QtCore.Signal()  #: :meta private:
     sigDataBackingChanged = QtCore.Signal()  #: :meta private:
     sigSourceDataChanged = QtCore.Signal()  #: :meta private:
+    _file_input: _FileInput | None
+
     sigSourceDataReplaced = QtCore.Signal(object)  #: :meta private:
     sigDisplayedProvenanceChanged = QtCore.Signal()  #: :meta private:
     sigPointValueChanged = QtCore.Signal(float)  #: :meta private:
@@ -1623,6 +1637,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             )
             edited[key] = value
             self._data = protected_data(edited)
+            self._file_input = None
             self._applied_func = None
             self._applied_provenance_operation = None
             self._applied_filter_data = None
@@ -1656,6 +1671,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         updated = False
         try:
             self._data[key] = value
+            self._file_input = None
             updated = True
         finally:
             self.array_slicer.clear_val_cache()
@@ -2652,7 +2668,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
             _repeatable_xarray_resource_closer(darr_list[0]) or input_resource_closer
         )
 
-        self._file_backing = _file_backing
         self._file_path = pathlib.Path(file_path) if file_path is not None else None
 
         if load_func is not None:
@@ -2685,13 +2700,18 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         data = darr_list[0]
         self._source_input_dtype = prepared_data[0].source_dtype
-        self._file_call = None
+        call = None
         if _file_backing is not None and not rad2deg and not preparation_operations:
             resolved = _resolve_load_func(
                 self._load_func, source_input_dtype=self._source_input_dtype
             )
             if resolved is not None:
-                self._file_call = resolved.replay_call()
+                call = resolved.replay_call()
+        self._file_input = (
+            None
+            if _file_backing is None
+            else _FileInput(_file_backing, call, data.name, data.dims)
+        )
         shares_external_values = True
         if hasattr(self, "_data") and data is self._data:
             shares_external_values = False

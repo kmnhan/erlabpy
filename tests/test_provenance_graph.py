@@ -2294,6 +2294,60 @@ def test_checkpoint_notifications_and_editor_errors_preserve_current_data(graph)
     xr.testing.assert_identical(graph.data(before), data.rename("first"))
 
 
+def test_adopting_file_view_publishes_only_the_final_value(file_graph, monkeypatch):
+    from contextlib import contextmanager
+
+    from erlab._provenance import FileVersion
+    from erlab._provenance._operations import RenameOperation
+
+    graph, path, load, _reads = file_graph
+    raw = xr.load_dataarray(path, engine="h5netcdf")
+    graph.add_source("source", raw)
+    graph.derive("child", Recipe.bind(Scale(factor=2), Follow("source")), auto=True)
+    updates = []
+
+    @contextmanager
+    def install(rows):
+        updates.extend(rows)
+        yield
+
+    monkeypatch.setattr(graph, "_install", install)
+    named = raw.rename("named")
+    filtered = 3 * named
+    graph.adopt_file_view(
+        "source",
+        load,
+        FileVersion.capture(path),
+        raw=raw,
+        steps=[RenameOperation(name="named")],
+        source=("named", named),
+        display=("filtered", Scale(factor=3), filtered),
+    )
+    assert [row.entry_id for row in updates] == ["child"]
+    assert graph.source_revision("source") == "named"
+    assert graph.current_revision("source") == "filtered"
+    xr.testing.assert_identical(updates[0].data, 2 * filtered)
+
+
+def test_adopted_application_retains_the_recorded_input(graph):
+    from erlab._provenance._operations import RenameOperation
+
+    data = xr.DataArray([2, 3], dims="x", name="old")
+    source = graph.add_source("source", data)
+    renamed = data.rename("new")
+    graph.adopt_application("source", "renamed", renamed, RenameOperation(name="new"))
+    with graph.retain("renamed"):
+        assert graph.revision("renamed").producer.inputs == (("data", source),)
+        with pytest.raises(TypeError, match="DataArray"):
+            graph.adopt_application(
+                "source", "invalid", [], RenameOperation(name="bad")
+            )
+        assert graph.current_revision("source") == "renamed"
+        graph.adopt_checkpoint("source", "later", data + 100)
+        assert graph.is_virtual("renamed")
+        xr.testing.assert_identical(graph.data("renamed"), renamed)
+
+
 def test_admission_rechecks_row_after_copying_external_metadata(graph):
     class LateArrival:
         def __deepcopy__(self, memo):
