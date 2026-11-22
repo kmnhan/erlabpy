@@ -773,6 +773,9 @@ def test_graph_captures_the_signaled_public_data(manager_context, monkeypatch, c
 
         key = operations.graph.current_revision(node.uid)
         assert key != previous
+        assert key in node.active_revision_ids()
+        if case != "filtered":
+            assert previous not in node.active_revision_ids()
         assert requested.count("displayed") == (1 if case == "no_array" else 0)
         expected = data_for_role("displayed")
         stored = operations.graph.data(key)

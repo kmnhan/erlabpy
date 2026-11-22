@@ -1468,14 +1468,7 @@ def test_revision_retention_includes_tool_inputs_and_current_role_caches() -> No
     )
     node = SimpleNamespace(
         _current_revision_id=current,
-        _revision_ids_by_role={
-            "source": ("stale-source", stale),
-            "displayed": ("live-display", displayed),
-        },
-        snapshot_token_for_role=lambda role: {
-            "source": "live-source",
-            "displayed": "live-display",
-        }[role],
+        active_revision_ids=lambda: iter((displayed,)),
         passive_displayed_provenance_spec=None,
         source_spec=None,
         active_tool_script_inputs=(
