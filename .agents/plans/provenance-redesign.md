@@ -14,6 +14,7 @@ track the framework changes and the checks that exercise them together.
 | 4. Replace a document as one transaction | The document owns its graph and revision store. A failed Replace restores both and resumes its queued work. Successful Replace releases the outgoing document. | Replace a workspace while a filtered interpolation has Auto queued. Check restored revision IDs, values, bindings and the next update. Check release of windows, scientific arrays and file handles. |
 | 5. Unify extension requests | Source and packaged interpreters share one worker protocol. Working directory, module search order and execution settings take effect before decoding the job. Deferred work retains Dask scheduling annotations. | Run eager and deferred jobs in a real Manager. Exercise a distributed retry, a fork during a request, a daemon process and a startup failure followed by recovery. |
 | 6. Verify the integrated contract | Verify the combined workflows on both Qt bindings, supported dependencies and shipped executables. Measure the affected workloads. | The [pull request](https://github.com/kmnhan/erlabpy/pull/682) tracks the full suite and checks on the current revision. The [package build](https://github.com/kmnhan/erlabpy/actions/runs/44991882732) computes an extension result on Windows and both macOS architectures. |
+| 7. Bound streaming memory | One publisher records each new input. A consumer can keep an old result and the inputs used to make it. | Grow both grids 12 times. Count the retained arrays and bytes. Repeat with an old result held across eight target replacements and resolve its original values. |
 
 The source and display ownership changes are in `f9ed5adb`, `8fc1bc3f` and
 `99831790`. A pinned input used only by a pending edit survives closing its
@@ -40,7 +41,8 @@ revision fields and a test tool that initialized itself through a reloaded
 Qt class. The store test now consumes current bindings from the window.
 The tool uses its own superclass. The store and wrapper modules passed
 199 checks, and the sequence that reloads Qt utilities before exercising
-the four tool outcomes passed.
+the four tool outcomes passed. The corrected full local PyQt6 suite passed
+11,911 tests, with 15 skipped.
 
 At `8fee21a0`, initial observation uses the same source and displayed roles
 for in-memory and file inputs. Copy Full Code on an already-filtered source
@@ -48,6 +50,12 @@ and on its interpolation child executes with the original raw input. Closing
 the last child preserves the source’s export. A different active preview
 leaves the accepted filter intact. The graph, Manager and rollback selection
 passed 212 tests under each Qt binding.
+
+The live acquisition benchmark exposed an ownership error in that change.
+After 12 updates, the Manager retained 986,976 bytes of ordinary input and
+result data. The graph now records new values for its live entries. A legacy
+consumer of an old result keeps the source and target used to produce that
+result. Each later target replacement publishes one new checkpoint.
 
 ### Measurements after the integrated review
 
@@ -57,7 +65,9 @@ passed 212 tests under each Qt binding.
 - Both grids grew in 12 batches. In Auto, each raw and filtered publication
   matched an independent xarray calculation. Manual mode kept its first
   display until Refresh. The final filtered 44 × 16 float64 array required
-  one extra 5,632-byte display buffer.
+  one extra 5,632-byte display buffer. Across 16 matched runs with 104
+  checked publications, the final ordinary result retained 85,056 bytes in
+  seven buffers. The filtered result retained 90,688 bytes in eight.
 - A failed Replace with 128 hidden rows restored all three live revisions.
   Successful Replace released every outgoing scientific buffer. Across six
   additional accepted pairs, median peak physical footprint changed by

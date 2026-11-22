@@ -3301,12 +3301,13 @@ class _ManagedWindowNode(QtCore.QObject):
         if (
             not self._suspend_snapshot_token_updates
             and self._current_revision_id is not None
+            and self.uid not in self.manager._operations.graph
             and not self.manager._provenance_revisions.is_graph_owned(
                 self._current_revision_id
             )
         ):
-            # The displayed-data signal captures graph inputs. Only a legacy
-            # owner needs a separate source checkpoint linked to its history.
+            # A managed entry publishes the next input on the displayed-data
+            # signal, even if another window retains the previous input.
             self.revision_id_for_role(
                 "source",
                 primary_checkpoint_required=(
