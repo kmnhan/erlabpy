@@ -59,7 +59,11 @@ operation leaves the revision set and all followers unchanged. At `99831790`,
 typed edits bind their actual input role and preserve pending input revisions.
 Tests exercise a second edit after closing the window that held a pinned
 input. The 117 integrated graph, filtered Manager, and workspace checks
-passed under PySide6.
+passed under PySide6. Another 29 file, filter and literal assignment cases
+passed on xarray 2024.10 and Dask 2024.4.1. All 28 buffer-sharing and wrapper
+tests passed under PyQt6. Three alternating comparisons on the one-edge graph
+benchmark gave median Refresh times of 0.185 and 0.184 ms before and after
+the rewrite with 1,000 entries. With 10,000 entries they were 0.185 and 0.186 ms.
 
 Step 5 remains open on the Linux coverage worker. Its startup hook examines
 the import path before the packaged worker initializer. The spawn context

@@ -829,7 +829,7 @@ def test_managed_operation_shares_published_result_on_create_and_refresh(
             public = child.slicer_area.displayed_data
             stored = manager._provenance_revisions._captured_data(key)
             xr.testing.assert_identical(public, expected)
-            captured = graph._displayed[key]
+            captured = graph._displayed[key].data
             for value in (public, stored):
                 for actual, reference in (
                     (value, captured),
