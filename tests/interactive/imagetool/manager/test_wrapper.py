@@ -219,7 +219,7 @@ def test_wrapper_applies_tool_owned_script_inputs(qtbot) -> None:
         _set_workspace_tool_data_references=lambda _references: None,
         _source_spec=None,
         _provenance_spec=None,
-        _current_revision_id=None,
+        _legacy_source_history_id=None,
         _revision_ids_by_role={},
         _mark_provenance_changed=lambda **_kwargs: None,
     )
@@ -242,7 +242,7 @@ def test_wrapper_applies_tool_owned_script_inputs(qtbot) -> None:
         tool_input_state=state,
         pending_payload_attrs=None,
         workspace_tool_data_references={},
-        node_current_revision_id=None,
+        node_legacy_source_history_id=None,
         node_revision_ids_by_role={},
     )
 

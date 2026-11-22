@@ -77,9 +77,6 @@ from erlab.interactive.imagetool.manager._widgets import (
 from erlab.interactive.imagetool.manager._workspace._controller import (
     _WorkspaceController,
 )
-from erlab.interactive.imagetool.manager._workspace._revisions import (
-    retained_revision_ids,
-)
 from erlab.interactive.imagetool.manager._workspace._state import _ManagerWorkspaceState
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
@@ -1459,7 +1456,7 @@ class ImageToolManager(_ImageToolManagerBase):
             self._figure_workflows._refresh_figure_source_controls()
         node._workspace_sources.clear()
         if refresh_dependents and self._workspace_state.loading_depth == 0:
-            self._provenance_revisions.discard_unreachable(retained_revision_ids(self))
+            self._workspace_controller._discard_unreachable_provenance_revisions()
 
     def _iter_descendant_uids(self, uid: str) -> list[str]:
         return self._tool_graph.descendant_uids(uid)
@@ -1764,9 +1761,7 @@ class ImageToolManager(_ImageToolManagerBase):
                 self._figure_workflows._refresh_figure_source_controls()
             wrapper.deleteLater()
             if self._workspace_state.loading_depth == 0:
-                self._provenance_revisions.discard_unreachable(
-                    retained_revision_ids(self)
-                )
+                self._workspace_controller._discard_unreachable_provenance_revisions()
             return True
 
     @QtCore.Slot(int)

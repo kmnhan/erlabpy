@@ -333,6 +333,9 @@ class ProvenanceGraph:
     def __contains__(self, entry_id: str) -> bool:
         return entry_id in self._entries
 
+    def has_revision(self, revision_id: str) -> bool:
+        return revision_id in self._revisions
+
     def current_revision(self, entry_id: str) -> str:
         return self._entries[entry_id].revision_id
 

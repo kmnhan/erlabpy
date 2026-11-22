@@ -41,8 +41,8 @@ def retained_revision_ids(
         else set()
     )
     for node in manager._tool_graph.nodes.values():
-        if node._current_revision_id is not None:
-            ids.add(node._current_revision_id)
+        if node._legacy_source_history_id is not None:
+            ids.add(node._legacy_source_history_id)
         ids.update(node.active_revision_ids())
         ids.update(_spec_revision_ids(node.passive_displayed_provenance_spec))
         ids.update(_spec_revision_ids(node.source_spec))

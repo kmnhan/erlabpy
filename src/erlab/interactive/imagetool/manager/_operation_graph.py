@@ -192,9 +192,8 @@ class _ManagedOperations:
             self.graph.adopt_checkpoint(uid, source_key, source_data, display=display)
         if display is not None:
             self._retain_host_revision(source_key, uid)
-        elif area is not None:
-            # A temporary preview does not change the committed source or display.
-            node.bind_source_revision(revision)
+        if area is not None:
+            node.bind_graph_source(source_key)
         self._retain_host_revision(revision, uid)
         self._tokens[uid] = node.snapshot_token
 
@@ -291,7 +290,10 @@ class _ManagedOperations:
         self, node: _ManagedWindowNode, *, displayed_data: xr.DataArray | None = None
     ) -> None:
         uid = node.uid
-        if uid not in self.graph or uid in self._installing:
+        if uid in self._installing:
+            return
+        if uid not in self.graph:
+            node.release_inactive_graph_bindings()
             return
         source = self.graph.source_revision(uid)
         # Only a display publication on the same source can keep its recipe.

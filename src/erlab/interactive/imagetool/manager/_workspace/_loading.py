@@ -1087,9 +1087,8 @@ class _WorkspaceLoader:
             if backup is not None:
                 backup.close()
             if self._manager._provenance_revisions is incoming_revisions:
-                incoming_revisions.discard_unreachable(
-                    workspace_revisions.retained_revision_ids(self._manager)
-                    | previous_revision_ids
+                self._controller._discard_unreachable_provenance_revisions(
+                    previous_revision_ids
                 )
 
     def _restore_workspace_state_snapshot(

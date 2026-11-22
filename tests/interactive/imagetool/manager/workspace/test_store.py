@@ -1467,7 +1467,7 @@ def test_revision_retention_includes_tool_inputs_and_current_role_caches() -> No
         script_inputs=(ScriptInput(name="inner", revision_id=nested_id),),
     )
     node = SimpleNamespace(
-        _current_revision_id=current,
+        _legacy_source_history_id=current,
         active_revision_ids=lambda: iter((displayed,)),
         passive_displayed_provenance_spec=None,
         source_spec=None,

@@ -379,9 +379,13 @@ class _WorkspaceController:
         self._normalize_approved_workspace_provenance()
         self._discard_unreachable_provenance_revisions()
 
-    def _discard_unreachable_provenance_revisions(self) -> None:
+    def _discard_unreachable_provenance_revisions(
+        self, extra_roots: frozenset[str] = frozenset()
+    ) -> None:
         self._manager._provenance_revisions.discard_unreachable(
             workspace_revisions.retained_revision_ids(self._manager)
+            | self._manager._operations.graph.revision_ids
+            | extra_roots
         )
 
     def _normalize_approved_workspace_provenance(self) -> None:

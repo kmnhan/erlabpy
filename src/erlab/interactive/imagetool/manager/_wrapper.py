@@ -298,7 +298,7 @@ class _NodeProvenanceOwnerSnapshot:
     tool_input_state: _ToolInputState | None
     pending_payload_attrs: dict[str, typing.Any] | None
     workspace_tool_data_references: dict[str, dict[str, typing.Any]]
-    node_current_revision_id: str | None
+    node_legacy_source_history_id: str | None
     node_revision_ids_by_role: dict[ScriptInputDataRole, tuple[str, str]]
 
 
@@ -481,7 +481,7 @@ class _ManagedWindowNode(QtCore.QObject):
             if source_snapshot_token
             else self._snapshot_token
         )
-        self._current_revision_id: str | None = None
+        self._legacy_source_history_id: str | None = None
         self._revision_ids_by_role: dict[ScriptInputDataRole, tuple[str, str]] = {}
         self._note = _coerce_note(note)
         self._suspend_snapshot_token_updates = True
@@ -1630,7 +1630,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 name: dict(reference)
                 for name, reference in self._workspace_tool_data_references.items()
             },
-            node_current_revision_id=self._current_revision_id,
+            node_legacy_source_history_id=self._legacy_source_history_id,
             node_revision_ids_by_role=self._revision_ids_by_role.copy(),
         )
 
@@ -1694,10 +1694,10 @@ class _ManagedWindowNode(QtCore.QObject):
         self._source_spec = snapshot.node_source_spec
         self._provenance_spec = snapshot.node_provenance_spec
         revision_bindings_changed = (
-            self._current_revision_id != snapshot.node_current_revision_id
+            self._legacy_source_history_id != snapshot.node_legacy_source_history_id
             or self._revision_ids_by_role != snapshot.node_revision_ids_by_role
         )
-        self._current_revision_id = snapshot.node_current_revision_id
+        self._legacy_source_history_id = snapshot.node_legacy_source_history_id
         self._revision_ids_by_role = snapshot.node_revision_ids_by_role.copy()
         references_changed = (
             self._workspace_tool_data_references
@@ -1742,11 +1742,12 @@ class _ManagedWindowNode(QtCore.QObject):
         """
         before = self._provenance_owner_snapshot()
         revision_ids = {} if revision_ids is None else revision_ids
-        node_current_revision_id = (
+        node_legacy_source_history_id = (
             None
-            if before.node_current_revision_id is None
+            if before.node_legacy_source_history_id is None
             else revision_ids.get(
-                before.node_current_revision_id, before.node_current_revision_id
+                before.node_legacy_source_history_id,
+                before.node_legacy_source_history_id,
             )
         )
         node_revision_ids_by_role = {
@@ -1825,7 +1826,7 @@ class _ManagedWindowNode(QtCore.QObject):
             or node_provenance_spec != before.node_provenance_spec
             or tool_input_state != before.tool_input_state
             or workspace_tool_data_references != before.workspace_tool_data_references
-            or node_current_revision_id != before.node_current_revision_id
+            or node_legacy_source_history_id != before.node_legacy_source_history_id
             or node_revision_ids_by_role != before.node_revision_ids_by_role
             or pending_attrs_changed
         )
@@ -1842,7 +1843,7 @@ class _ManagedWindowNode(QtCore.QObject):
             tool_input_state=tool_input_state,
             pending_payload_attrs=attrs,
             workspace_tool_data_references=workspace_tool_data_references,
-            node_current_revision_id=node_current_revision_id,
+            node_legacy_source_history_id=node_legacy_source_history_id,
             node_revision_ids_by_role=node_revision_ids_by_role,
         )
         try:
@@ -2135,7 +2136,7 @@ class _ManagedWindowNode(QtCore.QObject):
         cached = self._revision_ids_by_role.get("source")
         if cached is None or cached[0] != self.source_snapshot_token:
             return None
-        return self._current_revision_id
+        return cached[1]
 
     @current_revision_id.setter
     def current_revision_id(self, revision_id: str | None) -> None:
@@ -2143,18 +2144,18 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def restore_current_revision_id(self, revision_id: str | None) -> None:
         """Bind a saved checkpoint without reading its data or running its recipe."""
-        if revision_id is not None and not self.manager._operations.installing(
-            self.uid
-        ):
+        installing = self.manager._operations.installing(self.uid)
+        if revision_id is not None and not installing:
             self.manager._provenance_revisions.claim_graph_inputs(None, revision_id)
         self._revision_ids_by_role.clear()
+        self._legacy_source_history_id = None if installing else revision_id
         if revision_id is None:
-            self._current_revision_id = None
-        else:
-            self.bind_source_revision(revision_id)
+            return
+        self._revision_ids_by_role["source"] = (self.source_snapshot_token, revision_id)
 
-    def bind_source_revision(self, revision_id: str) -> None:
-        self._current_revision_id = revision_id
+    def bind_graph_source(self, revision_id: str) -> None:
+        """Expose the graph's current source without starting a legacy history."""
+        self._legacy_source_history_id = None
         self._revision_ids_by_role["source"] = (self.source_snapshot_token, revision_id)
 
     def bind_displayed_revision(self, revision_id: str) -> None:
@@ -2165,16 +2166,33 @@ class _ManagedWindowNode(QtCore.QObject):
             if token == self.snapshot_token_for_role(role):
                 yield revision_id
 
+    def release_inactive_graph_bindings(self) -> None:
+        """Retire checkpoints still displayed when this input lost its last follower."""
+        operations = self.manager._operations
+        stale = {
+            role: key
+            for role, (token, key) in self._revision_ids_by_role.items()
+            if token != self.snapshot_token_for_role(role)
+            and operations.revisions.is_graph_owned(key)
+        }
+        if not stale:
+            return
+        for role in stale:
+            del self._revision_ids_by_role[role]
+        for key in set(stale.values()).difference(self.active_revision_ids()):
+            if not operations.graph.has_revision(key):
+                operations.revisions.release_graph_result(key)
+
     def snapshot_revision_bindings(
         self,
     ) -> tuple[str | None, dict[ScriptInputDataRole, tuple[str, str]]]:
-        return self._current_revision_id, self._revision_ids_by_role.copy()
+        return self._legacy_source_history_id, self._revision_ids_by_role.copy()
 
     def restore_revision_bindings(
         self,
         previous: tuple[str | None, dict[ScriptInputDataRole, tuple[str, str]]],
     ) -> None:
-        self._current_revision_id, self._revision_ids_by_role = previous
+        self._legacy_source_history_id, self._revision_ids_by_role = previous
 
     def revision_id_for_role(
         self,
@@ -2239,13 +2257,15 @@ class _ManagedWindowNode(QtCore.QObject):
                 graph_owned=graph_owned,
                 source_owner_uid=self.uid,
                 primary_revision_id=(
-                    self._current_revision_id if data_role == "source" else None
+                    self._legacy_source_history_id
+                    if data_role == "source" and not graph_owned
+                    else None
                 ),
                 primary_checkpoint_required=primary_checkpoint_required,
             )
             self._revision_ids_by_role[data_role] = (token, revision_id)
             if data_role == "source":
-                self._current_revision_id = revision_id
+                self._legacy_source_history_id = None if graph_owned else revision_id
         return revision_id
 
     def provenance_for_role(
@@ -3300,11 +3320,8 @@ class _ManagedWindowNode(QtCore.QObject):
         self._advance_source_snapshot_token(defer_refresh=True)
         if (
             not self._suspend_snapshot_token_updates
-            and self._current_revision_id is not None
+            and self._legacy_source_history_id is not None
             and self.uid not in self.manager._operations.graph
-            and not self.manager._provenance_revisions.is_graph_owned(
-                self._current_revision_id
-            )
         ):
             # A managed entry publishes the next input on the displayed-data
             # signal, even if another window retains the previous input.

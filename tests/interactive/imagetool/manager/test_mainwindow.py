@@ -12544,9 +12544,56 @@ def test_manager_repeated_graph_refresh_releases_superseded_payloads(
             assert len(store.revision_ids) == 5
             previous = ops.graph.current_revision(result)
         xr.testing.assert_identical(store.resolve_data(claimed), original)
-        manager.remove_imagetool(node.index)
-        assert not ops.graph.entry_ids
-        assert not ops.graph.revision_ids
+        with store.retain((claimed,)):
+            manager.remove_imagetool(node.index)
+            assert not ops.graph.entry_ids
+            assert not ops.graph.revision_ids
+            retained = store.revision_ids
+            for cycle in range(3):
+                data.slicer_area.replace_source_data(grid + cycle)
+                assert store.revision_ids <= retained
+            xr.testing.assert_identical(store.resolve_data(claimed), original)
+
+
+def test_closed_follower_releases_inputs_as_each_window_changes(manager_context):
+    scan = _batch_data("scan", offset=1.0)
+    grid = scan.isel(x=[0, 2], y=[1, 3]).rename("grid")
+    with manager_context() as manager:
+
+        def window(array):
+            return itool(array, manager=False, execute=False)
+
+        source, target = (
+            manager._node_for_target(manager.add_imagetool(window(array), show=False))
+            for array in (scan, grid)
+        )
+        ops = manager._operations
+        result = ops.submit(
+            InterpolationFromInputOperation(),
+            {"data": source.uid, "target": target.uid},
+            placement="detach",
+            make_window=window,
+            output_name="interpolated",
+        )
+        old_scan = ops.graph.current_revision(source.uid)
+        old_grid = ops.graph.current_revision(target.uid)
+        with ops.graph.retain(old_grid):
+            manager.remove_imagetool(manager._node_for_target(result).index)
+            assert not ops.graph.entry_ids
+            assert source.current_revision_id == old_scan
+            assert target.current_revision_id == old_grid
+            xr.testing.assert_identical(ops.revisions.resolve_data(old_scan), scan)
+            manager._data_replace([scan * 2, grid + 1], [source.index, target.index])
+            assert source.current_revision_id is None
+            assert target.current_revision_id is None
+            assert ops.revisions.revision_ids == {old_grid}
+            manager.remove_imagetool(target.index)
+            xr.testing.assert_identical(ops.graph.data(old_grid), grid)
+            xr.testing.assert_identical(ops.revisions.resolve_data(old_grid), grid)
+        assert not ops.revisions.revision_ids
+        current = source.revision_id_for_role("source")
+        assert ops.revisions.get(current).primary_revision_id is None
+        xr.testing.assert_identical(ops.revisions.resolve_data(current), scan * 2)
 
 
 @pytest.mark.parametrize("filtered", [False, True])

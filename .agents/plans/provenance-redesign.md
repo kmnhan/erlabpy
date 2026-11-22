@@ -15,6 +15,7 @@ track the framework changes and the checks that exercise them together.
 | 5. Unify extension requests | Source and packaged interpreters share one worker protocol. Working directory, module search order and execution settings take effect before decoding the job. Deferred work retains Dask scheduling annotations. | Run eager and deferred jobs in a real Manager. Exercise a distributed retry, a fork during a request, a daemon process and a startup failure followed by recovery. |
 | 6. Verify the integrated contract | Verify the combined workflows on both Qt bindings, supported dependencies and shipped executables. Measure the affected workloads. | The [pull request](https://github.com/kmnhan/erlabpy/pull/682) tracks the full suite and checks on the current revision. The [package build](https://github.com/kmnhan/erlabpy/actions/runs/44991882732) computes an extension result on Windows and both macOS architectures. |
 | 7. Bound streaming memory | One publisher records each new input. A consumer can keep an old result and the inputs used to make it. | Grow both grids 12 times. Count the retained arrays and bytes. Repeat with an old result held across eight target replacements and resolve its original values. |
+| 8. Release checkpoints when the last owner finishes | A row keeps its displayed input after its last follower closes. A graph reader or a workspace transaction can retain the old input through a later change. | Replace the remaining source and check that its old array is freed. Hold the old grid across row closure. Refresh twice with a workspace transaction holding the original result and its inputs. |
 
 The source and display ownership changes are in `f9ed5adb`, `8fc1bc3f` and
 `99831790`. A pinned input used only by a pending edit survives closing its
@@ -56,6 +57,12 @@ After 12 updates, the Manager retained 986,976 bytes of ordinary input and
 result data. The graph now records new values for its live entries. A legacy
 consumer of an old result keeps the source and target used to produce that
 result. Each later target replacement publishes one new checkpoint.
+Closing the last follower also exposed a 67,072-byte source checkpoint that
+outlived a subsequent source replacement. The current source binding and
+the legacy source history now have separate lifetimes. The first replacement
+releases both the old DataArray and its signal buffer. With an old
+interpolation held by a workspace reader, the same three historical
+checkpoints survive all later inputs and still reproduce the original values.
 
 ### Measurements after the integrated review
 
