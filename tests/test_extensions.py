@@ -1659,6 +1659,38 @@ def test_recorded_options_apply_to_imported_extension_helpers(
             assert "lab_keep_attrs" not in sys.modules
 
 
+def test_worker_start_timeout_retires_child_and_allows_retry(tmp_path, monkeypatch):
+    import os
+
+    import psutil
+
+    from erlab._provenance._settings import ExecutionSettings
+    from erlab.extensions import _routine, _subprocess
+
+    marker = tmp_path / "pid"
+    command = [
+        sys.executable,
+        "-S",
+        "-c",
+        "import os, pathlib, sys, time\n"
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\n"
+        "time.sleep(60)",
+        str(marker),
+    ]
+    settings = ExecutionSettings.capture()
+    owner = _routine.RoutineProcesses()
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(_subprocess, "_STARTUP_SECONDS", 1)
+            patch.setattr(_subprocess, "_worker_command", lambda: command)
+            with pytest.raises(ExtensionExecutionError, match="startup timeout"):
+                owner.run(settings, os.getpid)
+        assert not psutil.pid_exists(int(marker.read_text()))
+        assert owner.run(settings, os.getpid) != os.getpid()
+    finally:
+        owner._retire()
+
+
 def test_recorded_worker_expires_after_the_last_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

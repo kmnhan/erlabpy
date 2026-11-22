@@ -29,6 +29,7 @@ if typing.TYPE_CHECKING:
 
 _T = typing.TypeVar("_T")
 _IDLE_SECONDS = 5.0
+_STARTUP_SECONDS = 90.0
 _WORKER_ARG = "--erlab-extension-worker"
 _AUTH_ENV = "ERLAB_EXTENSION_WORKER_AUTH"
 
@@ -53,16 +54,18 @@ def _worker_command() -> list[str]:
     return [sys.executable, "-P", "-m", "erlab.extensions._subprocess", _WORKER_ARG]
 
 
-def _authenticate(channel: socket.socket, key: bytes, *, parent: bool) -> None:
+def _authenticate(
+    channel: socket.socket, key: bytes, *, parent: bool, timeout: float = 5.0
+) -> None:
     # Use multiprocessing's mutual authentication before reading any pickle.
     # A local connection that never answers must not block the worker's startup.
     def abort_handshake() -> None:
         with contextlib.suppress(OSError):
             channel.shutdown(socket.SHUT_RDWR)
 
-    timeout = threading.Timer(5, abort_handshake)
-    timeout.daemon = True
-    timeout.start()
+    timer = threading.Timer(timeout, abort_handshake)
+    timer.daemon = True
+    timer.start()
     try:
         with Connection(channel.dup().detach()) as auth:
             if parent:
@@ -72,7 +75,7 @@ def _authenticate(channel: socket.socket, key: bytes, *, parent: bool) -> None:
                 answer_challenge(auth, key)
                 deliver_challenge(auth, key)
     finally:
-        timeout.cancel()
+        timer.cancel()
     channel.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
 
@@ -132,22 +135,28 @@ class SubprocessWorker:
             os.path.abspath(path) for path in self._context.search_path
         )
         with socket.create_server(("127.0.0.1", 0)) as listener:
-            listener.settimeout(0.2)
             process = subprocess.Popen(
                 [*_worker_command(), str(listener.getsockname()[1])],
                 env={**os.environ, "PYTHONPATH": paths, _AUTH_ENV: key.hex()},
                 stdin=subprocess.DEVNULL,
             )
             self._process = process
+            deadline = time.monotonic() + _STARTUP_SECONDS
             try:
                 while process.poll() is None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    listener.settimeout(min(0.2, remaining))
                     try:
                         channel, _ = listener.accept()
                     except TimeoutError:
                         continue
                     with channel:
                         try:
-                            _authenticate(channel, key, parent=True)
+                            _authenticate(
+                                channel, key, parent=True, timeout=min(5, remaining)
+                            )
                         except (multiprocessing.AuthenticationError, EOFError, OSError):
                             continue
                         self._requests = channel.makefile("wb")
@@ -158,7 +167,15 @@ class SubprocessWorker:
                 process.kill()
                 self._close()
                 raise
+            timed_out = process.poll() is None
+            if timed_out:
+                process.kill()
             self._close()
+            if timed_out:
+                raise WorkerStopped(
+                    "The extension interpreter did not connect before the startup "
+                    "timeout. Check its startup logs and run the routine again."
+                )
             raise WorkerStopped
 
     def _close(self) -> None:
