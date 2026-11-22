@@ -1800,9 +1800,8 @@ class _DetailsPanelController:
             return
         native = self._manager._operations.graph
         if native.has_recipe(node.uid):
-            spec = node.provenance_spec
             key = native.current_revision(node.uid)
-            output_name = (spec.active_name if spec is not None else None) or "derived"
+            output_name = self._manager._operations.output_name(node.uid)
             with native.retain(key):
                 names = {}
                 reserved = {output_name, "era", "xr", "np"}

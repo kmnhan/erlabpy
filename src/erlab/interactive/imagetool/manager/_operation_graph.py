@@ -160,6 +160,13 @@ class _ManagedOperations:
         )
         return record.provenance_spec if record is not None else None
 
+    def output_name(self, uid: str) -> str:
+        """Get the recorded producer name, including when a display filter is active."""
+        record = self.manager._provenance_revisions.get(self.graph.source_revision(uid))
+        if record is not None and record.provenance_spec is not None:
+            return record.provenance_spec.active_name or "derived"
+        return "derived"
+
     def installing(self, uid: str) -> bool:
         return uid in self._installing
 
@@ -174,8 +181,7 @@ class _ManagedOperations:
         if (
             displayed_data is not None
             and node.imagetool is not None
-            and node._revision_ids_by_role.get("source")
-            == (node.source_snapshot_token, source)
+            and node.current_revision_id == source
         ):
             operation = node.slicer_area._accepted_filter_provenance_operation
             if operation is not None or self.graph.current_revision(uid) != source:
@@ -388,13 +394,11 @@ class _ManagedOperations:
             uid = update.entry_id
             destination = self._placements.get(uid)
             node = self.manager._tool_graph.nodes.get(uid)
-            name = destination.output_name if destination is not None else "derived"
-            if destination is None and node is not None:
-                prior = self.manager._provenance_revisions.get(
-                    self.graph.source_revision(uid)
-                )
-                if prior is not None and prior.provenance_spec is not None:
-                    name = prior.provenance_spec.active_name or name
+            name = (
+                destination.output_name
+                if destination is not None
+                else self.output_name(uid)
+            )
             if isinstance(update.revision.producer, FileLoad):
                 if node is None:
                     raise RuntimeError("The file window is no longer available.")
