@@ -1543,6 +1543,73 @@ def calculate(data: xr.DataArray) -> xr.DataArray:
         xr.testing.assert_identical(result.compute(), data + 1)
 
 
+def test_recorded_extension_preserves_distributed_task_annotations(tmp_path):
+    from distributed import Client, LocalCluster
+
+    script = tmp_path / "retry.py"
+    script.write_text(
+        """from pathlib import Path
+import dask
+import dask.array as da
+import numpy as np
+import xarray as xr
+from erlab.extensions import routine
+
+def transient(log):
+    path = Path(log)
+    if not path.exists():
+        path.touch()
+        raise OSError("temporary read failure")
+    return np.array([42])
+
+@routine()
+def read(data: xr.DataArray, log: str) -> xr.DataArray:
+    with dask.annotate(retries=lambda key: int(key.startswith("transient-"))):
+        task = dask.delayed(transient)(log)
+    with dask.annotate(priority=7):
+        values = da.from_delayed(task, shape=(1,), dtype=int)
+    return xr.DataArray(values, name="counts")
+"""
+    )
+    with (
+        LocalCluster(
+            n_workers=1,
+            threads_per_worker=1,
+            processes=False,
+            dashboard_address=":0",
+            scheduler_kwargs={"dashboard": False},
+        ) as cluster,
+        Client(cluster) as client,
+    ):
+        for label, options in (("direct", None), ("recorded", {})):
+            marker = tmp_path / label
+            result = run_routine(
+                xr.DataArray(0),
+                script=script,
+                routine_id="read",
+                parameters={"log": str(marker)},
+                execution_options=options,
+            )
+            graph = result.data.dask
+            culled = graph.cull(result.data.__dask_keys__())
+            assert not marker.exists()
+            for candidate in (graph, culled):
+                assert sorted(
+                    sorted(layer.annotations)
+                    for layer in candidate.layers.values()
+                    if layer.annotations
+                ) == [["priority"], ["retries"]]
+                retried = next(
+                    layer
+                    for layer in candidate.layers.values()
+                    if "retries" in layer.annotations
+                )
+                assert [retried.annotations["retries"](key) for key in retried] == [1]
+            actual = client.compute(result, optimize_graph=False).result(timeout=30)
+            xr.testing.assert_identical(actual, xr.DataArray([42], name="counts"))
+            assert marker.exists()
+
+
 def test_recorded_options_apply_to_imported_extension_helpers(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
