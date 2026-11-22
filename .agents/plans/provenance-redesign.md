@@ -52,6 +52,15 @@ filter and the stale state until Refresh. Console assignment to the displayed
 data must retain its exact filtered input. Two windows can also share one
 revision. Closing one must preserve the other's display and filter source.
 
+At `8fc1bc3f` each window holds its raw and displayed values. Windows can
+share either revision, and closing the last display releases that role's
+buffer. File adoption stages the whole lineage before publishing. A rejected
+operation leaves the revision set and all followers unchanged. At `99831790`,
+typed edits bind their actual input role and preserve pending input revisions.
+Tests exercise a second edit after closing the window that held a pinned
+input. The 117 integrated graph, filtered Manager, and workspace checks
+passed under PySide6.
+
 Step 5 remains open on the Linux coverage worker. Its startup hook examines
 the import path before the packaged worker initializer. The spawn context
 must preserve valid path entries throughout startup. Step 6 includes a full
@@ -243,7 +252,7 @@ single-dot sibling imports. The `__init__.pyi` files read by
 
 ### Implemented paths
 
-- The catalog check covers 50 operations and `source_view`. The [call
+- The catalog check covers 51 operations and `source_view`. The [call
   definition](../../src/erlab/_provenance/_calls.py) supplies live execution
   and notebook export for the ported built-ins. Transpose adds one method
   binding to the existing operation. It removes its separate `apply` and
@@ -646,11 +655,11 @@ The rebased foundation contains these two examples of independent decisions.
 | Reload from an ImageTool or from the Manager | The viewer also checks availability and can choose a direct loader or its local provenance. | For a managed row, exercise both actions with a viable but conflicting local loader. Check that each action uses the graph-selected origin once and explains unavailability consistently. Exercise standalone Reload separately. [Viewer reload paths](../../src/erlab/interactive/imagetool/viewer.py) |
 | Paste Provenance Steps | The edit controller branches on tree parent and displayed source spec to choose how to apply the pasted step. | Paste the same metadata edit into stale child and top-level results. Both must use the old displayed values, copy those values, and refresh from the new binding. [Paste controller](../../src/erlab/interactive/imagetool/manager/_provenance_edit/_controller.py) |
 
-The Manager tree's Rename editor also calculates outside the operation record.
-The [window wrapper](../../src/erlab/interactive/imagetool/manager/_wrapper.py)
-renames the displayed, slicer, and accepted filter arrays, then records the new
-name. A future port must keep those arrays and the copied result in agreement
-when a filter is active. The existing editor remains in use for this milestone.
+The Manager tree's Rename editor updates the viewer arrays together. For
+a graph-managed entry, it records the rename on the raw revision and keeps
+any accepted filter on the renamed source. Copies of an earlier display use
+its original name. Refresh follows the current inputs of the renamed entry.
+[Window wrapper](../../src/erlab/interactive/imagetool/manager/_wrapper.py)
 
 The following additional routes connect user entry points to the writers and
 readers on the rebased foundation. The last column gives the observable test for
