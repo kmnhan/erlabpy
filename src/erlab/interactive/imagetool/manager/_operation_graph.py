@@ -45,7 +45,11 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
     from erlab._provenance._files import _LoadFunc
-    from erlab._provenance._model import ToolProvenanceOperation, ToolProvenanceSpec
+    from erlab._provenance._model import (
+        ScriptInputDataRole,
+        ToolProvenanceOperation,
+        ToolProvenanceSpec,
+    )
     from erlab.interactive.imagetool import ImageTool
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
@@ -260,7 +264,11 @@ class _ManagedOperations:
 
     @contextmanager
     def authored_edit(
-        self, node: _ManagedWindowNode, operation: ToolProvenanceOperation | None
+        self,
+        node: _ManagedWindowNode,
+        operation: ToolProvenanceOperation | None,
+        *,
+        input_role: ScriptInputDataRole,
     ) -> Iterator[None]:
         """Publish a recorded edit once the existing Manager command has succeeded."""
         if operation is None or (
@@ -274,9 +282,21 @@ class _ManagedOperations:
             yield
             key = node.revision_id_for_role("source", graph_owned=True)
             store = self.revisions
+            display = None
+            accepted = node.slicer_area._accepted_filter_provenance_operation
+            if accepted is not None:
+                shown = node.revision_id_for_role("displayed", graph_owned=True)
+                display = (shown, accepted, store._captured_data(shown))
             self.graph.adopt_application(
-                node.uid, key, store._captured_data(key), operation
+                node.uid,
+                key,
+                store._captured_data(key),
+                operation,
+                input_role=input_role,
+                display=display,
             )
+            if display is not None:
+                self._retain_host_revision(display[0], node.uid)
             node.bind_displayed_revision(self.graph.current_revision(node.uid))
             self._retain_host_revision(key, node.uid)
             self._tokens[node.uid] = node.snapshot_token

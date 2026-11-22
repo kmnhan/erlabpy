@@ -2354,18 +2354,61 @@ def test_shared_revision_stays_displayed_until_the_last_window_closes(graph):
         xr.testing.assert_identical(graph.data(key), raw)
 
 
+@pytest.mark.parametrize("input_role", ["source", "displayed"])
+def test_authored_edit_keeps_pins_needed_only_by_pending_recipe(graph, input_role):
+    from erlab._provenance import Pin
+
+    graph.add_source("A", xr.DataArray(2))
+    pin = graph.add_source("to_close", xr.DataArray(3))
+    graph.derive("result", Recipe.bind(Scale(2), Follow("A")))
+    graph.set_display_operation("result", Scale(10))
+    graph.set_recipe("result", Recipe.bind(Scale(5), Pin(pin)))
+    graph.remove_entry("to_close")
+    if input_role == "source":
+        edited_source = xr.DataArray(12)
+        display = ("filtered", Scale(10), xr.DataArray(120))
+    else:
+        edited_source = xr.DataArray(120)
+        display = None
+    graph.adopt_application(
+        "result",
+        "edited",
+        edited_source,
+        Scale(3),
+        input_role=input_role,
+        display=display,
+    )
+    assert graph.is_stale("result")
+    xr.testing.assert_identical(
+        graph.data(graph.current_revision("result")), xr.DataArray(120)
+    )
+    graph.adopt_application(
+        "result", "second", xr.DataArray(240), Scale(2), input_role="displayed"
+    )
+    assert graph.is_stale("result")
+    xr.testing.assert_identical(graph.data(graph.refresh("result")), xr.DataArray(900))
+    graph.remove_entry("result")
+    assert pin not in graph.revision_ids
+
+
 def test_adopted_application_retains_the_recorded_input(graph):
     from erlab._provenance._operations import RenameOperation
 
     data = xr.DataArray([2, 3], dims="x", name="old")
     source = graph.add_source("source", data)
     renamed = data.rename("new")
-    graph.adopt_application("source", "renamed", renamed, RenameOperation(name="new"))
+    graph.adopt_application(
+        "source", "renamed", renamed, RenameOperation(name="new"), input_role="source"
+    )
     with graph.retain("renamed"):
         assert graph.revision("renamed").producer.inputs == (("data", source),)
         with pytest.raises(TypeError, match="DataArray"):
             graph.adopt_application(
-                "source", "invalid", [], RenameOperation(name="bad")
+                "source",
+                "invalid",
+                [],
+                RenameOperation(name="bad"),
+                input_role="source",
             )
         assert graph.current_revision("source") == "renamed"
         graph.adopt_checkpoint("source", "later", data + 100)

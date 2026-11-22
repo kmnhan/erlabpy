@@ -3812,3 +3812,96 @@ def test_filtered_interpolation_refresh_clear_and_copy(
         assert not manager.next_inputs_box.isHidden()
         xr.testing.assert_identical(area.displayed_data, current)
         assert graph.current_revision(child.uid) == graph.source_revision(child.uid)
+
+
+@pytest.mark.parametrize("edit", ["rename", "assign"])
+def test_authored_edit_of_filtered_stale_interpolation(
+    qtbot, interpolation_tools, monkeypatch, edit
+):
+    from erlab._provenance._operations import NormalizeOperation
+    from erlab.interactive.imagetool.manager._console import ToolsNamespace
+
+    manager, source, target = interpolation_tools
+    raw = source.slicer_area.displayed_data
+    grid = target.slicer_area.displayed_data
+    _managed_interpolation_dialog(qtbot, source, target).accept()
+    child = manager._child_node(source._childtool_indices[-1])
+    area = child.slicer_area
+    graph = manager._operations.graph
+    area.apply_filter_operation(NormalizeOperation(dims=("x",), mode="min"))
+    graph.set_auto(child.uid, enabled=True)
+    manager._set_metadata_node(child)
+    console = ToolsNamespace(manager)
+    namespace = {}
+    copied = []
+
+    def checkpoint(key, _reserved):
+        name = f"input_{len(namespace)}"
+        namespace[name] = console.checkpoint(key)
+        return name
+
+    monkeypatch.setattr(manager._details_panel, "_checkpoint_name", checkpoint)
+    monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)
+
+    def check_display(expected):
+        xr.testing.assert_identical(area.displayed_data, expected)
+        manager._set_metadata_node(child)
+        manager._copy_full_derivation_code()
+        exec(copied.pop(), namespace)  # noqa: S102
+        xr.testing.assert_identical(
+            namespace[manager._operations.output_name(child.uid)], expected
+        )
+
+    def expected_source(data):
+        original = data.interp_like(grid)
+        if edit == "rename":
+            return original.rename("calibrated")
+        edited = original - original.min("x")
+        edited[0, 0] = 1234.0
+        return edited
+
+    previous_source = graph.source_revision(child.uid)
+    previous_display = graph.current_revision(child.uid)
+    changed = (3 * raw).rename(raw.name)
+    with graph.retain(previous_display):
+        source.slicer_area.replace_source_data(changed)
+        assert graph.is_stale(child.uid)
+        if edit == "rename":
+            model = manager.tree_view.model()
+            assert model.setData(model._row_index(child.uid), "calibrated")
+        else:
+            console[0].children[0][0, 0] = 1234.0
+        assert graph.is_stale(child.uid)
+        assert graph.entry(child.uid).auto
+        current = graph.source_revision(child.uid)
+        assert graph.revision(current).producer.inputs == (
+            ("data", previous_source if edit == "rename" else previous_display),
+        )
+        expected = expected_source(raw)
+        if edit == "rename":
+            assert area.has_active_filter
+            assert graph.revision(
+                graph.current_revision(child.uid)
+            ).producer.inputs == (("data", current),)
+            expected = expected - expected.min("x")
+        else:
+            assert not area.has_active_filter
+            assert graph.current_revision(child.uid) == current
+        check_display(expected)
+        manager.refresh_revision_button.click()
+        assert not graph.is_stale(child.uid)
+        refreshed = expected_source(changed)
+        if edit == "rename":
+            check_display(refreshed - refreshed.min("x"))
+            area.apply_filter_operation(None)
+            assert graph.current_revision(child.uid) == graph.source_revision(child.uid)
+        check_display(refreshed)
+        # Auto stays enabled after both edits and after clearing a display filter.
+        latest = (5 * raw).rename(raw.name)
+        source.slicer_area.replace_source_data(latest)
+        qtbot.waitUntil(lambda: not graph.is_stale(child.uid))
+        check_display(expected_source(latest))
+        historical = raw.interp_like(grid)
+        xr.testing.assert_identical(
+            graph.data(previous_display), historical - historical.min("x")
+        )

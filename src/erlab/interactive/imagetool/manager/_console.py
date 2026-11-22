@@ -1426,7 +1426,11 @@ class ToolNamespace(_ConsoleDataHandleBase):
                 or area._data.dims == area._public_source_dims_for_current_layout()
             ):
                 operation = SetItemOperation.from_literals(key, value)
-            with manager._operations.authored_edit(self._wrapper, operation):
+            with manager._operations.authored_edit(
+                self._wrapper,
+                operation,
+                input_role="source" if prepared_data is None else "displayed",
+            ):
                 if prepared_data is None:
                     self._set_data_item(
                         key_operand.value,

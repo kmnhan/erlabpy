@@ -1236,15 +1236,13 @@ class _ManagedWindowNode(QtCore.QObject):
             self.manager._mark_node_state_dirty(self.uid)
             return
         if self.imagetool is not None:
-            if (
-                name_changed
-                and self.uid in self.manager._operations.graph
-                and not self.slicer_area.has_active_filter
-            ):
+            if name_changed and self.uid in self.manager._operations.graph:
                 from erlab._provenance._operations import RenameOperation
 
                 operation = RenameOperation(name=_normalize_dataarray_name(name))
-                with self.manager._operations.authored_edit(self, operation):
+                with self.manager._operations.authored_edit(
+                    self, operation, input_role="source"
+                ):
                     self._rename_imagetool_data(name, record_provenance=manual)
             else:
                 self._rename_imagetool_data(name, record_provenance=manual)

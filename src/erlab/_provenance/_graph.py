@@ -40,7 +40,11 @@ from erlab._provenance._records import (
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Hashable, Iterable, Iterator, Sequence
 
-    from erlab._provenance._model import FileReplayCall, ToolProvenanceOperation
+    from erlab._provenance._model import (
+        FileReplayCall,
+        ScriptInputDataRole,
+        ToolProvenanceOperation,
+    )
 
 
 @dataclass(eq=False, slots=True, weakref_slot=True)
@@ -509,26 +513,33 @@ class ProvenanceGraph:
         revision_id: str,
         owned: xr.DataArray,
         operation: ToolProvenanceOperation,
+        *,
+        input_role: ScriptInputDataRole,
+        display: tuple[str, ToolProvenanceOperation, xr.DataArray] | None = None,
     ) -> None:
-        """Record a completed unary operation on this entry's previous revision."""
+        """Record an edit of the selected role and publish its source and display."""
         self._write_generation()
         check_id(revision_id)
         if not isinstance(owned, xr.DataArray):
             raise TypeError("An application result must be a DataArray")
-        previous = self.current_revision(entry_id)
-        if previous == revision_id:
-            return
-        parent = self._revisions[previous]
         entry = self._entries[entry_id]
-        previous_recipe = (
-            entry.recipe if entry.source_revision_id == previous else parent.recipe
+        binding = self._previous_input(entry, input_role)
+        if binding.revision_id == revision_id:
+            return
+        stored = self._record_unary(
+            self._revisions[binding.revision_id], revision_id, operation, binding
         )
-        binding = self._previous_step(previous, previous_recipe)
-        stored = self._record_unary(parent, revision_id, operation, binding)
-        self._publish_adopted(entry_id, stored, owned, auto=entry.auto)
+        self._publish_adopted(
+            entry_id,
+            stored,
+            owned,
+            display=display,
+            auto=entry.auto,
+            stale=entry_id in self._stale,
+        )
 
-    @staticmethod
     def _record_unary(
+        self,
         parent: _StoredRevision,
         revision_id: str,
         operation: ToolProvenanceOperation,
@@ -541,12 +552,23 @@ class ProvenanceGraph:
             (("data", parent.record.revision_id),),
             recipe._captured.execution,
         )
+        # Future inputs of an edited earlier step can differ from every recorded
+        # operand. A later edit can consume this revision after its entry moves.
+        parents: tuple[_StoredRevision, ...] = (parent,)
+        if isinstance(binding, EarlierStep) and binding.pending is not None:
+            parents = (
+                parent,
+                *(
+                    self._revisions[key]
+                    for key in self._recipe_revisions(binding.pending.recipe)
+                ),
+            )
         return _StoredRevision(
             DataRevision(revision_id, application, False),
             revision_id,
             recipe,
             None,
-            (parent,),
+            parents,
         )
 
     def adopt_file_view(
@@ -588,20 +610,11 @@ class ProvenanceGraph:
                 )
         else:
             sources = self._sources(stored.recipe)
-        shown = None
-        if display is not None:
-            key, operation, values = display
-            if key == source_key:
-                raise ValueError("An accepted filter needs its own revision ID")
-            shown = (
-                self._record_unary(stored, key, operation, EarlierStep(source_key)),
-                values,
-            )
         self._publish_adopted(
             entry_id,
             stored,
             source_data,
-            display=shown,
+            display=display,
             ancestors=staged,
             sources=sources,
         )
@@ -612,14 +625,20 @@ class ProvenanceGraph:
         stored: _StoredRevision,
         owned: xr.DataArray,
         *,
-        display: tuple[_StoredRevision, xr.DataArray] | None = None,
+        display: tuple[str, ToolProvenanceOperation, xr.DataArray] | None = None,
         auto: bool = False,
         ancestors: Sequence[_StoredRevision] = (),
         sources: set[str] | None = None,
+        stale: bool = False,
     ) -> None:
         source_id = stored.record.revision_id
         stored = self._revisions.get(source_id, stored)
-        shown, values = (stored, owned) if display is None else display
+        shown, values = stored, owned
+        if display is not None:
+            key, operation, values = display
+            if key == source_id:
+                raise ValueError("An accepted filter needs its own revision ID")
+            shown = self._record_unary(stored, key, operation, EarlierStep(source_id))
         revision_id = shown.record.revision_id
         current = self._entries.get(entry_id)
         recipe = stored.recipe
@@ -652,11 +671,17 @@ class ProvenanceGraph:
         self._revisions[source_id] = stored
         self._revisions[revision_id] = shown
         self._bind_entry(entry, owned, values)
-        self._stale.discard(entry_id)
+        if stale:
+            self._stale.add(entry_id)
+        else:
+            self._stale.discard(entry_id)
         self._auto_pending.pop(entry_id, None)
         self._auto_errors.pop(entry_id, None)
         self._generation += 1
-        self._queue_auto(self._invalidate({entry_id}))
+        candidates = self._invalidate({entry_id})
+        if stale and auto:
+            candidates.add(entry_id)
+        self._queue_auto(candidates)
 
     def _hold_visible(self, key: str, data: xr.DataArray) -> _VisibleRevision:
         visible = self._displayed.get(key)
@@ -695,6 +720,17 @@ class ProvenanceGraph:
         if recipe is self._revisions[revision_id].recipe:
             return EarlierStep(revision_id)
         return EarlierStep(revision_id, PendingRecipe(recipe))
+
+    def _previous_input(
+        self, entry: ImageToolEntry, role: ScriptInputDataRole
+    ) -> Pin | EarlierStep:
+        """Bind a past value while preserving what its next refresh will use."""
+        source = self._previous_step(entry.source_revision_id, entry.recipe)
+        if role == "displayed" and (view := self._display_recipe(entry)) is not None:
+            return self._previous_step(
+                entry.revision_id, view._with_inputs((("data", source),))
+            )
+        return source
 
     def _display_recipe(self, entry: ImageToolEntry) -> Recipe | None:
         if entry.revision_id == entry.source_revision_id:
@@ -795,11 +831,7 @@ class ProvenanceGraph:
         if isinstance(recipe, Recipe):
             # Reading the target consumes its displayed value. On the next refresh,
             # replay its previous producer, or pin an irreplaceable source.
-            previous = current.recipe
-            if (view := self._display_recipe(current)) is not None:
-                source = self._previous_step(current.source_revision_id, previous)
-                previous = view._with_inputs((("data", source),))
-            prior = self._previous_step(current.revision_id, previous)
+            prior = self._previous_input(current, "displayed")
             recipe = recipe._with_inputs(
                 tuple(
                     (slot, prior if binding == Follow(entry_id) else binding)
