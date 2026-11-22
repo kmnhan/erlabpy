@@ -2,87 +2,57 @@
 
 ## Current goal and acceptance
 
-The integrated review at `7de1ab29` exposed disagreements between the
-graph, its Manager projection, and worker startup. Close this goal by making
-each decision in one place. Update these steps when a reproduction changes
-the contract or when verified work closes a step.
+The integrated review at `7de1ab29` found cases where the Manager, graph
+and extension worker used different inputs for one action. The steps below
+track the framework changes and the checks that exercise them together.
 
-| Step | Contract and acceptance |
-| --- | --- |
-| 1. Own revisions and notebook names | A producer can reuse numeric category labels without changing history. The name dialog and exporter accept the same normalized Python identifiers. |
-| 2. Compose the displayed result | An entry keeps its source recipe and Auto setting. An accepted display operation records an application on the source revision. Accept, change, clear, Refresh, and follow the filtered result. Compare the display, historical data, and executed Python. |
-| 3. Record file ingress and subsequent changes | Bind the verified read to the original file result. Compose evidenced edits on that revision, and capture opaque values explicitly. Exercise a console item edit, a rename, and a filtered file. Copied Python must retain the filter and original file whenever both are known. |
-| 4. Replace a document as one transaction | The active document owns its graph and revision store. A failed Replace restores that owner, including its bindings and Auto. A successful Replace retires it and its pending work. |
-| 5. Unify extension requests | Both worker transports install the same settings and import paths before decoding each job. Keep deferred scheduler annotations and isolate worker ownership across a fork. Exercise actual execution and measure the affected worker costs. |
-| 6. Verify the integrated contract | Run the combined workflows on both Qt bindings, check relevant speed and memory, and check CI on the pushed revision. Record any limits at the affected step. |
+| Step | Contract | Verification |
+| --- | --- | --- |
+| 1. Own revisions and notebook names | A checkpoint owns its categorical labels. The name dialog and exporter use one Python identifier rule. | A producer overwrites its numeric labels. Copy Full Code is executed after the dialog rejects an invalid or reserved name. |
+| 2. Compose the displayed result | An entry holds its raw and displayed revisions. Its source recipe and Auto setting survive an accepted filter. An edit declares which role it consumes. | Accept, change and clear a filter on a stale interpolation. Rename its raw source and edit its displayed values. Run the copied Python, Refresh, Auto and Reload → Open as New. Close one of two windows that share a revision. |
+| 3. Record file ingress and edits | Keep the verified file read, selected array and subsequent typed operations in the graph. Publish the complete source and display together. | Execute copied code after a rename, transpose, filter and literal item assignment. Replace the file, Reload and check edited and untouched cells. An unsupported value uses the exact named checkpoint. Rejecting a staged edit leaves the former revision set intact. |
+| 4. Replace a document as one transaction | The document owns its graph and revision store. A failed Replace restores both and resumes its queued work. Successful Replace releases the outgoing document. | Replace a workspace while a filtered interpolation has Auto queued. Check restored revision IDs, values, bindings and the next update. Check release of windows, scientific arrays and file handles. |
+| 5. Unify extension requests | Source and packaged interpreters share one worker protocol. Working directory, module search order and execution settings take effect before decoding the job. Deferred work retains Dask scheduling annotations. | Run eager and deferred jobs in a real Manager. Exercise a distributed retry, a fork during a request, a daemon process and a startup failure followed by recovery. |
+| 6. Verify the integrated contract | Verify the combined workflows on both Qt bindings, supported dependencies and shipped executables. Measure the affected workloads. | The [pull request](https://github.com/kmnhan/erlabpy/pull/682) tracks the full suite and checks on the current revision. The [package build](https://github.com/kmnhan/erlabpy/actions/runs/44991882732) computes an extension result on Windows and both macOS architectures. |
 
-At `e566fb9a` the checkpoint owns category labels and the name dialog uses
-the exporter’s validation. At `f9ed5adb` an entry retains the raw source
-revision produced by its recipe and a separate displayed revision when it
-has a filter. The planner evaluates both through ordinary applications.
-Manual Refresh, historical edits, replacement of a filtered entry, reads by
-followers, Copy Full Code, and clearing the filter have regression tests.
-The name of a notebook result comes from the recorded source producer.
-At `279b6b65` workspace Replace stages one new owner for the graph and
-checkpoint store. Rollback restores the prior owner and its pending Auto work.
+The source and display ownership changes are in `f9ed5adb`, `8fc1bc3f` and
+`99831790`. A pinned input used only by a pending edit survives closing its
+window and making another edit. The file lineage and document transaction
+changes are in `d7e14610` and `279b6b65`. The name dialog and checkpoint fix
+is in `e566fb9a`. On PySide6, 1,127 Manager provenance, main window, console
+and workspace checks passed. The file, filter and literal assignment tests
+also passed on xarray 2024.10 and Dask 2024.4.1.
 
-Two integration checks added requirements to the remaining steps. Literal
-console item edits on a file must retain self-contained copied Python when
-the file still exists. Packaged extension startup must preserve a notebook
-import path that includes the current directory. Both checks use actual
-calculation results. A failed workspace Replace also restores a filtered
-child while Auto is queued. After rollback, Auto updates both revisions and
-clearing the filter exposes the new source. Reload → Open as New now uses
-the original producer name and retains its filter on the new entry.
+The worker in `4bafbc5e` enters the packaged Manager before constructing a
+window. It shares the same startup, run and shutdown paths with the source
+interpreter. A failed startup releases the process and permits a new request
+in `d2c31655`. The extension module passed all 88 tests with subprocess
+coverage. The full macOS ARM Manager ran an eager job and a deferred job.
+A coverage run also identified a test that imported pytest’s copy of the test
+module in a spawned daemon. The daemon now receives the executable command
+as data and imports the installed library independently.
 
-The two extension transports now use the same request context before
-decoding a job. The Dask graph keeps its scheduler annotations, including
-per-task retries. The frozen worker restores a current-directory search path
-at process startup. The minimum supported Dask and distributed versions ran
-the retry test. Warm Manager submissions had the same 1.716 ms median across
-four alternating pairs of 150 submissions. The 90th percentile was 2.034 ms
-before and 2.252 ms after the change. Peak RSS was 518.23 and 518.25 MiB.
+### Measurements after the integrated review
 
-At `d7e14610`, file ingress retains the verified file identity. Literal item
-edits, renames, transposes, and filters compose on the captured revision.
-Executable exports also reproduce edits after replacing the file and reloading.
-Opaque operands use a named checkpoint. Step 2 now includes edits on the raw
-and displayed roles of a filtered entry. A source rename must preserve the
-filter and the stale state until Refresh. Console assignment to the displayed
-data must retain its exact filtered input. Two windows can also share one
-revision. Closing one must preserve the other's display and filter source.
-
-At `8fc1bc3f` each window holds its raw and displayed values. Windows can
-share either revision, and closing the last display releases that role's
-buffer. File adoption stages the whole lineage before publishing. A rejected
-operation leaves the revision set and all followers unchanged. At `99831790`,
-typed edits bind their actual input role and preserve pending input revisions.
-Tests exercise a second edit after closing the window that held a pinned
-input. The 117 integrated graph, filtered Manager, and workspace checks
-passed under PySide6. Another 29 file, filter and literal assignment cases
-passed on xarray 2024.10 and Dask 2024.4.1. All 28 buffer-sharing and wrapper
-tests passed under PyQt6. Three alternating comparisons on the one-edge graph
-benchmark gave median Refresh times of 0.185 and 0.184 ms before and after
-the rewrite with 1,000 entries. With 10,000 entries they were 0.185 and 0.186 ms.
-
-At `4bafbc5e` both launch modes use the same interpreter protocol and
-lifecycle. The packaged Manager enters worker mode before constructing a
-window. Both launch modes set the working directory and import path before
-deserializing the next request. Linux coverage had exposed an invalid path
-inserted by multiprocessing before the previous initializer could run. The
-new worker starts directly. At `d2c31655` a launch that cannot connect
-releases its process, and the same owner can start a healthy replacement.
-All 88 extension tests passed with subprocess coverage locally. The combined
-extension and Manager modules passed 318 tests under PySide6 before the
-startup timeout regression was added. Step 6 now requires executing a job
-inside each release executable and checking the hosted Linux coverage result.
-
-The 128-row replacement benchmark retained the original graph on failure and
-released every outgoing scientific buffer on success. Across six additional
-accepted Replace pairs the median change in peak physical footprint was
-−0.10 MiB. The median change measured from the start of Replace through
-Manager shutdown was −0.15 MiB. Individual peak differences ranged from
-−0.88 to +3.02 MiB on this shared macOS host.
+- A fixed one-edge Refresh took a median of 0.185 ms before and 0.184 ms after
+  the rewrite with 1,000 entries. With 10,000 entries it took 0.185 and
+  0.186 ms. These are the medians of three alternating pairs.
+- Both grids grew in 12 batches. In Auto, each raw and filtered publication
+  matched an independent xarray calculation. Manual mode kept its first
+  display until Refresh. The final filtered 44 × 16 float64 array required
+  one extra 5,632-byte display buffer.
+- A failed Replace with 128 hidden rows restored all three live revisions.
+  Successful Replace released every outgoing scientific buffer. Across six
+  additional accepted pairs, median peak physical footprint changed by
+  −0.10 MiB. The median change through Manager shutdown was −0.15 MiB.
+  Individual peak differences ranged from −0.88 to +3.02 MiB on this host.
+- Against `7de1ab29`, 300 alternating warm Manager worker submissions gave
+  median times of 2.538 and 2.637 ms and 90th percentiles of 3.203 and
+  3.347 ms. A 32 MiB eager input took 15.36 and 14.04 ms. For a 64 MiB
+  deferred output, constructing the graph took 11.05 and 12.78 ms. Computing
+  an 8 MiB selection read one block and took 30.58 and 27.32 ms. Cold startup
+  differences ranged from −320 to +118 ms under concurrent load. These runs
+  do not establish a change in cold startup time.
 
 ## First milestone
 

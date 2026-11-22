@@ -1788,16 +1788,23 @@ def test_unserializable_input_retires_worker_and_next_request_succeeds(
     xr.testing.assert_identical(recovered, data)
 
 
-def test_packaged_daemon_runs_a_recorded_routine(recorded_echo_script):
+def test_packaged_daemon_runs_a_recorded_routine(recorded_echo_script, monkeypatch):
     import multiprocessing
     import os
 
     from joblib.externals.loky import wrap_non_picklable_objects
 
+    from erlab.extensions import _subprocess
+
+    _use_packaged_worker_entry(monkeypatch)
+    command = _subprocess._worker_command()
+
     @wrap_non_picklable_objects
-    def run_in_packaged_daemon(path):
+    def run_in_packaged_daemon(path, worker_command):
+        # A spawned daemon imports the installed library independently of pytest.
+        assert multiprocessing.current_process().daemon
         with pytest.MonkeyPatch.context() as context:
-            _use_packaged_worker_entry(context)
+            context.setattr(_subprocess, "_worker_command", lambda: worker_command)
             result = run_routine(
                 xr.DataArray([2]), script=path, routine_id="echo", execution_options={}
             )
@@ -1805,7 +1812,7 @@ def test_packaged_daemon_runs_a_recorded_routine(recorded_echo_script):
 
     with multiprocessing.get_context("spawn").Pool(1) as pool:
         caller, worker, value = pool.apply_async(
-            run_in_packaged_daemon, (recorded_echo_script,)
+            run_in_packaged_daemon, (recorded_echo_script, command)
         ).get(timeout=30)
     assert worker != caller
     assert value == 2
