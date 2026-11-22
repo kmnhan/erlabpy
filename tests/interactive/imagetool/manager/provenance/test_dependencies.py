@@ -23,6 +23,7 @@ from erlab._provenance._model import (
     DerivationEntry,
     FileDataSelection,
     ScriptInput,
+    ScriptInputDataRole,
     ToolProvenanceSpec,
     _ProvenanceDisplayRow,
     full_data,
@@ -361,13 +362,15 @@ class _ManagedUnaryTool(erlab.interactive.utils.ToolWindow[_ManagedInputTestStat
     StateModel = _ManagedInputTestState
     tool_name = "managed-unary-test"
 
-    def __init__(self, data: xr.DataArray) -> None:
+    def __init__(
+        self, data: xr.DataArray, *, data_role: ScriptInputDataRole = "source"
+    ) -> None:
         super().__init__()
         self._data = data
         self._status = _ManagedInputTestState()
         self.update_calls = 0
         self.set_script_inputs(
-            (ScriptInput(name="data", data_role="source"),),
+            (ScriptInput(name="data", data_role=data_role),),
             primary_input="data",
         )
 
@@ -6771,16 +6774,6 @@ def test_pending_displayed_inputs_own_checkpoints_through_collection_and_save(
     )
 
     class _DeferredDisplayedInputTool(_ManagedUnaryTool):
-        def __init__(self, data: xr.DataArray) -> None:
-            erlab.interactive.utils.ToolWindow.__init__(self)
-            self._data = data
-            self._status = _ManagedInputTestState()
-            self.update_calls = 0
-            self.set_script_inputs(
-                (ScriptInput(name="data", data_role="displayed"),),
-                primary_input="data",
-            )
-
         def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
             self.pending_data = inputs["data"]
             self._defer_source_refresh()
@@ -6795,7 +6788,7 @@ def test_pending_displayed_inputs_own_checkpoints_through_collection_and_save(
             for _ in range(2)
         ]
         source = manager._node_for_target(source_index)
-        tool = _DeferredDisplayedInputTool(data)
+        tool = _DeferredDisplayedInputTool(data, data_role="displayed")
         target_uid = manager.add_childtool(
             tool, script_inputs={"data": source_index}, show=False
         )
