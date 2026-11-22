@@ -55,6 +55,7 @@ from erlab.interactive.imagetool.manager._metadata_editor import (
     MetadataCellEdit,
     MetadataField,
 )
+from erlab.interactive.imagetool.manager._operation_graph import _ManagedOperations
 from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 from erlab.interactive.imagetool.manager._workspace import (
     _controller as workspace_controller,
@@ -1396,6 +1397,10 @@ def test_committed_generation_merges_embedded_source_into_live_state(
         _provenance_revisions=revisions,
         _tool_graph=types.SimpleNamespace(nodes={}),
     )
+    manager._operations = _ManagedOperations(manager, revisions)
+    displayed = xr.DataArray([3.0])
+    graph_revision_id = revisions.add(displayed, graph_owned=True)
+    manager._operations.graph.adopt_checkpoint("scan", graph_revision_id, displayed)
     controller = workspace_controller._WorkspaceController.__new__(
         workspace_controller._WorkspaceController
     )
@@ -1445,6 +1450,7 @@ def test_committed_generation_merges_embedded_source_into_live_state(
     assert manager._workspace_state.saved_manifest == snapshot.generation_plan.manifest
     assert unused_revision_id not in revisions
     assert retained_revision_id in revisions
+    xr.testing.assert_identical(revisions.resolve_data(graph_revision_id), displayed)
     assert (
         manager._workspace_state.schema_version
         == _persistence_constants.WORKSPACE_SCHEMA_VERSION

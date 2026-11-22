@@ -49,7 +49,6 @@ from erlab.interactive.imagetool.manager._modelview import (
     _RowBadge,
 )
 from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
-from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 from tests.interactive.imagetool.manager.helpers import (
@@ -3742,6 +3741,7 @@ def test_remove_imagetool_removes_childtools() -> None:
     cleared_dependency_uids: list[str] = []
     closed_graph_uids: list[str] = []
     canceled_node_change_uids: list[str] = []
+    nodes_at_checkpoint_cleanup: list[set[str]] = []
 
     class _DummyWrapper:
         def __init__(self):
@@ -3764,9 +3764,11 @@ def test_remove_imagetool_removes_childtools() -> None:
     tool_graph.nodes[wrapper.uid] = wrapper
     manager = types.SimpleNamespace(
         _tool_graph=tool_graph,
-        _provenance_revisions=_ProvenanceRevisionStore(),
         _workspace_controller=types.SimpleNamespace(
-            local_provenance_change=contextlib.nullcontext
+            local_provenance_change=contextlib.nullcontext,
+            _discard_unreachable_provenance_revisions=lambda: (
+                nodes_at_checkpoint_cleanup.append(set(tool_graph.nodes))
+            ),
         ),
         _bulk_remove_depth=0,
         _cancel_managed_node_change=canceled_node_change_uids.append,
@@ -3799,6 +3801,7 @@ def test_remove_imagetool_removes_childtools() -> None:
     assert closed_graph_uids == [wrapper.uid]
     assert cleared_dependency_uids == [wrapper.uid]
     assert canceled_node_change_uids == [wrapper.uid]
+    assert nodes_at_checkpoint_cleanup == [set()]
     assert wrapper.disposed
     assert wrapper.deleted
     assert manager._tool_graph.root_wrappers == {}
