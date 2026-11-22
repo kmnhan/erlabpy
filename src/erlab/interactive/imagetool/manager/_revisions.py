@@ -179,6 +179,7 @@ class _ProvenanceRevisionStore:
         self._data: dict[str, xr.DataArray] = {}
         self._graph_owned: set[str] = set()
         self._retained_roots: dict[object, set[str]] = {}
+        self._deferred_graph_releases: set[str] = set()
 
     def __contains__(self, revision_id: object) -> bool:
         return revision_id in self._records
@@ -257,12 +258,17 @@ class _ProvenanceRevisionStore:
                     pending.append(record.primary_revision_id)
 
     def release_graph_result(self, revision_id: str) -> None:
-        if revision_id in self._graph_owned:
+        if revision_id not in self._graph_owned:
+            return
+        if self._retained_roots and revision_id in self.checkpoint_revision_ids(()):
+            self._deferred_graph_releases.add(revision_id)
+        else:
             self.discard_unpublished(revision_id)
 
     def discard_unpublished(self, revision_id: str) -> None:
         """Release a candidate after its installation was cancelled or failed."""
         self._graph_owned.discard(revision_id)
+        self._deferred_graph_releases.discard(revision_id)
         self._records.pop(revision_id, None)
         self._data.pop(revision_id, None)
 
@@ -332,6 +338,11 @@ class _ProvenanceRevisionStore:
             yield roots
         finally:
             del self._retained_roots[token]
+            if self._deferred_graph_releases:
+                self._deferred_graph_releases.intersection_update(self._graph_owned)
+                still_retained = self.checkpoint_revision_ids(())
+                for key in self._deferred_graph_releases - still_retained:
+                    self.discard_unpublished(key)
 
     def get(self, revision_id: str) -> _ProvenanceRevision | None:
         record = self._records.get(revision_id)
