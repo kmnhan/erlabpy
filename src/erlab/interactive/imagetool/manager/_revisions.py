@@ -235,6 +235,9 @@ class _ProvenanceRevisionStore:
             self.claim_graph_inputs(parsed_spec, primary_revision_id)
         return revision_id
 
+    def is_graph_owned(self, revision_id: str) -> bool:
+        return revision_id in self._graph_owned
+
     def claim_graph_inputs(
         self, spec: ToolProvenanceSpec | None, primary: str | None = None
     ) -> None:

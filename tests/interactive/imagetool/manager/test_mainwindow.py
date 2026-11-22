@@ -11620,6 +11620,43 @@ def test_manager_adopts_filtered_eager_source_and_preserves_preview(
         assert shown_key not in graph.revision_ids
 
 
+def test_streamed_inputs_release_superseded_host_checkpoints(qtbot, manager_context):
+    raw = _batch_data("scan", offset=1.0)
+    grid = raw.isel(x=[0, 2], y=[1, 3]).rename("grid")
+    with manager_context() as manager:
+        for data in (raw, grid):
+            manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
+        source, target = (manager._node_for_target(i) for i in (0, 1))
+        dialog = imagetool_dialogs.InterpolationDialog(source.slicer_area)
+        qtbot.addWidget(dialog)
+        dialog.target_tabs.setCurrentIndex(1)
+        dialog.target_tool_selector.set_current_uid(target.uid)
+        dialog.accept()
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+        child = manager._child_node(source._childtool_indices[-1])
+        graph = manager._operations.graph
+        for frame in range(1, 5):
+            scan = (raw * frame).rename("scan")
+            target_grid = grid.assign_coords(y=grid.y - 0.25)
+            manager._data_replace([scan, target_grid], [source.index, target.index])
+            assert manager._operations.update(child.uid)
+            xr.testing.assert_identical(
+                child.slicer_area.displayed_data, scan.interp_like(target_grid)
+            )
+            current = {
+                graph.current_revision(node.uid) for node in (source, target, child)
+            }
+            assert manager._provenance_revisions.revision_ids == current
+
+        # A source explicitly requested by another consumer keeps its prior values.
+        claimed = source.revision_id_for_role("source")
+        manager._data_replace([raw], [source.index])
+        assert manager._operations.update(child.uid)
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(claimed), scan
+        )
+
+
 def test_unrecorded_filter_preview_keeps_the_committed_input(manager_context):
     raw = _batch_data("counts", offset=1.0)
     with manager_context() as manager:
