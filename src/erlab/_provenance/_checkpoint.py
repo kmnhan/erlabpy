@@ -122,7 +122,8 @@ def _owned_index(index: pd.Index) -> pd.Index:
     if isinstance(index, pd.CategoricalIndex):
         return pd.CategoricalIndex(_owned_categories(index.array), name=index.name)
     if index.dtype != np.dtype(object):
-        return index
+        # The categorical codes and their labels have independent storage.
+        return index.copy(deep=True)
     values = copy.deepcopy(index.to_numpy())
     if type(index) is pd.Index:
         return pd.Index(values, dtype=index.dtype, name=index.name, tupleize_cols=False)

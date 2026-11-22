@@ -1547,6 +1547,21 @@ def test_xarray_loader_does_not_pin_only_the_container_of_multifile_data(
     np.testing.assert_equal(graph.data(revision).values, values)
 
 
+def test_checkpoint_owns_numeric_categorical_labels(graph):
+    import pandas as pd
+
+    labels = np.array([10, 20])
+    categories = pd.Index(labels, copy=False)
+    detector = pd.CategoricalIndex(
+        pd.Categorical.from_codes([0, 1, 0, 1], categories=categories)
+    )
+    data = xr.DataArray(np.arange(4), dims="detector", coords={"detector": detector})
+    revision = graph.add_source("sample", data)
+    labels += 100
+    np.testing.assert_array_equal(data.detector, [110, 120, 110, 120])
+    np.testing.assert_array_equal(graph.data(revision).detector, [10, 20, 10, 20])
+
+
 @pytest.mark.parametrize(
     "layout", ["index", "categorical", "multi_index", "values", "dropped_index"]
 )
