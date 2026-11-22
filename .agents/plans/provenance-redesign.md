@@ -43,6 +43,20 @@ the retry test. Warm Manager submissions had the same 1.716 ms median across
 four alternating pairs of 150 submissions. The 90th percentile was 2.034 ms
 before and 2.252 ms after the change. Peak RSS was 518.23 and 518.25 MiB.
 
+At `d7e14610`, file ingress retains the verified file identity. Literal item
+edits, renames, transposes, and filters compose on the captured revision.
+Executable exports also reproduce edits after replacing the file and reloading.
+Opaque operands use a named checkpoint. Step 2 now includes edits on the raw
+and displayed roles of a filtered entry. A source rename must preserve the
+filter and the stale state until Refresh. Console assignment to the displayed
+data must retain its exact filtered input. Two windows can also share one
+revision. Closing one must preserve the other's display and filter source.
+
+Step 5 remains open on the Linux coverage worker. Its startup hook examines
+the import path before the packaged worker initializer. The spawn context
+must preserve valid path entries throughout startup. Step 6 includes a full
+macOS Manager application build and a paired benchmark on a growing grid.
+
 ## First milestone
 
 Define and test the Qt-free contract for a provenance operation across the whole

@@ -2314,19 +2314,44 @@ def test_adopting_file_view_publishes_only_the_final_value(file_graph, monkeypat
     monkeypatch.setattr(graph, "_install", install)
     named = raw.rename("named")
     filtered = 3 * named
-    graph.adopt_file_view(
-        "source",
-        load,
-        FileVersion.capture(path),
-        raw=raw,
-        steps=[RenameOperation(name="named")],
-        source=("named", named),
-        display=("filtered", Scale(factor=3), filtered),
-    )
+
+    def adopt(display_id):
+        graph.adopt_file_view(
+            "source",
+            load,
+            FileVersion.capture(path),
+            raw=raw,
+            steps=[RenameOperation(name="named")],
+            source=("named", named),
+            display=(display_id, Scale(factor=3), filtered),
+        )
+
+    original = graph.revision_ids
+    with pytest.raises(ValueError, match="own revision ID") as rejected:
+        adopt("named")
+    assert rejected.value.__traceback__ is not None
+    assert graph.revision_ids == original
+    assert not updates
+    adopt("filtered")
     assert [row.entry_id for row in updates] == ["child"]
     assert graph.source_revision("source") == "named"
     assert graph.current_revision("source") == "filtered"
     xr.testing.assert_identical(updates[0].data, 2 * filtered)
+
+
+def test_shared_revision_stays_displayed_until_the_last_window_closes(graph):
+    raw = xr.DataArray([2.0, 3.0], dims="x")
+    key = graph.add_source("first", raw)
+    graph.adopt_checkpoint("second", key, graph.data(key))
+    with graph.retain(key):
+        graph.remove_entry("first")
+        assert not graph.is_virtual(key)
+        shown = graph.set_display_operation("second", Scale(factor=2))
+        xr.testing.assert_identical(graph.data(shown), 2 * raw)
+        assert graph.set_display_operation("second", None) == key
+        graph.remove_entry("second")
+        assert graph.is_virtual(key)
+        xr.testing.assert_identical(graph.data(key), raw)
 
 
 def test_adopted_application_retains_the_recorded_input(graph):

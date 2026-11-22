@@ -43,7 +43,7 @@ if typing.TYPE_CHECKING:
     from erlab._provenance._model import FileReplayCall, ToolProvenanceOperation
 
 
-@dataclass(eq=False)
+@dataclass(eq=False, slots=True, weakref_slot=True)
 class _StoredRevision:
     """A record staged in dependency order and sealed at publication."""
 
@@ -54,6 +54,14 @@ class _StoredRevision:
     checkpoint: xr.DataArray | None
     # Keep exact inputs and earlier steps for as long as this revision is reachable.
     parents: tuple[_StoredRevision, ...]
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True)
+class _VisibleRevision:
+    """Keep the recorded revision and its current array together while on screen."""
+
+    stored: _StoredRevision
+    data: xr.DataArray
 
 
 _Mode: typing.TypeAlias = typing.Literal["displayed", "refresh", "reload"]
@@ -295,8 +303,12 @@ class ProvenanceGraph:
         self._revisions: weakref.WeakValueDictionary[str, _StoredRevision] = (
             weakref.WeakValueDictionary()
         )
-        self._entry_roots: dict[str, tuple[_StoredRevision, ...]] = {}
-        self._displayed: dict[str, xr.DataArray] = {}
+        self._entry_roots: dict[
+            str, tuple[_VisibleRevision | _StoredRevision, ...]
+        ] = {}
+        self._displayed: weakref.WeakValueDictionary[str, _VisibleRevision] = (
+            weakref.WeakValueDictionary()
+        )
         self._followers: dict[str, set[str]] = {}
         self._stale: set[str] = set()
         self._generation = 0
@@ -448,9 +460,7 @@ class ProvenanceGraph:
             DataRevision(revision_id, None, True, backing), revision_id, None, owned, ()
         )
         self._revisions[revision_id] = stored
-        self._entry_roots[entry_id] = (stored,)
-        self._displayed[revision_id] = owned
-        self._entries[entry_id] = ImageToolEntry(
+        entry = ImageToolEntry(
             entry_id,
             revision_id,
             None,
@@ -459,6 +469,7 @@ class ProvenanceGraph:
             len(self._entries),
             revision_id,
         )
+        self._bind_entry(entry, owned, owned)
         self._generation += 1
         return revision_id
 
@@ -554,9 +565,13 @@ class ProvenanceGraph:
         check_id(entry_id)
         source_key, source_data = source
         check_id(source_key)
-        raw_key = uuid.uuid4().hex if steps else source_key
-        stored = self._revisions.get(raw_key)
+        # If the source has already been captured, its record is authoritative.
+        # Otherwise stage the whole chain before exposing any of its revision IDs.
+        staged: list[_StoredRevision] = []
+        stored = self._revisions.get(source_key)
         if stored is None:
+            sources = self._sources(file_load)
+            raw_key = uuid.uuid4().hex if steps else source_key
             owned = checkpoint_data(raw, backing=backing) if steps else source_data
             stored = _StoredRevision(
                 DataRevision(raw_key, file_load, True, backing),
@@ -565,13 +580,14 @@ class ProvenanceGraph:
                 owned,
                 (),
             )
-        self._revisions[raw_key] = stored
-        for index, operation in enumerate(steps):
-            key = source_key if index + 1 == len(steps) else uuid.uuid4().hex
-            stored = self._revisions.get(key) or self._record_unary(
-                stored, key, operation, EarlierStep(stored.record.revision_id)
-            )
-            self._revisions[key] = stored
+            for index, operation in enumerate(steps):
+                staged.append(stored)
+                key = source_key if index + 1 == len(steps) else uuid.uuid4().hex
+                stored = self._record_unary(
+                    stored, key, operation, EarlierStep(stored.record.revision_id)
+                )
+        else:
+            sources = self._sources(stored.recipe)
         shown = None
         if display is not None:
             key, operation, values = display
@@ -581,7 +597,14 @@ class ProvenanceGraph:
                 self._record_unary(stored, key, operation, EarlierStep(source_key)),
                 values,
             )
-        self._publish_adopted(entry_id, stored, source_data, display=shown)
+        self._publish_adopted(
+            entry_id,
+            stored,
+            source_data,
+            display=shown,
+            ancestors=staged,
+            sources=sources,
+        )
 
     def _publish_adopted(
         self,
@@ -591,6 +614,8 @@ class ProvenanceGraph:
         *,
         display: tuple[_StoredRevision, xr.DataArray] | None = None,
         auto: bool = False,
+        ancestors: Sequence[_StoredRevision] = (),
+        sources: set[str] | None = None,
     ) -> None:
         source_id = stored.record.revision_id
         stored = self._revisions.get(source_id, stored)
@@ -598,7 +623,8 @@ class ProvenanceGraph:
         revision_id = shown.record.revision_id
         current = self._entries.get(entry_id)
         recipe = stored.recipe
-        sources = self._sources(recipe)
+        if sources is None:
+            sources = self._sources(recipe)
         if current is None:
             self._check_new_entry(entry_id, None)
             entry = ImageToolEntry(
@@ -611,7 +637,6 @@ class ProvenanceGraph:
                 source_id,
             )
         else:
-            self._drop_entry_values(current)
             entry = replace(
                 current,
                 revision_id=revision_id,
@@ -622,22 +647,45 @@ class ProvenanceGraph:
         self._index_sources(
             entry_id, None if current is None else current.recipe, sources
         )
+        for ancestor in ancestors:
+            self._revisions[ancestor.record.revision_id] = ancestor
         self._revisions[source_id] = stored
         self._revisions[revision_id] = shown
-        self._entries[entry_id] = entry
-        self._displayed[source_id] = owned
-        self._displayed[revision_id] = values
-        self._entry_roots[entry_id] = (shown,)
+        self._bind_entry(entry, owned, values)
         self._stale.discard(entry_id)
         self._auto_pending.pop(entry_id, None)
         self._auto_errors.pop(entry_id, None)
         self._generation += 1
         self._queue_auto(self._invalidate({entry_id}))
 
-    def _drop_entry_values(self, entry: ImageToolEntry) -> None:
-        self._displayed.pop(entry.revision_id, None)
-        if entry.source_revision_id != entry.revision_id:
-            self._displayed.pop(entry.source_revision_id, None)
+    def _hold_visible(self, key: str, data: xr.DataArray) -> _VisibleRevision:
+        visible = self._displayed.get(key)
+        if visible is None:
+            visible = _VisibleRevision(self._revisions[key], data)
+            self._displayed[key] = visible
+        return visible
+
+    def _bind_entry(
+        self,
+        entry: ImageToolEntry,
+        source_data: xr.DataArray,
+        displayed_data: xr.DataArray,
+    ) -> None:
+        """Hold each window's values until the last window that displays them closes."""
+        source = self._hold_visible(entry.source_revision_id, source_data)
+        displayed = (
+            source
+            if entry.source_revision_id == entry.revision_id
+            else self._hold_visible(entry.revision_id, displayed_data)
+        )
+        roots: tuple[_VisibleRevision | _StoredRevision, ...] = (source, displayed)
+        if entry.recipe is not None and entry.recipe is not source.stored.recipe:
+            # A pending edit may refer to inputs outside the displayed history.
+            roots += tuple(
+                self._revisions[key] for key in self._recipe_revisions(entry.recipe)
+            )
+        self._entries[entry.entry_id] = entry
+        self._entry_roots[entry.entry_id] = roots
 
     def _previous_step(
         self, revision_id: str, recipe: Recipe | FileLoad | None
@@ -670,7 +718,7 @@ class ProvenanceGraph:
             if entry.revision_id == base_id:
                 return base_id
             shown = base
-            values = self._displayed[base_id]
+            values = self._displayed[base_id].data
         else:
             key = revision_id or uuid.uuid4().hex
             check_id(key)
@@ -681,20 +729,14 @@ class ProvenanceGraph:
             )
             if data is None:
                 application = typing.cast("Application", shown.record.producer)
-                data = application.apply({base_id: self._displayed[base_id]})
+                data = application.apply({base_id: self._displayed[base_id].data})
             values = protected_data(data)
         if self._generation != generation and self._entries.get(entry_id) is not entry:
             raise _SupersededEvaluation("The filter source changed during evaluation")
-        if entry.revision_id != base_id:
-            self._displayed.pop(entry.revision_id, None)
         key = shown.record.revision_id
         self._revisions[key] = shown
-        self._displayed[key] = values
-        self._entries[entry_id] = replace(entry, revision_id=key)
-        self._entry_roots[entry_id] = (
-            (shown, *(self._revisions[k] for k in self._recipe_revisions(entry.recipe)))
-            if entry.recipe is not None
-            else (shown,)
+        self._bind_entry(
+            replace(entry, revision_id=key), self._displayed[base_id].data, values
         )
         self._generation += 1
         self._queue_auto(self._invalidate({entry_id}))
@@ -708,7 +750,6 @@ class ProvenanceGraph:
         if self._followers.get(entry_id):
             self._closed[entry_id] = self._revisions[entry.revision_id]
         del self._entries[entry_id], self._entry_roots[entry_id]
-        self._drop_entry_values(entry)
         self._stale.discard(entry_id)
         self._auto_pending.pop(entry_id, None)
         self._auto_errors.pop(entry_id, None)
@@ -825,11 +866,11 @@ class ProvenanceGraph:
         recipe = copy.deepcopy(recipe)
         sources = self._check_recipe(entry_id, recipe)
         self._index_sources(entry_id, current.recipe, sources)
-        self._entry_roots[entry_id] = (
-            self._revisions[current.revision_id],
-            *(self._revisions[node] for node in self._recipe_revisions(recipe)),
+        self._bind_entry(
+            replace(current, recipe=recipe),
+            self._displayed[current.source_revision_id].data,
+            self._displayed[current.revision_id].data,
         )
-        self._entries[entry_id] = replace(current, recipe=recipe)
         self._auto_errors.pop(entry_id, None)
         self._stale.add(entry_id)
         candidates = self._invalidate({entry_id})
@@ -1215,7 +1256,6 @@ class ProvenanceGraph:
                 revision_id, data = value.displayed
                 source_id, source_data = value.source
                 old = self._entries.get(target)
-                stored = result.revisions[revision_id]
                 effective = result.revisions[source_id].recipe
                 if old is None:
                     entry = ImageToolEntry(
@@ -1228,7 +1268,6 @@ class ProvenanceGraph:
                         source_id,
                     )
                 else:
-                    self._drop_entry_values(old)
                     entry = replace(
                         old,
                         revision_id=revision_id,
@@ -1237,10 +1276,7 @@ class ProvenanceGraph:
                     )
                 if target == entry_id and (mode == "displayed" or forked):
                     self._index_sources(target, old.recipe if old else None, sources)
-                self._entries[target] = entry
-                self._displayed[source_id] = source_data
-                self._displayed[revision_id] = data
-                self._entry_roots[target] = (stored,)
+                self._bind_entry(entry, source_data, data)
                 self._auto_errors.pop(target, None)
 
             candidates = self._invalidate(set(result.entries))
@@ -1278,7 +1314,8 @@ class ProvenanceGraph:
             return Pin(binding.revision_id)
 
         stored = self._revisions[binding.revision_id]
-        data = self._displayed.get(binding.revision_id, stored.checkpoint)
+        visible = self._displayed.get(binding.revision_id)
+        data = visible.data if visible is not None else stored.checkpoint
         if data is not None:
             return binding.revision_id, data
         producer = stored.record.producer

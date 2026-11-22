@@ -277,6 +277,7 @@ class _ManagedOperations:
             self.graph.adopt_application(
                 node.uid, key, store._captured_data(key), operation
             )
+            node.bind_displayed_revision(self.graph.current_revision(node.uid))
             self._retain_host_revision(key, node.uid)
             self._tokens[node.uid] = node.snapshot_token
         finally:
