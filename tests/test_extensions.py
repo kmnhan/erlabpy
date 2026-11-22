@@ -1417,6 +1417,10 @@ def test_worker_installs_import_context_before_loading_operands(
     monkeypatch.syspath_prepend("")
     monkeypatch.syspath_prepend(str(selected))
     if packaged:
+        import multiprocessing.process
+
+        # Match PyInstaller's multiprocessing runtime hook.
+        monkeypatch.setattr(multiprocessing.process, "ORIGINAL_DIR", None)
         monkeypatch.setattr(
             _routine, "sys", types.SimpleNamespace(frozen=True, path=sys.path)
         )

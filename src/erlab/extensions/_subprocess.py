@@ -199,6 +199,8 @@ class FrozenWorker:
     """Serve the same requests through the packaged multiprocessing entry point."""
 
     def __init__(self, context: WorkerContext) -> None:
+        from multiprocessing.spawn import prepare
+
         from joblib.externals.loky import ProcessPoolExecutor
 
         if multiprocessing.current_process().daemon:
@@ -210,6 +212,13 @@ class FrozenWorker:
         self._executor = ProcessPoolExecutor(
             max_workers=1,
             context=multiprocessing.get_context("spawn"),
+            # PyInstaller clears multiprocessing's original directory. Spawn
+            # then turns an empty search path entry into None. Restore the path
+            # before importing ERLab or any scientific library to unpickle a job.
+            initializer=prepare,
+            initargs=(
+                {"sys_path": list(context.search_path), "dir": context.directory},
+            ),
             timeout=_IDLE_SECONDS,
         )
 
