@@ -40,7 +40,10 @@ from erlab.interactive.imagetool._provenance._graph import (
     selected_provenance_code,
     selected_steps_spec,
 )
-from erlab.interactive.imagetool._provenance._recorded_code import full_code
+from erlab.interactive.imagetool._provenance._recorded_code import (
+    _notebook_name,
+    full_code,
+)
 from erlab.interactive.imagetool.manager._source_labels import script_input_source_label
 from erlab.interactive.imagetool.manager._widgets import (
     _METADATA_DERIVATION_ACTIVATABLE_ROLE,
@@ -1758,11 +1761,16 @@ class _DetailsPanelController:
             if record is not None and record.source_owner_uid is not None
             else None
         )
-        suggested = source.name if source is not None else None
-        if (
-            not erlab.utils.misc._is_valid_identifier(suggested)
-            or suggested in reserved
-        ):
+
+        def available_name(value: str) -> str | None:
+            try:
+                normalized = _notebook_name(value)
+            except (ValueError, ReplayGraphError):
+                return None
+            return normalized if normalized not in reserved else None
+
+        suggested = available_name(source.name) if source is not None else None
+        if suggested is None:
             suggested = f"source_{key[:8]}"
         while True:
             name, accepted = QtWidgets.QInputDialog.getText(
@@ -1774,8 +1782,8 @@ class _DetailsPanelController:
             )
             if not accepted:
                 return None
-            if erlab.utils.misc._is_valid_identifier(name) and name not in reserved:
-                return name
+            if (normalized := available_name(name)) is not None:
+                return normalized
             QtWidgets.QMessageBox.warning(
                 self._manager,
                 "Variable Name",

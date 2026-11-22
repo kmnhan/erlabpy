@@ -3657,7 +3657,7 @@ def test_copy_full_code_validates_checkpoint_names_before_copy(
     warnings = []
     suggestions = []
     inputs = dict(graph.revision(graph.current_revision(child.uid)).producer.inputs)
-    reserved = iter([("np", True), ("", False)])
+    reserved = iter([("np", True), ("sum", True), ("\uff45rlab", True), ("", False)])
 
     def cancel_name(parent, title, message, *, text):
         suggestions.append(text)
@@ -3670,9 +3670,9 @@ def test_copy_full_code_validates_checkpoint_names_before_copy(
     monkeypatch.setattr(QtWidgets.QMessageBox, "warning", warn)
     monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)
     manager._metadata_copy_full_action.trigger()
-    assert len(warnings) == 1
+    assert len(warnings) == 3
     assert not copied
-    assert suggestions == [f"source_{inputs['data'][:8]}"] * 2
+    assert suggestions == [f"source_{inputs['data'][:8]}"] * 4
 
     namespace = {}
 
