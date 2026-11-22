@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import contextlib
-import io
 import multiprocessing
 import os
 import pickle
+import secrets
+import socket
 import subprocess
 import sys
 import threading
@@ -14,18 +15,22 @@ import time
 import traceback
 import typing
 from dataclasses import dataclass
+from multiprocessing.connection import Connection, answer_challenge, deliver_challenge
 
 import cloudpickle
 
 from erlab.extensions._models import ExtensionExecutionError
 
 if typing.TYPE_CHECKING:
+    import io
     from collections.abc import Callable
 
     from erlab._provenance._settings import ExecutionSettings
 
 _T = typing.TypeVar("_T")
 _IDLE_SECONDS = 5.0
+_WORKER_ARG = "--erlab-extension-worker"
+_AUTH_ENV = "ERLAB_EXTENSION_WORKER_AUTH"
 
 
 @dataclass(frozen=True)
@@ -38,18 +43,37 @@ class WorkerContext:
 class WorkerStopped(ExtensionExecutionError):
     """The interpreter stopped before it returned a complete reply."""
 
-    message = "The extension process stopped. Run the routine again."
+    def __init__(self, message="The extension process stopped. Run the routine again."):
+        super().__init__(message)
 
 
-def _write_request(stream, function, args) -> None:
-    cloudpickle.dump((function, args), stream)
+def _worker_command() -> list[str]:
+    if getattr(sys, "frozen", False):
+        return [sys.executable, _WORKER_ARG]
+    return [sys.executable, "-P", "-m", "erlab.extensions._subprocess", _WORKER_ARG]
 
 
-def _result(reply):
-    ok, value = reply
-    if not ok:
-        raise value
-    return value
+def _authenticate(channel: socket.socket, key: bytes, *, parent: bool) -> None:
+    # Use multiprocessing's mutual authentication before reading any pickle.
+    # A local connection that never answers must not block the worker's startup.
+    def abort_handshake() -> None:
+        with contextlib.suppress(OSError):
+            channel.shutdown(socket.SHUT_RDWR)
+
+    timeout = threading.Timer(5, abort_handshake)
+    timeout.daemon = True
+    timeout.start()
+    try:
+        with Connection(channel.dup().detach()) as auth:
+            if parent:
+                deliver_challenge(auth, key)
+                answer_challenge(auth, key)
+            else:
+                answer_challenge(auth, key)
+                deliver_challenge(auth, key)
+    finally:
+        timeout.cancel()
+    channel.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
 
 def _request(requests: typing.BinaryIO, replies: typing.BinaryIO) -> bool:
@@ -67,35 +91,25 @@ def _request(requests: typing.BinaryIO, replies: typing.BinaryIO) -> bool:
     return True
 
 
-def _service(context: WorkerContext, requests, replies) -> bool:
+def serve_worker(port: int) -> None:
     from erlab.extensions._routine import _run_with_settings
 
-    # A task or its operands can import scientific helpers while unpickling.
-    os.chdir(context.directory)
-    sys.path[:] = context.search_path
-    return _run_with_settings(context.settings, _request, requests, replies)
-
-
-def _buffered_reply(context: WorkerContext, payload: bytes) -> bytes:
-    replies = io.BytesIO()
-    _service(context, io.BytesIO(payload), replies)
-    return replies.getvalue()
-
-
-def _serve() -> None:
-    # Keep an independent result pipe. The user's extension can write to standard
-    # output from Python or from native code without corrupting the result.
+    if sys.stdout is not None and sys.stderr is not None:
+        os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+    key = bytes.fromhex(os.environ.pop(_AUTH_ENV))
     with (
-        os.fdopen(os.dup(sys.stdin.fileno()), "rb") as requests,
-        os.fdopen(os.dup(sys.stdout.fileno()), "wb") as replies,
-        open(os.devnull, "r+b") as empty_input,
+        socket.create_connection(("127.0.0.1", port)) as channel,
+        channel.makefile("rb") as requests,
+        channel.makefile("wb") as replies,
     ):
-        os.dup2(empty_input.fileno(), sys.stdin.fileno())
-        output_fd = empty_input.fileno() if sys.stderr is None else sys.stderr.fileno()
-        os.dup2(output_fd, sys.stdout.fileno())
+        _authenticate(channel, key, parent=False)
         context = pickle.load(requests)
-        while _service(context, requests, replies):
-            pass
+        while True:
+            # A task or its operands can import scientific helpers while unpickling.
+            os.chdir(context.directory)
+            sys.path[:] = context.search_path
+            if not _run_with_settings(context.settings, _request, requests, replies):
+                return
 
 
 class SubprocessWorker:
@@ -105,20 +119,61 @@ class SubprocessWorker:
         self._context = context
         self._lock = threading.Lock()
         self._process: subprocess.Popen | None = None
+        self._requests: typing.BinaryIO | None = None
+        self._replies: typing.BinaryIO | None = None
         self._idle: threading.Timer | None = None
         self._deadline = 0.0
+
+    def _start(self) -> None:
+        # The ephemeral listener is local to this machine and exists only while
+        # this child connects. Nothing depends on a GUI executable having stdio.
+        key = secrets.token_bytes(32)
+        paths = os.pathsep.join(
+            os.path.abspath(path) for path in self._context.search_path
+        )
+        with socket.create_server(("127.0.0.1", 0)) as listener:
+            listener.settimeout(0.2)
+            process = subprocess.Popen(
+                [*_worker_command(), str(listener.getsockname()[1])],
+                env={**os.environ, "PYTHONPATH": paths, _AUTH_ENV: key.hex()},
+                stdin=subprocess.DEVNULL,
+            )
+            self._process = process
+            try:
+                while process.poll() is None:
+                    try:
+                        channel, _ = listener.accept()
+                    except TimeoutError:
+                        continue
+                    with channel:
+                        try:
+                            _authenticate(channel, key, parent=True)
+                        except (multiprocessing.AuthenticationError, EOFError, OSError):
+                            continue
+                        self._requests = channel.makefile("wb")
+                        self._replies = channel.makefile("rb")
+                        pickle.dump(self._context, self._requests)
+                        return
+            except BaseException:
+                process.kill()
+                self._close()
+                raise
+            self._close()
+            raise WorkerStopped
 
     def _close(self) -> None:
         if self._idle is not None:
             self._idle.cancel()
             self._idle = None
         process, self._process = self._process, None
+        if self._requests is not None:
+            with contextlib.suppress(OSError):
+                self._requests.close()
+            self._requests = None
+        if self._replies is not None:
+            self._replies.close()
+            self._replies = None
         if process is not None:
-            # Closing the parent pipe also closes the worker when its owning Dask
-            # process exits before the idle timer fires.
-            with contextlib.suppress(BrokenPipeError):
-                typing.cast("typing.BinaryIO", process.stdin).close()
-            typing.cast("typing.BinaryIO", process.stdout).close()
             try:
                 process.wait(timeout=2)
             except subprocess.TimeoutExpired:
@@ -133,12 +188,9 @@ class SubprocessWorker:
     def disown_after_fork(self) -> None:
         # An I/O thread may have held a buffered stream lock at fork. Close the
         # raw descriptors without flushing, waiting for, or signalling the parent.
-        if (process := self._process) is not None:
-            for stream in (process.stdin, process.stdout):
-                if stream is not None:
-                    typing.cast(
-                        "io.BufferedReader | io.BufferedWriter", stream
-                    ).raw.close()
+        for stream in (self._requests, self._replies):
+            if stream is not None:
+                typing.cast("io.BufferedReader | io.BufferedWriter", stream).raw.close()
 
     def _schedule_expiry(self, process: subprocess.Popen, delay: float) -> None:
         self._idle = threading.Timer(delay, self._expire, (process,))
@@ -157,31 +209,18 @@ class SubprocessWorker:
 
     def run(self, function: Callable[..., _T], *args: typing.Any) -> _T:
         with self._lock:
-            starting = self._process is None
             if self._process is None:
-                # Notebook sessions and editable checkouts can add import paths
-                # after interpreter startup. Give the worker that same search path.
-                paths = os.pathsep.join(
-                    os.path.abspath(path) for path in self._context.search_path
-                )
-                self._process = subprocess.Popen(
-                    [sys.executable, "-P", "-m", "erlab.extensions._subprocess"],
-                    env={**os.environ, "PYTHONPATH": paths},
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                )
-            process = self._process
-            requests = typing.cast("typing.BinaryIO", process.stdin)
-            replies = typing.cast("typing.BinaryIO", process.stdout)
+                self._start()
+            process = typing.cast("subprocess.Popen", self._process)
+            requests = typing.cast("typing.BinaryIO", self._requests)
+            replies = typing.cast("typing.BinaryIO", self._replies)
             try:
-                if starting:
-                    pickle.dump(self._context, requests)
-                _write_request(requests, function, args)
+                cloudpickle.dump((function, args), requests)
                 requests.flush()
-                reply = pickle.load(replies)
-            except (EOFError, BrokenPipeError) as error:
+                ok, value = pickle.load(replies)
+            except (EOFError, ConnectionError) as error:
                 self._close()
-                raise WorkerStopped(WorkerStopped.message) from error
+                raise WorkerStopped from error
             except BaseException:
                 # A partial request cannot be reused. Stop its interpreter.
                 process.kill()
@@ -192,52 +231,10 @@ class SubprocessWorker:
                     self._deadline = time.monotonic() + _IDLE_SECONDS
                     if self._idle is None:
                         self._schedule_expiry(process, _IDLE_SECONDS)
-            return _result(reply)
-
-
-class FrozenWorker:
-    """Serve the same requests through the packaged multiprocessing entry point."""
-
-    def __init__(self, context: WorkerContext) -> None:
-        from multiprocessing.spawn import prepare
-
-        from joblib.externals.loky import ProcessPoolExecutor
-
-        if multiprocessing.current_process().daemon:
-            raise ExtensionExecutionError(
-                "This packaged Dask worker cannot start an extension interpreter. "
-                "Use Dask's threaded scheduler or start a non-daemonic worker."
-            )
-        self._context = context
-        self._executor = ProcessPoolExecutor(
-            max_workers=1,
-            context=multiprocessing.get_context("spawn"),
-            # PyInstaller clears multiprocessing's original directory. Spawn
-            # then turns an empty search path entry into None. Restore the path
-            # before importing ERLab or any scientific library to unpickle a job.
-            initializer=prepare,
-            initargs=(
-                {"sys_path": list(context.search_path), "dir": context.directory},
-            ),
-            timeout=_IDLE_SECONDS,
-        )
-
-    def close(self) -> None:
-        self._executor.shutdown()
-
-    def run(self, function: Callable[..., _T], *args: typing.Any) -> _T:
-        from joblib.externals.loky import BrokenProcessPool
-
-        request = io.BytesIO()
-        _write_request(request, function, args)
-        try:
-            response = self._executor.submit(
-                _buffered_reply, self._context, request.getvalue()
-            ).result()
-        except BrokenProcessPool as error:
-            raise WorkerStopped(WorkerStopped.message) from error
-        return _result(pickle.loads(response))
+            if not ok:
+                raise value
+            return value
 
 
 if __name__ == "__main__":
-    _serve()
+    serve_worker(int(sys.argv[2]))

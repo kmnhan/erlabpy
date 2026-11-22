@@ -15,12 +15,7 @@ import xarray as xr
 
 from erlab.extensions._api import _invoke_routine, _load_script_bytes
 from erlab.extensions._models import ExtensionExecutionError, ExtensionImportError
-from erlab.extensions._subprocess import (
-    FrozenWorker,
-    SubprocessWorker,
-    WorkerContext,
-    WorkerStopped,
-)
+from erlab.extensions._subprocess import SubprocessWorker, WorkerContext, WorkerStopped
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -51,7 +46,7 @@ class RoutineProcesses:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._admission = threading.Lock()
-        self._worker: FrozenWorker | SubprocessWorker | None = None
+        self._worker: SubprocessWorker | None = None
         self._owners = 0
         self._context: WorkerContext | None = None
 
@@ -82,7 +77,7 @@ class RoutineProcesses:
             worker.close()
 
     def _after_fork(self) -> None:
-        if isinstance(self._worker, SubprocessWorker):
+        if self._worker is not None:
             self._worker.disown_after_fork()
         self._worker = None
         self._lock = threading.Lock()
@@ -94,7 +89,7 @@ class RoutineProcesses:
         function: Callable[..., _T],
         *args: typing.Any,
     ) -> _T:
-        # Bound queued IPC payloads. Native subprocess pipes also work in
+        # Bound queued IPC payloads. The private interpreter also works in
         # daemonic distributed workers and do not need a resource tracker.
         with self._admission:
             context = WorkerContext(settings, tuple(sys.path), os.getcwd())
@@ -103,12 +98,7 @@ class RoutineProcesses:
                 self._context = context
             with self._lock:
                 if self._worker is None:
-                    worker_type = (
-                        FrozenWorker
-                        if getattr(sys, "frozen", False)
-                        else SubprocessWorker
-                    )
-                    self._worker = worker_type(context)
+                    self._worker = SubprocessWorker(context)
                 worker = self._worker
             try:
                 return worker.run(function, *args)

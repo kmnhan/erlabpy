@@ -1362,18 +1362,30 @@ def recorded_echo_script(tmp_path):
     return path
 
 
+def _use_packaged_worker_entry(monkeypatch):
+    from erlab.extensions import _subprocess
+
+    # A source interpreter needs -m to enter the same module that is the
+    # executable's entry point. Keep the actual frozen command and arguments.
+    monkeypatch.setattr(
+        _subprocess,
+        "sys",
+        types.SimpleNamespace(frozen=True, executable=sys.executable),
+    )
+    executable, *args = _subprocess._worker_command()
+    monkeypatch.setattr(
+        _subprocess,
+        "_worker_command",
+        lambda: [executable, "-P", "-m", "erlab.interactive.imagetool.manager", *args],
+    )
+
+
 @pytest.mark.parametrize("packaged", [False, True])
 def test_recorded_routine_recovers_after_worker_exit(
     recorded_echo_script, monkeypatch, recorded_worker_owner, packaged
 ) -> None:
-    from erlab.extensions import _routine
-
     if packaged:
-        # Select the packaged executor while the host Python uses its normal
-        # multiprocessing bootstrap. The executor and its child are real.
-        monkeypatch.setattr(
-            _routine, "sys", types.SimpleNamespace(frozen=True, path=sys.path)
-        )
+        _use_packaged_worker_entry(monkeypatch)
     data = xr.DataArray([0.0], attrs={"sample": "A"})
 
     def submit(stop=False):
@@ -1403,8 +1415,6 @@ def test_worker_installs_import_context_before_loading_operands(
 ):
     import dask.array as da
 
-    from erlab.extensions import _routine
-
     selected = tmp_path / "selected"
     selected.mkdir()
     for directory, scale in ((selected, 2), (tmp_path, 7)):
@@ -1421,9 +1431,7 @@ def test_worker_installs_import_context_before_loading_operands(
 
         # Match PyInstaller's multiprocessing runtime hook.
         monkeypatch.setattr(multiprocessing.process, "ORIGINAL_DIR", None)
-        monkeypatch.setattr(
-            _routine, "sys", types.SimpleNamespace(frozen=True, path=sys.path)
-        )
+        _use_packaged_worker_entry(monkeypatch)
     script = tmp_path / "routine.py"
     script.write_text(
         "import xarray as xr\nfrom erlab.extensions import routine\n"
@@ -1748,33 +1756,27 @@ def test_unserializable_input_retires_worker_and_next_request_succeeds(
     xr.testing.assert_identical(recovered, data)
 
 
-def test_packaged_daemon_explains_how_to_run_a_recorded_routine(recorded_echo_script):
+def test_packaged_daemon_runs_a_recorded_routine(recorded_echo_script):
     import multiprocessing
+    import os
 
     from joblib.externals.loky import wrap_non_picklable_objects
 
     @wrap_non_picklable_objects
     def run_in_packaged_daemon(path):
-        from erlab.extensions import _routine
-
         with pytest.MonkeyPatch.context() as context:
-            context.setattr(
-                _routine, "sys", types.SimpleNamespace(frozen=True, path=sys.path)
-            )
-            return run_routine(
+            _use_packaged_worker_entry(context)
+            result = run_routine(
                 xr.DataArray([2]), script=path, routine_id="echo", execution_options={}
             )
+            return os.getpid(), result.attrs["pid"], result.item()
 
-    # Spawned Pool workers are daemons. They cannot start the packaged executor.
-    with (
-        multiprocessing.get_context("spawn").Pool(1) as pool,
-        pytest.raises(
-            ExtensionExecutionError, match=r"threaded scheduler.*non-daemonic"
-        ),
-    ):
-        pool.apply_async(run_in_packaged_daemon, (recorded_echo_script,)).get(
-            timeout=20
-        )
+    with multiprocessing.get_context("spawn").Pool(1) as pool:
+        caller, worker, value = pool.apply_async(
+            run_in_packaged_daemon, (recorded_echo_script,)
+        ).get(timeout=30)
+    assert worker != caller
+    assert value == 2
 
 
 def test_manager_can_acquire_worker_while_last_owner_closes(tmp_path, monkeypatch):
