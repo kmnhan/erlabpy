@@ -152,6 +152,7 @@ from erlab._provenance._operations import (
     ScriptCodeOperation,
     SelectCoordOperation,
     SelOperation,
+    SetItemOperation,
     ShiftFromInputOperation,
     ShiftOperation,
     SliceAlongPathOperation,
@@ -545,6 +546,7 @@ def _representative_structured_operations() -> tuple[ToolProvenanceOperation, ..
     edge_fit = xr.Dataset({"edge": ("x", [1.0, 2.0, 3.0])})
     vertices = np.array([[0.0, 10.0], [1.0, 11.0], [2.0, 12.0]])
     return (
+        SetItemOperation(key="temperature", value=4.0),
         QSelOperation(kwargs={"x": 1.0}),
         IselOperation(kwargs={"x": slice(0, 2)}),
         SelOperation(kwargs={"y": slice(10.0, 12.0)}),
@@ -1444,6 +1446,67 @@ def test_call_rejects_notebook_literals_and_functions_without_public_names():
     call = Call.function(local_only)
     with pytest.raises(ValueError, match="has no public export"):
         call.expression({})
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("bias", -0.125),
+        ("calibration", ("y", [2.0, 4.0], {"units": "eV", "tags": ["sample"]})),
+        ((1, slice(None)), [-7, -9]),
+        ({"x": [0, 2], "y": 0}, [1, 2]),
+        (slice(1, None, 2), float("nan")),
+    ],
+)
+def test_typed_literal_item_assignment_roundtrips_and_keeps_its_input(key, value):
+    import copy
+
+    source = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("x", "y"),
+        coords={"x": [0, 1, 2], "y": [2, 4]},
+        name="scan",
+        attrs={"origin": ["original"]},
+    )
+    source.coords["x"].attrs["units"] = "m"
+    expected = source.copy(deep=True)
+    expected[copy.deepcopy(key)] = copy.deepcopy(value)
+    operation = SetItemOperation.from_literals(key, value)
+    assert operation is not None
+    restored = SetItemOperation.model_validate_json(operation.model_dump_json())
+    if isinstance(key, dict):
+        key["x"].clear()
+    if isinstance(value, list):
+        value.clear()
+    if isinstance(value, tuple):
+        value[1].clear()
+        value[2]["tags"].clear()
+    for captured in (operation, restored):
+        xr.testing.assert_identical(captured.apply(source), expected)
+        for output_name in ("edited", "source"):
+            notebook = {"source": source}
+            code = captured.replay_code("source", output_name=output_name)
+            exec(code, notebook)  # noqa: S102
+            edited = notebook[output_name]
+            xr.testing.assert_identical(edited, expected)
+            edited.values[:] = -100
+            edited.attrs["origin"].append("edited")
+            np.testing.assert_equal(source.values, np.arange(6.0).reshape(3, 2))
+            assert source.attrs["origin"] == ["original"]
+
+
+def test_typed_literal_item_assignment_declines_external_values_and_keys():
+    assert SetItemOperation.from_literals("temperature", np.float32(3)) is None
+    assert SetItemOperation.from_literals("counts", xr.DataArray([1])) is None
+    assert SetItemOperation.from_literals(np.array([True]), 5) is None
+    assert SetItemOperation.from_literals(object(), 2) is None
+    assert SetItemOperation.from_literals((1, "invalid index"), 3) is None
+    assert SetItemOperation.from_literals({"x": slice(None, None, object())}, 3) is None
+    recursive = []
+    recursive.append(recursive)
+    assert SetItemOperation.from_literals("loop", recursive) is None
+    with pytest.raises(ValueError, match="Invalid literal assignment key"):
+        SetItemOperation.model_validate({"key": 2.5, "value": 3})
 
 
 def test_porting_routes_cover_the_registered_operations() -> None:

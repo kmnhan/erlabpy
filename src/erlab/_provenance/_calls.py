@@ -178,6 +178,38 @@ class SetAttribute:
         return f"{output_name} = {input_name}.copy(deep=False)\n{assignment}"
 
 
+def _subscript_code(key) -> str:
+    if isinstance(key, slice):
+        parts = ["" if item is None else str(item) for item in (key.start, key.stop)]
+        if key.step is not None:
+            parts.append(str(key.step))
+        return ":".join(parts)
+    if isinstance(key, tuple) and key:
+        return ", ".join(_subscript_code(item) for item in key) + (
+            "," if len(key) == 1 else ""
+        )
+    return _argument_code(key, {})
+
+
+@dataclass(frozen=True, slots=True)
+class SetItem:
+    """Assign values or a coordinate on an independent DataArray."""
+
+    key: typing.Any
+    value: typing.Any
+
+    def evaluate(self, data: xr.DataArray) -> xr.DataArray:
+        result = data.copy(deep=True)
+        result[self.key] = self.value
+        return result
+
+    def statement(self, input_name: str, output_name: str) -> str:
+        key = _subscript_code(self.key)
+        value = _argument_code(self.value, {})
+        assignment = f"{output_name}[{key}] = {value}"
+        return f"{output_name} = {input_name}.copy(deep=True)\n{assignment}"
+
+
 class CallOperation(ToolProvenanceOperation):
     """A built-in transform defined by one public, read-only Python call."""
 
@@ -332,12 +364,10 @@ class TupleOutputOperation(CallOperation):
         )
 
 
-class MetadataSetterOperation(ToolProvenanceOperation):
-    """An accessor setter that changes metadata on its own array wrapper."""
+class AssignmentOperation(ToolProvenanceOperation):
+    """A Python assignment with its own copy semantics."""
 
-    statement_mutates_input: typing.ClassVar[bool] = True
-
-    def assignment(self) -> SetAttribute:
+    def assignment(self) -> SetAttribute | SetItem:
         raise NotImplementedError
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
@@ -351,3 +381,9 @@ class MetadataSetterOperation(ToolProvenanceOperation):
         source_name: str | None = None,
     ) -> str:
         return self.assignment().statement(input_name, output_name)
+
+
+class MetadataSetterOperation(AssignmentOperation):
+    """An accessor setter that changes metadata on its own array wrapper."""
+
+    statement_mutates_input: typing.ClassVar[bool] = True

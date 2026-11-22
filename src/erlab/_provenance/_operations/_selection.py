@@ -10,7 +10,7 @@ import pydantic
 import xarray as xr
 
 import erlab
-from erlab._provenance._calls import ArrayMethodOperation
+from erlab._provenance._calls import ArrayMethodOperation, AssignmentOperation, SetItem
 from erlab._provenance._code import _format_selection_expr
 from erlab._provenance._model import (
     _SORT_COORD_ORDER_DERIVATION_LABEL,
@@ -25,6 +25,7 @@ from erlab._provenance._model import (
     _console_values_equal,
     _format_derivation_value,
     decode_provenance_value,
+    encode_provenance_value,
 )
 
 
@@ -97,6 +98,80 @@ class ImageToolSelectionSourceBinding(pydantic.BaseModel):
         if self.squeeze:
             operations.append(SqueezeOperation())
         return ToolProvenanceSpec(kind="selection").append_operations(*operations)
+
+
+def _item_literal(value) -> bool:
+    if value is None or type(value) in (bool, int, float, str):
+        return True
+    if isinstance(value, slice):
+        return all(
+            part is None or type(part) is int
+            for part in (value.start, value.stop, value.step)
+        )
+    if type(value) in (tuple, list):
+        return all(_item_literal(item) for item in value)
+    if type(value) is dict:
+        return all(
+            _item_literal(key) and _item_literal(item) for key, item in value.items()
+        )
+    return False
+
+
+def _item_key(key) -> bool:
+    def indexer(value):
+        return (
+            type(value) in (int, bool)
+            or isinstance(value, slice)
+            or (type(value) is list and all(type(i) in (int, bool) for i in value))
+        )
+
+    if type(key) is tuple:
+        return all(indexer(index) for index in key)
+    if type(key) is dict:
+        return all(indexer(index) for index in key.values())
+    return type(key) is str or indexer(key)
+
+
+class SetItemOperation(AssignmentOperation):
+    """A recorded DataArray assignment with portable literal operands."""
+
+    op: typing.Literal["set_item"] = "set_item"
+    key: pydantic.JsonValue
+    value: pydantic.JsonValue
+
+    @classmethod
+    def from_literals(cls, key, value) -> typing.Self | None:
+        # Numeric array scalars, live handles and custom Python types can change
+        # meaning when converted to JSON. Keep those on the existing edit path.
+        try:
+            if _item_literal(key) and _item_key(key) and _item_literal(value):
+                return cls(
+                    key=encode_provenance_value(key),
+                    value=encode_provenance_value(value),
+                )
+        except (TypeError, RecursionError):
+            # A recursive container or an unsupported dimension key cannot be stored.
+            pass
+        return None
+
+    @pydantic.field_validator("key", "value")
+    @classmethod
+    def _validate_literal(cls, value, info: pydantic.ValidationInfo):
+        decoded = decode_provenance_value(value)
+        if not _item_literal(decoded) or (
+            info.field_name == "key" and not _item_key(decoded)
+        ):
+            raise ValueError(f"Invalid literal assignment {info.field_name}")
+        return value
+
+    def assignment(self) -> SetItem:
+        return SetItem(
+            decode_provenance_value(self.key), decode_provenance_value(self.value)
+        )
+
+    def derivation_label(self) -> str:
+        key = _format_derivation_value(decode_provenance_value(self.key))
+        return f"Set item {key}"
 
 
 class QSelOperation(ToolProvenanceOperation):

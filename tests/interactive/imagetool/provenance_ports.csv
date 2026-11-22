@@ -37,6 +37,7 @@ rotate,erlab.analysis.transform.rotate
 script_code,Recorded program or display-only step for a label without code
 sel,DataArray.sel
 select_coord,Coordinate selection helper returning a shallow copy of the named coordinate
+set_item,DataArray item assignment on an independent copy
 shift,erlab.analysis.transform.shift with the effective captured shift
 shift_from_input,Shift helper that applies the recorded sign to the bound shift array before erlab.analysis.transform.shift
 slice_along_path,erlab.analysis.interpolate.slice_along_path
