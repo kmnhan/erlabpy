@@ -145,7 +145,7 @@ class _ManagedOperations:
         revision = node.revision_id_for_role(
             "displayed", graph_owned=True, displayed_data=displayed_data
         )
-        store = self.manager._provenance_revisions
+        store = self.revisions
         file_load = None
         backing = None
         if node.imagetool is not None:
@@ -167,13 +167,17 @@ class _ManagedOperations:
             file_load=file_load,
             backing=backing if file_load else None,
         )
+        self._retain_host_revision(revision, uid)
+        self._tokens[uid] = node.snapshot_token
+
+    def _retain_host_revision(self, revision: str, uid: str) -> None:
+        """Keep the host projection until the graph and its current row release it."""
         self.graph.on_release(
             revision,
             functools.partial(
-                self._release_input, store, weakref.ref(self.manager), uid
+                self._release_input, self.revisions, weakref.ref(self.manager), uid
             ),
         )
-        self._tokens[uid] = node.snapshot_token
 
     @staticmethod
     def _release_input(
@@ -204,14 +208,12 @@ class _ManagedOperations:
             or not self.graph.has_recipe(uid)
         ):
             return None
-        record = self.manager._provenance_revisions.get(
-            self.graph.current_revision(uid)
-        )
+        record = self.revisions.get(self.graph.current_revision(uid))
         return record.provenance_spec if record is not None else None
 
     def output_name(self, uid: str) -> str:
         """Get the recorded producer name, including when a display filter is active."""
-        record = self.manager._provenance_revisions.get(self.graph.source_revision(uid))
+        record = self.revisions.get(self.graph.source_revision(uid))
         if record is not None and record.provenance_spec is not None:
             return record.provenance_spec.active_name or "derived"
         return "derived"
@@ -234,7 +236,7 @@ class _ManagedOperations:
         ):
             operation = node.slicer_area._accepted_filter_provenance_operation
             if operation is not None or self.graph.current_revision(uid) != source:
-                store = self.manager._provenance_revisions
+                store = self.revisions
                 if operation is None:
                     key = self.graph.set_display_operation(uid, None)
                 else:
@@ -244,12 +246,7 @@ class _ManagedOperations:
                     self.graph.set_display_operation(
                         uid, operation, revision_id=key, data=store._captured_data(key)
                     )
-                    self.graph.on_release(
-                        key,
-                        functools.partial(
-                            self._release_input, store, weakref.ref(node)
-                        ),
-                    )
+                    self._retain_host_revision(key, uid)
                 node._revision_ids_by_role["displayed"] = (node.snapshot_token, key)
                 self._tokens[uid] = node.snapshot_token
                 return
@@ -320,7 +317,7 @@ class _ManagedOperations:
             binding = bindings[name]
             uid = binding.entry_id if isinstance(binding, Follow) else None
             node = self.manager._tool_graph.nodes.get(uid) if uid is not None else None
-            captured = self.manager._provenance_revisions.get(revision)
+            captured = self.revisions.get(revision)
             source = None if captured is None else captured.provenance_spec
             inputs.append(
                 ScriptInput(
@@ -358,12 +355,12 @@ class _ManagedOperations:
                 uid = update.entry_id
                 node = self.manager._tool_graph.nodes.get(uid)
                 rollback.callback(
-                    self.manager._provenance_revisions.discard_unpublished,
+                    self.revisions.discard_unpublished,
                     update.revision.revision_id,
                 )
                 if update.display is not None:
                     rollback.callback(
-                        self.manager._provenance_revisions.discard_unpublished,
+                        self.revisions.discard_unpublished,
                         update.display.revision.revision_id,
                     )
                 if node is not None:
@@ -393,12 +390,12 @@ class _ManagedOperations:
         for update in updates:
             self.graph.on_release(
                 update.revision.revision_id,
-                self.manager._provenance_revisions.release_graph_result,
+                self.revisions.release_graph_result,
             )
             if update.display is not None:
                 self.graph.on_release(
                     update.display.revision.revision_id,
-                    self.manager._provenance_revisions.release_graph_result,
+                    self.revisions.release_graph_result,
                 )
             uid = update.entry_id
             self.manager._lineage_controller._propagate_source_change_from_uid(uid)
@@ -485,7 +482,7 @@ class _ManagedOperations:
                         materialize=False,
                     )
                     self.manager.tree_view.refresh(uid)
-            self.manager._provenance_revisions.adopt_result(
+            self.revisions.adopt_result(
                 update.revision.revision_id, update.data, spec, uid
             )
             node.restore_current_revision_id(update.revision.revision_id)
@@ -504,7 +501,7 @@ class _ManagedOperations:
                         accept=True,
                     )
                 node._advance_displayed_snapshot_token(defer_refresh=True)
-                self.manager._provenance_revisions.adopt_result(
+                self.revisions.adopt_result(
                     displayed.revision.revision_id,
                     displayed.data,
                     typing.cast(

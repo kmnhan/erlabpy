@@ -16,6 +16,22 @@ the contract or when verified work closes a step.
 | 5. Unify extension requests | Both worker transports install the same settings and import paths before decoding each job. Keep deferred scheduler annotations and isolate worker ownership across a fork. Exercise actual execution and measure the affected worker costs. |
 | 6. Verify the integrated contract | Run the combined workflows on both Qt bindings, check relevant speed and memory, and check CI on the pushed revision. Record any limits at the affected step. |
 
+At `e566fb9a` the checkpoint owns category labels and the name dialog uses
+the exporter’s validation. At `f9ed5adb` an entry retains the raw source
+revision produced by its recipe and a separate displayed revision when it
+has a filter. The planner evaluates both through ordinary applications.
+Manual Refresh, historical edits, replacement of a filtered entry, reads by
+followers, Copy Full Code, and clearing the filter have regression tests.
+The name of a notebook result comes from the recorded source producer.
+At `279b6b65` workspace Replace stages one new owner for the graph and
+checkpoint store. Rollback restores the prior owner and its pending Auto work.
+
+Two integration checks added requirements to the remaining steps. Literal
+console item edits on a file must retain self-contained copied Python when
+the file still exists. Packaged extension startup must preserve a notebook
+import path that includes the current directory. Both checks use actual
+calculation results.
+
 ## First milestone
 
 Define and test the Qt-free contract for a provenance operation across the whole
