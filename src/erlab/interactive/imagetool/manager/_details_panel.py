@@ -421,7 +421,7 @@ class _DetailsPanelController:
         self._manager._metadata_full_code_available = (
             displayed_spec is not None
             or node.tool_window is not None
-            or self._manager._operations.graph.has_recipe(node.uid)
+            or self._manager._operations.graph.has_recorded_derivation(node.uid)
         )
         self._metadata_derivation_spec = displayed_spec
         self._manager._metadata_node_uid = node.uid
@@ -1799,7 +1799,7 @@ class _DetailsPanelController:
         if node is None or not self._manager._metadata_full_code_available:
             return
         native = self._manager._operations.graph
-        if native.has_recipe(node.uid):
+        if native.has_recorded_derivation(node.uid):
             key = native.current_revision(node.uid)
             output_name = self._manager._operations.output_name(node.uid)
             with native.retain(key):

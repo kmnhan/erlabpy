@@ -11512,8 +11512,10 @@ def test_managed_eager_view_and_interpolation_keep_the_captured_values(
 
 @pytest.mark.parametrize("preview", [False, True])
 def test_manager_adopts_filtered_eager_source_and_preserves_preview(
-    qtbot, manager_context, preview
+    qtbot, manager_context, monkeypatch, preview
 ) -> None:
+    from erlab.interactive.imagetool.manager._console import ToolsNamespace
+
     x, y = np.arange(4.0), np.arange(5.0)
     raw = xr.DataArray(
         1 + 2 * x[:, None] + 3 * y[None, :],
@@ -11567,6 +11569,73 @@ def test_manager_adopts_filtered_eager_source_and_preserves_preview(
             child.slicer_area.displayed_data, accepted.isel(x=[0, 2], y=[1, 3])
         )
         xr.testing.assert_identical(area.main_image.current_data, rendered)
+
+        graph = manager._operations.graph
+        raw_key = graph.source_revision(source.uid)
+        shown_key = graph.current_revision(source.uid)
+        grid_key = graph.current_revision(target.uid)
+        assert raw_key != shown_key
+        assert (
+            graph.source_revision(target.uid) == grid_key == target.current_revision_id
+        )
+        assert not graph.has_recipe(source.uid)
+        xr.testing.assert_identical(graph.data(raw_key), expected)
+        xr.testing.assert_identical(graph.data(shown_key), accepted)
+
+        named = {raw_key: "raw_spectrum", grid_key: "grid"}
+        console = ToolsNamespace(manager)
+        copied = []
+        namespace = {}
+
+        def checkpoint(key, _reserved):
+            name = named[key]
+            namespace[name] = console.checkpoint(key)
+            return name
+
+        monkeypatch.setattr(manager._details_panel, "_checkpoint_name", checkpoint)
+        monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)
+
+        def check_copy(row, wanted):
+            manager._set_metadata_node(row)
+            manager._copy_full_derivation_code()
+            exec(copied.pop(), namespace)  # noqa: S102
+            xr.testing.assert_identical(
+                namespace[manager._operations.output_name(row.uid)], wanted
+            )
+
+        check_copy(child, accepted.isel(x=[0, 2], y=[1, 3]))
+        assert namespace.keys() >= {"raw_spectrum", "grid"}
+        manager._remove_uid_target(child.uid)
+        assert target.uid not in graph
+        assert graph.current_revision(source.uid) == shown_key
+        check_copy(source, accepted)
+        assert manager.next_inputs_box.isHidden()
+        with graph.retain(shown_key):
+            area.apply_filter_operation(None)
+            xr.testing.assert_identical(area.displayed_data, expected)
+            assert graph.current_revision(source.uid) == raw_key
+            assert manager._remove_imagetool(source.index)
+            assert source.uid not in graph
+            xr.testing.assert_identical(graph.data(shown_key), accepted)
+        assert shown_key not in graph.revision_ids
+
+
+def test_unrecorded_filter_preview_keeps_the_committed_input(manager_context):
+    raw = _batch_data("counts", offset=1.0)
+    with manager_context() as manager:
+        window = itool(raw, manager=False, execute=False)
+        area = window.slicer_area
+        area.apply_func(lambda data: data * 3, preview=True)
+        source = manager._node_for_target(manager.add_imagetool(window, show=False))
+        manager._operations.observe(source)
+        graph = manager._operations.graph
+        key = graph.current_revision(source.uid)
+        assert graph.source_revision(source.uid) == key
+        assert graph.revision(key).producer is None
+        xr.testing.assert_identical(graph.data(key), raw)
+        xr.testing.assert_identical(
+            area.main_image.current_data, (raw * 3).rename(raw.name)
+        )
 
 
 def test_accepted_filter_updates_followers_once_and_preview_keeps_history(
@@ -12013,6 +12082,7 @@ def test_manager_failed_graph_install_restores_prerequisites(
         "edit",
         "rename",
         "filter",
+        "preview",
         "rename_filter",
         "transpose",
         "edit_after_submit",
@@ -12040,6 +12110,8 @@ def test_interpolation_from_changed_file_exports_displayed_input(
         node, target = (manager._node_for_target(i) for i in (0, 1))
         console = ToolsNamespace(manager)
         expected = source.copy(deep=True)
+        if change == "preview":
+            node.slicer_area.apply_func(lambda data: data * 3, preview=True)
         if change == "opaque":
             console[0][0, [1]] = np.array([1234.0])
             expected[0, 1] = 1234.0

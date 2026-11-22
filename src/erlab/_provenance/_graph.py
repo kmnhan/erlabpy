@@ -349,6 +349,14 @@ class ProvenanceGraph:
         entry = self._entries.get(entry_id)
         return entry is not None and entry.recipe is not None
 
+    def has_recorded_derivation(self, entry_id: str) -> bool:
+        """Check whether the displayed revision has a recorded producer."""
+        entry = self._entries.get(entry_id)
+        return (
+            entry is not None
+            and self._revisions[entry.revision_id].record.producer is not None
+        )
+
     def entry(self, entry_id: str) -> ImageToolEntry:
         # A frozen typed operation can still contain mutable parameter values.
         return copy.deepcopy(self._entries[entry_id])
@@ -485,6 +493,7 @@ class ProvenanceGraph:
         *,
         file_load: FileLoad | None = None,
         backing: FileVersion | None = None,
+        display: tuple[str, ToolProvenanceOperation, xr.DataArray] | None = None,
     ) -> None:
         """Bind an already protected checkpoint from the host revision store."""
         self._write_generation()
@@ -493,7 +502,11 @@ class ProvenanceGraph:
         if not isinstance(owned, xr.DataArray):
             raise TypeError("A checkpoint must be a DataArray")
         current = self._entries.get(entry_id)
-        if current is not None and current.revision_id == revision_id:
+        if (
+            current is not None
+            and current.source_revision_id == revision_id
+            and current.revision_id == (revision_id if display is None else display[0])
+        ):
             return
         self._publish_adopted(
             entry_id,
@@ -505,6 +518,7 @@ class ProvenanceGraph:
                 (),
             ),
             owned,
+            display=display,
         )
 
     def adopt_application(
@@ -583,6 +597,11 @@ class ProvenanceGraph:
         display: tuple[str, ToolProvenanceOperation, xr.DataArray] | None,
     ) -> None:
         """Publish a prepared file source and its displayed value in one change."""
+        if not steps:
+            self.adopt_checkpoint(
+                entry_id, *source, file_load=file_load, backing=backing, display=display
+            )
+            return
         self._write_generation()
         check_id(entry_id)
         source_key, source_data = source
@@ -593,8 +612,8 @@ class ProvenanceGraph:
         stored = self._revisions.get(source_key)
         if stored is None:
             sources = self._sources(file_load)
-            raw_key = uuid.uuid4().hex if steps else source_key
-            owned = checkpoint_data(raw, backing=backing) if steps else source_data
+            raw_key = uuid.uuid4().hex
+            owned = checkpoint_data(raw, backing=backing)
             stored = _StoredRevision(
                 DataRevision(raw_key, file_load, True, backing),
                 raw_key,

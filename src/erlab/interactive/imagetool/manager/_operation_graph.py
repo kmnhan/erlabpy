@@ -53,7 +53,6 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool import ImageTool
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
-    from erlab.interactive.imagetool.viewer import _FileInput
 
 
 def _file_loader(call: FileReplayCall) -> _LoadFunc:
@@ -152,67 +151,52 @@ class _ManagedOperations:
             "displayed", graph_owned=True, displayed_data=displayed_data
         )
         store = self.revisions
+        shown = store._captured_data(revision)
+        area = node.slicer_area if node.imagetool is not None else None
+        operation = None if area is None else area._accepted_filter_provenance_operation
+        display = None
+        source_key, source_data = revision, shown
+        if operation is not None:
+            source_key = node.revision_id_for_role("source", graph_owned=True)
+            source_data = store._captured_data(source_key)
+            display = (revision, operation, shown)
         if (
-            node.imagetool is not None
-            and (origin := node.slicer_area._file_input) is not None
+            area is not None
+            and (origin := area._file_input) is not None
             and origin.call is not None
         ):
-            load = FileLoad(self.graph.file_source(origin.backing.path), origin.call)
-            self._adopt_file_input(node, revision, load, origin)
+            source = area._data
+            steps: list[ToolProvenanceOperation] = []
+            if source.name != origin.name:
+                steps.append(
+                    RenameOperation(name=typing.cast("str | None", source.name))
+                )
+            dims = area._public_source_dims_for_current_layout()
+            if dims != origin.dims:
+                steps.append(TransposeOperation(dims=dims))
+            raw = (
+                source.rename(origin.name).transpose(*origin.dims)
+                if steps
+                else source_data
+            )
+            self.graph.adopt_file_view(
+                uid,
+                FileLoad(self.graph.file_source(origin.backing.path), origin.call),
+                origin.backing,
+                raw=raw,
+                steps=steps,
+                source=(source_key, source_data),
+                display=display,
+            )
         else:
-            self.graph.adopt_checkpoint(uid, revision, store._captured_data(revision))
+            self.graph.adopt_checkpoint(uid, source_key, source_data, display=display)
+        if display is not None:
+            self._retain_host_revision(source_key, uid)
+        elif area is not None:
+            # A temporary preview does not change the committed source or display.
+            node.bind_source_revision(revision)
         self._retain_host_revision(revision, uid)
         self._tokens[uid] = node.snapshot_token
-
-    def _adopt_file_input(
-        self,
-        node: _ManagedWindowNode,
-        revision: str,
-        load: FileLoad,
-        origin: _FileInput,
-    ) -> None:
-        """Record the verified file and the operations that produced this view."""
-        area = node.slicer_area
-        store = self.revisions
-        displayed = store._captured_data(revision)
-        source = area._data
-        steps: list[ToolProvenanceOperation] = []
-        if source.name != origin.name:
-            steps.append(RenameOperation(name=typing.cast("str | None", source.name)))
-        dims = area._public_source_dims_for_current_layout()
-        if dims != origin.dims:
-            steps.append(TransposeOperation(dims=dims))
-        accepted = area._accepted_filter_provenance_operation
-        source_key = (
-            revision
-            if accepted is None
-            else node.revision_id_for_role("source", graph_owned=True)
-        )
-        source_data = store._captured_data(source_key)
-        if not steps and accepted is None:
-            self.graph.adopt_checkpoint(
-                node.uid,
-                source_key,
-                source_data,
-                file_load=load,
-                backing=origin.backing,
-            )
-            return
-
-        raw = (
-            source.rename(origin.name).transpose(*origin.dims) if steps else source_data
-        )
-        self.graph.adopt_file_view(
-            node.uid,
-            load,
-            origin.backing,
-            raw=raw,
-            steps=steps,
-            source=(source_key, source_data),
-            display=None if accepted is None else (revision, accepted, displayed),
-        )
-        if accepted is not None:
-            self._retain_host_revision(source_key, node.uid)
 
     def _retain_host_revision(self, revision: str, uid: str) -> None:
         """Keep the host projection until the graph and its current row release it."""
@@ -340,6 +324,7 @@ class _ManagedOperations:
                 uid in self.graph
                 and not self.graph.has_followers(uid)
                 and not self.graph.has_recipe(uid)
+                and not self.graph.has_recorded_derivation(uid)
             ):
                 self.graph.remove_entry(uid)
                 self._tokens.pop(uid, None)

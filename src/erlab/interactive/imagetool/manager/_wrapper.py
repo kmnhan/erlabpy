@@ -2147,13 +2147,15 @@ class _ManagedWindowNode(QtCore.QObject):
             self.uid
         ):
             self.manager._provenance_revisions.claim_graph_inputs(None, revision_id)
-        self._current_revision_id = revision_id
         self._revision_ids_by_role.clear()
-        if revision_id is not None:
-            self._revision_ids_by_role["source"] = (
-                self.source_snapshot_token,
-                revision_id,
-            )
+        if revision_id is None:
+            self._current_revision_id = None
+        else:
+            self.bind_source_revision(revision_id)
+
+    def bind_source_revision(self, revision_id: str) -> None:
+        self._current_revision_id = revision_id
+        self._revision_ids_by_role["source"] = (self.source_snapshot_token, revision_id)
 
     def bind_displayed_revision(self, revision_id: str) -> None:
         self._revision_ids_by_role["displayed"] = (self.snapshot_token, revision_id)
