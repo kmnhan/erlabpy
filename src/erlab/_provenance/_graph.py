@@ -1057,10 +1057,11 @@ class ProvenanceGraph:
             if destination != entry_id:
                 self._check_new_entry(destination, None)
                 forked = True
-                result.entries[destination] = result.entries.pop(entry_id)
+                created = result.entries.pop(entry_id)
+                result.entries[destination] = created
                 entry_id = destination
-                revision_id = result.entries[destination].displayed[0]
-                result.revisions[revision_id].producer_id = revision_id
+                for revision_id in {created.source[0], created.displayed[0]}:
+                    result.revisions[revision_id].producer_id = revision_id
 
         historical = False
         if displayed is not None and isinstance(recipe, Recipe):
@@ -1199,7 +1200,9 @@ class ProvenanceGraph:
                 (node, self._revisions[node]) for node in self._recipe_revisions(recipe)
             )
         display_sources: dict[str, EarlierStep] = {}
-        source_recipes: dict[EarlierStep, Recipe | FileLoad] = {}
+        requested: dict[Binding, Recipe | FileLoad] = (
+            {root: recipe} if recipe is not None else {}
+        )
         pending = [root]
         while pending:
             binding = pending.pop()
@@ -1213,12 +1216,10 @@ class ProvenanceGraph:
             else:
                 sources[binding.revision_id] = self._revisions[binding.revision_id]
             step = (
-                recipe
-                if binding == root and recipe is not None
+                requested[binding]
+                if binding in requested
                 else self._plan_input(binding, mode=mode)
             )
-            if isinstance(binding, EarlierStep) and binding in source_recipes:
-                step = source_recipes[binding]
             if (
                 isinstance(binding, Follow)
                 and (mode != "displayed" or (keep_display and binding == root))
@@ -1228,7 +1229,7 @@ class ProvenanceGraph:
             ):
                 # Plan the source and accepted filter as two ordinary applications.
                 source = EarlierStep(entry.source_revision_id, PendingRecipe(step))
-                source_recipes[source] = step
+                requested[source] = step
                 display_sources[entry.entry_id] = source
                 step = view._with_inputs((("data", source),))
             if (

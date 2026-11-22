@@ -30,7 +30,18 @@ Two integration checks added requirements to the remaining steps. Literal
 console item edits on a file must retain self-contained copied Python when
 the file still exists. Packaged extension startup must preserve a notebook
 import path that includes the current directory. Both checks use actual
-calculation results.
+calculation results. A failed workspace Replace also restores a filtered
+child while Auto is queued. After rollback, Auto updates both revisions and
+clearing the filter exposes the new source. Reload → Open as New now uses
+the original producer name and retains its filter on the new entry.
+
+The two extension transports now use the same request context before
+decoding a job. The Dask graph keeps its scheduler annotations, including
+per-task retries. The frozen worker restores a current-directory search path
+at process startup. The minimum supported Dask and distributed versions ran
+the retry test. Warm Manager submissions had the same 1.716 ms median across
+four alternating pairs of 150 submissions. The 90th percentile was 2.034 ms
+before and 2.252 ms after the change. Peak RSS was 518.23 and 518.25 MiB.
 
 ## First milestone
 

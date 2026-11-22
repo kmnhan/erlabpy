@@ -12336,9 +12336,12 @@ def test_manager_repeated_graph_refresh_releases_superseded_payloads(
         assert not ops.graph.revision_ids
 
 
+@pytest.mark.parametrize("filtered", [False, True])
 def test_graph_interpolation_incompatible_reload_choices(
-    qtbot, manager_context, accept_dialog, monkeypatch
+    qtbot, manager_context, accept_dialog, monkeypatch, filtered
 ) -> None:
+    from erlab._provenance._operations import NormalizeOperation
+
     source_data = xr.DataArray(
         np.arange(12.0).reshape(4, 3),
         dims=("x", "y"),
@@ -12366,6 +12369,10 @@ def test_graph_interpolation_incompatible_reload_choices(
         dialog.accept()
         output = manager._node_for_target(2)
         graph = manager._operations.graph
+        if filtered:
+            output.slicer_area.apply_filter_operation(
+                NormalizeOperation(dims=("x",), mode="min")
+            )
         original = graph.current_revision(output.uid)
         target.slicer_area.replace_source_data(changed)
         rebuilt = source_data.interp_like(changed)
@@ -12390,7 +12397,7 @@ def test_graph_interpolation_incompatible_reload_choices(
                 ).click()
 
             accept_dialog(output.slicer_area.reload, accept_call=choose)
-            assert len(evaluations) == 1
+            assert len(evaluations) == (2 if filtered else 1)
 
         before = set(graph.entry_ids)
         reload_with("Cancel")
@@ -12409,6 +12416,13 @@ def test_graph_interpolation_incompatible_reload_choices(
             manager._node_for_target(fork).data_for_role("source"), rebuilt
         )
 
+        if filtered:
+            forked = manager._node_for_target(fork)
+            assert manager._operations.output_name(fork) == "interpolated"
+            np.testing.assert_array_equal(
+                forked.slicer_area.displayed_data, rebuilt - rebuilt.min("x")
+            )
+            assert graph.source_revision(fork) != graph.current_revision(fork)
         reload_with("Replace and Reset View")
         assert set(graph.entry_ids) == before | {fork}
         assert graph.current_revision(output.uid) != original

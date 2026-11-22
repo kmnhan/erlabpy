@@ -518,7 +518,7 @@ class _ManagedOperations:
     def _reload(self, uid: str) -> None:
         node = self.manager._node_for_target(uid)
         graph = self.graph
-        if isinstance(graph.revision(graph.current_revision(uid)).producer, FileLoad):
+        if isinstance(graph.revision(graph.source_revision(uid)).producer, FileLoad):
             graph.reload(uid)
             return
 
@@ -543,11 +543,9 @@ class _ManagedOperations:
                         return uid
                     case "new":
                         created = self.manager._next_node_uid()
-                        spec = self.displayed_spec(node)
-                        name = (
-                            spec.active_name if spec is not None else None
-                        ) or "derived"
-                        self._placements[created] = _Placement(None, make_window, name)
+                        self._placements[created] = _Placement(
+                            None, make_window, self.output_name(uid)
+                        )
                         placements.callback(self._placements.pop, created)
                         return created
                     case _:
