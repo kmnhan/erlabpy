@@ -166,8 +166,39 @@ class _ManagedOperations:
     def changed(
         self, node: _ManagedWindowNode, *, displayed_data: xr.DataArray | None = None
     ) -> None:
-        if node.uid in self.graph:
-            self.observe(node, displayed_data=displayed_data)
+        uid = node.uid
+        if uid not in self.graph or uid in self._installing:
+            return
+        source = self.graph.source_revision(uid)
+        # Only a display publication on the same source can keep its recipe.
+        if (
+            displayed_data is not None
+            and node.imagetool is not None
+            and node._revision_ids_by_role.get("source")
+            == (node.source_snapshot_token, source)
+        ):
+            operation = node.slicer_area._accepted_filter_provenance_operation
+            if operation is not None or self.graph.current_revision(uid) != source:
+                store = self.manager._provenance_revisions
+                if operation is None:
+                    key = self.graph.set_display_operation(uid, None)
+                else:
+                    key = node.revision_id_for_role(
+                        "displayed", graph_owned=True, displayed_data=displayed_data
+                    )
+                    self.graph.set_display_operation(
+                        uid, operation, revision_id=key, data=store._captured_data(key)
+                    )
+                    self.graph.on_release(
+                        key,
+                        functools.partial(
+                            self._release_input, store, weakref.ref(node)
+                        ),
+                    )
+                node._revision_ids_by_role["displayed"] = (node.snapshot_token, key)
+                self._tokens[uid] = node.snapshot_token
+                return
+        self.observe(node, displayed_data=displayed_data)
 
     def _release_unused_inputs(self, uids: set[str]) -> None:
         for uid in uids:
@@ -275,6 +306,11 @@ class _ManagedOperations:
                     self.manager._provenance_revisions.discard_unpublished,
                     update.revision.revision_id,
                 )
+                if update.display is not None:
+                    rollback.callback(
+                        self.manager._provenance_revisions.discard_unpublished,
+                        update.display.revision.revision_id,
+                    )
                 if node is not None:
                     if node.imagetool is None:
                         self.manager.get_imagetool(uid)
@@ -304,6 +340,11 @@ class _ManagedOperations:
                 update.revision.revision_id,
                 self.manager._provenance_revisions.release_graph_result,
             )
+            if update.display is not None:
+                self.graph.on_release(
+                    update.display.revision.revision_id,
+                    self.manager._provenance_revisions.release_graph_result,
+                )
             uid = update.entry_id
             self.manager._lineage_controller._propagate_source_change_from_uid(uid)
             self.manager._schedule_selected_details_refresh(changed_uid=uid)
@@ -350,7 +391,7 @@ class _ManagedOperations:
             name = destination.output_name if destination is not None else "derived"
             if destination is None and node is not None:
                 prior = self.manager._provenance_revisions.get(
-                    self.graph.current_revision(uid)
+                    self.graph.source_revision(uid)
                 )
                 if prior is not None and prior.provenance_spec is not None:
                     name = prior.provenance_spec.active_name or name
@@ -395,6 +436,33 @@ class _ManagedOperations:
                 update.revision.revision_id, update.data, spec, uid
             )
             node.restore_current_revision_id(update.revision.revision_id)
+            if update.display is not None:
+                displayed = update.display
+                application = typing.cast("Application", displayed.revision.producer)
+                area = node.slicer_area
+                with (
+                    node._suspend_descendant_propagation(),
+                    node._suspend_snapshot_updates(),
+                ):
+                    area._apply_filter_result(
+                        displayed.data,
+                        area._filter_func_from_operation(application.operation),
+                        operation=application.operation,
+                        accept=True,
+                    )
+                node._advance_displayed_snapshot_token(defer_refresh=True)
+                self.manager._provenance_revisions.adopt_result(
+                    displayed.revision.revision_id,
+                    displayed.data,
+                    typing.cast(
+                        "ToolProvenanceSpec", area.displayed_provenance_spec(spec)
+                    ),
+                    uid,
+                )
+                node._revision_ids_by_role["displayed"] = (
+                    node.snapshot_token,
+                    displayed.revision.revision_id,
+                )
             self._tokens[uid] = node.snapshot_token
 
     def reload_problem(self, uid: str) -> str | None:

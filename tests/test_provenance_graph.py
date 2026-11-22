@@ -2515,3 +2515,50 @@ def test_repeated_earlier_producer_updates_once_while_an_unrelated_row_changes(g
     assert graph.current_revision("independent") == "second"
     assert graph.current_revision("scaled") == earlier
     xr.testing.assert_identical(graph.data(result), xr.DataArray(60))
+
+
+def test_filtered_entry_keeps_source_recipe_and_historical_display(graph):
+    source = xr.DataArray([1.0, 2.0], dims="x")
+    a = graph.add_source("A", source)
+    raw = graph.derive("B", Recipe.bind(Scale(factor=2), Follow("A")))
+    old = graph.set_display_operation("B", Scale(factor=3))
+    assert graph.source_revision("B") == raw
+    assert graph.next_inputs("B") == (("data", a),)
+    c = graph.derive("C", Recipe.bind(Scale(factor=5), Follow("B")))
+    assert graph.revision(c).producer.inputs == (("data", old),)
+    with graph.retain(old):
+        a = graph.replace("A", Recipe.bind(Scale(factor=10), Follow("A")))
+        graph.refresh("C")
+        assert graph.revision(graph.source_revision("B")).producer.inputs == (
+            ("data", a),
+        )
+        assert graph.revision(graph.current_revision("C")).producer.inputs == (
+            ("data", graph.current_revision("B")),
+        )
+        xr.testing.assert_identical(
+            graph.data(graph.current_revision("C")), source * 300
+        )
+        assert graph.edit_application("B", graph.source_revision("B"), Scale(factor=4))
+        xr.testing.assert_identical(
+            graph.data(graph.current_revision("B")), source * 120
+        )
+        graph.set_auto("B", enabled=True)
+        newest = graph.set_display_operation("B", None)
+        assert graph.entry("B").auto
+        assert graph.source_revision("B") == newest
+        xr.testing.assert_identical(graph.data(newest), source * 40)
+        xr.testing.assert_identical(graph.data(old), source * 6)
+        assert graph.is_stale("C")
+
+
+def test_replace_filtered_entry_consumes_display_and_refreshes_its_source(graph):
+    source = xr.DataArray([1.0, 2.0], dims="x")
+    graph.add_source("A", source)
+    graph.derive("B", Recipe.bind(Scale(factor=2), Follow("A")))
+    filtered = graph.set_display_operation("B", Scale(factor=3))
+    replaced = graph.replace("B", Recipe.bind(Scale(factor=5), Follow("B")))
+    assert graph.revision(replaced).producer.inputs == (("data", filtered),)
+    assert graph.source_revision("B") == replaced
+    xr.testing.assert_identical(graph.data(replaced), source * 30)
+    graph.replace("A", Recipe.bind(Scale(factor=10), Follow("A")))
+    xr.testing.assert_identical(graph.data(graph.refresh("B")), source * 300)

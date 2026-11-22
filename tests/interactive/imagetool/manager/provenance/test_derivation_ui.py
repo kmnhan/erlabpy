@@ -3760,3 +3760,55 @@ def test_failed_refresh_preserves_the_display_until_target_is_usable(
         node.slicer_area.displayed_data,
         source.slicer_area.displayed_data.interp_like(changed),
     )
+
+
+def test_filtered_interpolation_refresh_clear_and_copy(
+    qtbot, interpolation_tools, monkeypatch
+):
+    from erlab._provenance._operations import NormalizeOperation
+    from erlab.interactive.imagetool.manager._console import ToolsNamespace
+
+    manager, source, target = interpolation_tools
+    raw = source.slicer_area.displayed_data
+    grid = target.slicer_area.displayed_data
+    _managed_interpolation_dialog(qtbot, source, target).accept()
+    child = manager._child_node(source._childtool_indices[-1])
+    graph = manager._operations.graph
+    area = child.slicer_area
+    manager._set_metadata_node(child)
+    area.apply_filter_operation(NormalizeOperation(dims=("x",), mode="min"))
+    initial = graph.current_revision(child.uid)
+    assert graph.has_recipe(child.uid)
+    assert not manager.next_inputs_box.isHidden()
+    assert graph.source_revision(child.uid) != initial
+    namespace = {}
+
+    def checkpoint_name(key, reserved):
+        name = f"input_{len(namespace)}"
+        namespace[name] = ToolsNamespace(manager).checkpoint(key)
+        return name
+
+    monkeypatch.setattr(manager._details_panel, "_checkpoint_name", checkpoint_name)
+    copied = []
+    monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)
+    manager._metadata_copy_full_action.trigger()
+    exec(copied.pop(), namespace)  # noqa: S102
+    original = raw.interp_like(grid)
+    xr.testing.assert_identical(namespace["interpolated"], area.displayed_data)
+    np.testing.assert_allclose(area.displayed_data, original - original.min("x"))
+
+    with graph.retain(initial):
+        source.slicer_area.replace_source_data((raw * 2).rename(raw.name))
+        assert graph.is_stale(child.uid)
+        manager.refresh_revision_button.click()
+        current = (raw * 2).rename(raw.name).interp_like(grid)
+        np.testing.assert_allclose(area.displayed_data, current - current.min("x"))
+        xr.testing.assert_identical(graph.data(initial), namespace["interpolated"])
+        assert area._accepted_filter_provenance_operation is not None
+        graph.set_auto(child.uid, enabled=True)
+        area.apply_filter_operation(None)
+        assert graph.has_recipe(child.uid)
+        assert graph.entry(child.uid).auto
+        assert not manager.next_inputs_box.isHidden()
+        xr.testing.assert_identical(area.displayed_data, current)
+        assert graph.current_revision(child.uid) == graph.source_revision(child.uid)

@@ -289,3 +289,5 @@ class ImageToolEntry:
     auto: bool
     parent_id: str | None
     order: int
+    # The source recipe regenerates this revision. A display filter consumes it.
+    source_revision_id: str

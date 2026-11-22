@@ -2851,7 +2851,7 @@ class _ProvenanceEditController:
         revision = None
         applied = None
         if not row.script_input_path and graph.has_recipe(node.uid):
-            revision = graph.current_revision(node.uid)
+            revision = graph.source_revision(node.uid)
             producer = graph.revision(revision).producer
             if isinstance(producer, Application) and producer.operation == operation:
                 applied = producer

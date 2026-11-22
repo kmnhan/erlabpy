@@ -766,7 +766,7 @@ class _DetailsPanelController:
 
         graph = self._manager._operations.graph
         if graph.has_recipe(node.uid):
-            producer = graph.revision(graph.current_revision(node.uid)).producer
+            producer = graph.revision(graph.source_revision(node.uid)).producer
             if isinstance(producer, Application):
                 rows.insert(
                     0,
@@ -1800,7 +1800,7 @@ class _DetailsPanelController:
             return
         native = self._manager._operations.graph
         if native.has_recipe(node.uid):
-            spec = node.displayed_provenance_spec
+            spec = node.provenance_spec
             key = native.current_revision(node.uid)
             output_name = (spec.active_name if spec is not None else None) or "derived"
             with native.retain(key):
