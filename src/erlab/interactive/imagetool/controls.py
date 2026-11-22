@@ -308,7 +308,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
     def initialize_widgets(self) -> None:
         super().initialize_widgets()
         self.values_groups = tuple(
-            QtWidgets.QWidget() for _ in range(self.data.ndim + 1)
+            QtWidgets.QWidget() for _ in range(self.array_slicer.ndim + 1)
         )
         self.values_layouts = tuple(
             QtWidgets.QGridLayout(g) for g in self.values_groups
@@ -436,8 +436,10 @@ class ItoolCrosshairControls(ItoolControlsBase):
             for grp in self.values_groups[1:]
         )
 
-        if self.data.ndim <= 3:
-            icons = [_ICON_ALIASES[f"transpose_{i}"] for i in range(self.data.ndim)]
+        if self.array_slicer.ndim <= 3:
+            icons = [
+                _ICON_ALIASES[f"transpose_{i}"] for i in range(self.array_slicer.ndim)
+            ]
         else:
             icons = [_ICON_ALIASES[f"transpose_{i}"] for i in (0, 1, 3, 2)]
         self.btn_transpose = tuple(
@@ -447,7 +449,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
             button.setObjectName(f"itoolTransposeAxis{i}Button")
 
         # add and connect info widgets
-        for i in range(self.data.ndim):
+        for i in range(self.array_slicer.ndim):
             self.spin_idx[i].valueChanged.connect(
                 lambda ind, axis=i: self.slicer_area.set_index(axis, ind)
             )
@@ -473,13 +475,13 @@ class ItoolCrosshairControls(ItoolControlsBase):
             )
 
     def _transpose_axes(self, idx: int) -> None:
-        if self.data.ndim == 4:
+        if self.array_slicer.ndim == 4:
             if idx == 3:
                 self.slicer_area.swap_axes(0, 2)
             else:
                 self.slicer_area.swap_axes(idx, (idx + 1) % 4)
         else:
-            self.slicer_area.swap_axes(idx, (idx + 1) % self.data.ndim)
+            self.slicer_area.swap_axes(idx, (idx + 1) % self.array_slicer.ndim)
 
     def connect_signals(self) -> None:
         super().connect_signals()
@@ -682,19 +684,19 @@ class ItoolCrosshairControls(ItoolControlsBase):
         ):  # pragma: no cover
             return
         super().update_content()
-        if len(self.label_dim) != self.data.ndim:
+        if len(self.label_dim) != self.array_slicer.ndim:
             # number of required cursors changed, resetting
             clear_layout(self.layout())
             self.initialize_widgets()
 
-        for i in range(self.data.ndim):
+        for i in range(self.array_slicer.ndim):
             self.spin_idx[i].blockSignals(True)
             self.spin_val[i].blockSignals(True)
 
-            self.label_dim[i].setText(str(self.data.dims[i]))
+            self.label_dim[i].setText(str(self.array_slicer.dims[i]))
 
             # update spinbox properties to match new data
-            self.spin_idx[i].setRange(0, self.data.shape[i] - 1)
+            self.spin_idx[i].setRange(0, self.array_slicer.shape[i] - 1)
             self.spin_idx[i].setValue(self.slicer_area.get_current_index(i))
 
             self.spin_val[i].setRange(*self.array_slicer.lims[i])
@@ -718,7 +720,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
 
     def update_spins(self, *, axes=None) -> None:
         if axes is None:
-            axes = range(self.data.ndim)
+            axes = range(self.array_slicer.ndim)
         if len(axes) != len(self.spin_idx):
             # called from sigIndexChanged before update was called
             return
@@ -928,8 +930,10 @@ class ItoolBinningControls(ItoolControlsBase):
         layout.addLayout(self.gridlayout)
         layout.addLayout(self.buttonslayout)
 
-        self.labels = tuple(_ElidedLabel() for _ in range(self.data.ndim))
-        self.val_labels = tuple(QtWidgets.QLabel() for _ in range(self.data.ndim))
+        self.labels = tuple(_ElidedLabel() for _ in range(self.array_slicer.ndim))
+        self.val_labels = tuple(
+            QtWidgets.QLabel() for _ in range(self.array_slicer.ndim)
+        )
         self.spins = tuple(
             erlab.interactive.utils.BetterSpinBox(
                 self,
@@ -938,10 +942,10 @@ class ItoolBinningControls(ItoolControlsBase):
                 # minimumWidth=60,
                 value=1,
                 minimum=1,
-                maximum=self.data.shape[i],
+                maximum=self.array_slicer.shape[i],
                 keyboardTracking=False,
             )
-            for i in range(self.data.ndim)
+            for i in range(self.array_slicer.ndim)
         )
         for i, spin in enumerate(self.spins):
             spin.setObjectName(f"itoolBinAxis{i}Spin")
@@ -968,7 +972,7 @@ class ItoolBinningControls(ItoolControlsBase):
         self.gridlayout.setRowMinimumHeight(0, self.reset_btn.sizeHint().height())
         self.gridlayout.setRowMinimumHeight(4, self.spins[0].minimumHeight())
 
-        for i in range(self.data.ndim):
+        for i in range(self.array_slicer.ndim):
             self.gridlayout.addWidget(self.labels[i], 0, i, 1, 1)
             self.gridlayout.addWidget(self.spins[i], 2, i, 1, 1)
             self.gridlayout.addWidget(self.val_labels[i], 4, i, 1, 1)
@@ -1016,17 +1020,17 @@ class ItoolBinningControls(ItoolControlsBase):
             return
         super().update_content()
 
-        if len(self.val_labels) != self.data.ndim:
+        if len(self.val_labels) != self.array_slicer.ndim:
             clear_layout(self.layout())
             self.initialize_widgets()
 
         bin_numbers = self.array_slicer.get_bins(self.current_cursor)
         bin_values = self.array_slicer.get_bin_values(self.current_cursor)
 
-        for i in range(self.data.ndim):
+        for i in range(self.array_slicer.ndim):
             self.spins[i].blockSignals(True)
-            self.labels[i].setText(str(self.data.dims[i]))
-            self.spins[i].setRange(1, self.data.shape[i])
+            self.labels[i].setText(str(self.array_slicer.dims[i]))
+            self.spins[i].setRange(1, self.array_slicer.shape[i])
             self.spins[i].setValue(bin_numbers[i])
             if bin_values[i] is None:
                 self.val_labels[i].setText("")

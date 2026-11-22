@@ -474,7 +474,9 @@ def _make_dims_uniform(darr: xr.DataArray) -> xr.DataArray:
     nonuniform_dims = [
         str(dim)
         for dim in darr.dims
-        if not _is_uniform_for_image_tool(darr[dim].values.astype(np.float64))
+        if not _is_uniform_for_image_tool(
+            np.asarray(darr[dim].values, dtype=np.float64)
+        )
     ]
     for dim in nonuniform_dims:
         darr = darr.assign_coords(

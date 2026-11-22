@@ -28,22 +28,17 @@ import erlab.interactive.imagetool.manager._workspace._storage as workspace_stor
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.imagetool.viewer_linking
-from erlab.extensions._models import _script_name_key
-from erlab.interactive import _persistence_constants, _qt_state
-from erlab.interactive.imagetool._load_source import (
-    _deserialize_loader_kwargs,
-    _file_path_stem,
-)
-from erlab.interactive.imagetool._mainwindow import ImageTool
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._files import _deserialize_loader_kwargs, _file_path_stem
+from erlab._provenance._model import (
     ScriptInputDataRole,
     ToolProvenanceSpec,
     parse_tool_provenance_spec,
     require_live_source_spec,
 )
-from erlab.interactive.imagetool._provenance._operations import (
-    ImageToolSelectionSourceBinding,
-)
+from erlab._provenance._operations import ImageToolSelectionSourceBinding
+from erlab.extensions._models import _script_name_key
+from erlab.interactive import _persistence_constants, _qt_state
+from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
     _ChooseFromWorkspaceManifestDialog,
@@ -73,6 +68,7 @@ if typing.TYPE_CHECKING:
 
     import h5py
 
+    from erlab._provenance._checkpoint import FileVersion
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.manager._widgets import _WorkspaceDocumentAccess
     from erlab.interactive.imagetool.manager._workspace._controller import (
@@ -166,7 +162,15 @@ def _workspace_load_stage(
 
 
 class _WorkspaceReplaceBackup:
-    __slots__ = ("file_path", "metadata", "snapshot", "sources", "tree")
+    __slots__ = (
+        "backing_versions",
+        "file_path",
+        "metadata",
+        "pending_images",
+        "snapshot",
+        "sources",
+        "tree",
+    )
 
     def __init__(
         self,
@@ -174,14 +178,15 @@ class _WorkspaceReplaceBackup:
         *,
         sources: tuple[_WorkspaceDocumentAccess, ...],
         metadata: dict[str, typing.Any],
-        tree: xr.DataTree | None = None,
         file_path: pathlib.Path | None = None,
     ) -> None:
         self.snapshot = snapshot
         self.sources = sources
         self.metadata = metadata
-        self.tree = tree
+        self.tree: xr.DataTree | None = None
         self.file_path = file_path
+        self.pending_images: dict[str, tuple[pathlib.Path, str]] = {}
+        self.backing_versions: dict[tuple[pathlib.Path, str], FileVersion] = {}
 
     def close(self) -> None:
         try:
@@ -353,6 +358,7 @@ class _WorkspaceLoader:
         payload_path: str,
         *,
         load_data: bool,
+        image_backup: workspace_arrays._WorkspaceImageBackupCache | None = None,
     ) -> xr.Dataset:
         if not load_data:
             opened = workspace_arrays.open_workspace_dataset(
@@ -369,6 +375,7 @@ class _WorkspaceLoader:
             workspace_path,
             payload_path,
             preferred_data_name=_persistence_constants.ITOOL_DATA_NAME,
+            image_backup=image_backup,
         )
         if ds is not None:
             return ds
@@ -936,12 +943,38 @@ class _WorkspaceLoader:
                 metadata=metadata,
                 file_path=current_path,
             )
-        return _WorkspaceReplaceBackup(
-            snapshot,
-            sources=sources,
-            metadata=metadata,
-            tree=self._controller.saving._to_datatree(),
-        )
+        backup = _WorkspaceReplaceBackup(snapshot, sources=sources, metadata=metadata)
+        saving = self._controller.saving
+        datasets: dict[tuple[pathlib.Path, str], xr.Dataset] = {}
+        image_backup = workspace_arrays._WorkspaceImageBackupCache()
+
+        def capture_pending_image(
+            node: _ManagedWindowNode, node_path: str
+        ) -> xr.Dataset | None:
+            payload = node.pending_workspace_memory_payload
+            if payload is None or node.imagetool is not None:
+                return None
+            if payload not in datasets:
+                # Keep an independent fallback if the original document disappears.
+                datasets[payload] = self._read_workspace_imagetool_payload_dataset(
+                    *payload, load_data=True, image_backup=image_backup
+                )
+            ds = datasets[payload].copy(deep=False)
+            ds.attrs = saving._pending_workspace_imagetool_attrs(
+                node, stored_attrs=ds.attrs
+            )
+            backup.pending_images[node_path] = payload
+            return ds
+
+        try:
+            backup.tree = saving._to_datatree(
+                capture_pending_image=capture_pending_image
+            )
+            backup.backing_versions = image_backup.backing_versions
+        except Exception:
+            backup.close()
+            raise
+        return backup
 
     @contextlib.contextmanager
     def _workspace_node_load(
@@ -953,8 +986,9 @@ class _WorkspaceLoader:
         profiler: _WorkspaceLoadProfiler,
     ) -> Iterator[None]:
         """Commit workspace nodes and their checkpoint sources together."""
-        revisions = self._manager._provenance_revisions
-        previous_revision_ids = revisions.revision_ids
+        previous_operations = self._manager._operations
+        revisions = previous_operations.revisions
+        previous_revision_ids = frozenset() if replace else revisions.revision_ids
         incoming_revisions = revisions.stage() if replace else revisions
         if manifest is not None and workspace_path is not None:
             workspace_revisions.restore_revision_store(
@@ -967,11 +1001,16 @@ class _WorkspaceLoader:
         if replace:
             with profiler.stage("rollback backup"):
                 backup = self._workspace_replace_backup_for_load(workspace_path)
-        previous_revisions = revisions.copy() if replace else None
         graph = self._manager._tool_graph
-        previous_bindings = {
-            uid: node.current_revision_id for uid, node in graph.nodes.items()
-        }
+        previous_bindings = (
+            {
+                uid: node.snapshot_revision_bindings()
+                for uid, node in graph.nodes.items()
+            }
+            if replace
+            else {}
+        )
+        existing_uids = set() if replace else set(graph.nodes)
         previous_scripts = self._manager._workspace_state.extension_scripts.copy()
         previous_roots = self._revision_load_roots
         incoming_ids = (
@@ -982,49 +1021,53 @@ class _WorkspaceLoader:
                 for entry in manifest.get("provenance_revisions", ())
             )
         )
+        transaction = (
+            previous_operations.replace_workspace(incoming_revisions)
+            if replace
+            else contextlib.nullcontext()
+        )
         try:
-            with incoming_revisions.retain(incoming_ids) as roots:
-                self._revision_load_roots = roots
+            with transaction:
                 try:
-                    if replace:
-                        with (
-                            self._controller._workspace_load_context(),
-                            profiler.stage("ui catch-up"),
-                        ):
-                            self._manager._workspace_state.advance_document_identity()
-                            self._manager.remove_all_tools()
-                            self._controller._drain_workspace_restore_events()
-                        manifest_link_id = (
-                            None
-                            if manifest is None
-                            else manifest.get("workspace_link_id")
-                        )
-                        self._manager._workspace_state.link_id = (
-                            str(manifest_link_id)
-                            if manifest_link_id
-                            else uuid.uuid4().hex
-                        )
-                    self._manager._provenance_revisions = incoming_revisions
-                    yield
-                except Exception:
+                    with incoming_revisions.retain(incoming_ids) as roots:
+                        self._revision_load_roots = roots
+                        if replace:
+                            with (
+                                self._controller._workspace_load_context(),
+                                profiler.stage("ui catch-up"),
+                            ):
+                                self._manager._workspace_state.advance_document_identity()
+                                self._manager.remove_all_tools()
+                                self._controller._drain_workspace_restore_events()
+                            manifest_link_id = (
+                                None
+                                if manifest is None
+                                else manifest.get("workspace_link_id")
+                            )
+                            self._manager._workspace_state.link_id = (
+                                str(manifest_link_id)
+                                if manifest_link_id
+                                else uuid.uuid4().hex
+                            )
+                        yield
+                except BaseException:
                     with self._controller._workspace_load_context():
                         imported_roots = [
                             index
                             for index, node in graph.root_wrappers.items()
-                            if replace or node.uid not in previous_bindings
+                            if node.uid not in existing_uids
                         ]
                         imported_figures = [
-                            uid
-                            for uid in graph.figure_uids
-                            if replace or uid not in previous_bindings
+                            uid for uid in graph.figure_uids if uid not in existing_uids
                         ]
                         self._manager._remove_imagetools(
                             imported_roots, child_uids=imported_figures
                         )
                         self._controller._drain_workspace_restore_events()
-                        if previous_revisions is not None:
-                            self._manager._provenance_revisions = previous_revisions
                         if backup is not None:
+                            # The rollback loaders can add or prune checkpoints while
+                            # rebuilding windows. Keep the original session intact.
+                            self._manager._operations.discard_workspace()
                             try:
                                 self._restore_replaced_workspace_backup(backup)
                             except Exception:
@@ -1034,19 +1077,18 @@ class _WorkspaceLoader:
                                 previous_scripts
                             )
                         if replace:
-                            for uid, revision_id in previous_bindings.items():
+                            for uid, bindings in previous_bindings.items():
                                 node = graph.nodes.get(uid)
                                 if node is not None:
-                                    node.restore_current_revision_id(revision_id)
+                                    node.restore_revision_bindings(bindings)
                     raise
         finally:
             self._revision_load_roots = previous_roots
             if backup is not None:
                 backup.close()
             if self._manager._provenance_revisions is incoming_revisions:
-                incoming_revisions.discard_unreachable(
-                    workspace_revisions.retained_revision_ids(self._manager)
-                    | (frozenset() if replace else previous_revision_ids)
+                self._controller._discard_unreachable_provenance_revisions(
+                    previous_revision_ids
                 )
 
     def _restore_workspace_state_snapshot(
@@ -1701,6 +1743,7 @@ class _WorkspaceLoader:
             Mapping[str, Mapping[str, typing.Any]] | None
         ) = None,
         manifest_direct_children: Mapping[str, tuple[str, ...]] | None = None,
+        pending_images: Mapping[str, tuple[pathlib.Path, str] | None] | None = None,
     ) -> int | str:
         if "imagetool" in node_tree:
             ds = None
@@ -1754,6 +1797,15 @@ class _WorkspaceLoader:
                     .to_dataset(inherit=False)
                     .load()
                 )
+            if (
+                pending_images is not None
+                and node_path is not None
+                and node_path in pending_images
+            ):
+                pending_imagetool_payload = pending_images[node_path]
+                if pending_imagetool_payload is None:
+                    # Each recovered window must own its mutable in-memory data.
+                    ds = ds.copy(deep=True)
             target = self._load_workspace_imagetool_dataset(
                 ds,
                 parent_target=parent_target,
@@ -1850,6 +1902,7 @@ class _WorkspaceLoader:
                     reserved_uids=reserved_uids,
                     manifest_entries_by_path=manifest_entries_by_path,
                     manifest_direct_children=manifest_direct_children,
+                    pending_images=pending_images,
                 )
         return target
 
@@ -1868,6 +1921,7 @@ class _WorkspaceLoader:
             Mapping[str, Mapping[str, typing.Any]] | None
         ) = None,
         manifest_direct_children: Mapping[str, tuple[str, ...]] | None = None,
+        pending_images: Mapping[str, tuple[pathlib.Path, str] | None] | None = None,
     ) -> int | str | None:
         try:
             return self._load_workspace_node(
@@ -1881,6 +1935,7 @@ class _WorkspaceLoader:
                 reserved_uids=reserved_uids,
                 manifest_entries_by_path=manifest_entries_by_path,
                 manifest_direct_children=manifest_direct_children,
+                pending_images=pending_images,
             )
         except Exception as exc:
             self._record_skipped_workspace_node(node_path, exc)
@@ -1900,6 +1955,7 @@ class _WorkspaceLoader:
             Mapping[str, Mapping[str, typing.Any]] | None
         ) = None,
         manifest_direct_children: Mapping[str, tuple[str, ...]] | None = None,
+        pending_images: Mapping[str, tuple[pathlib.Path, str] | None] | None = None,
     ) -> int:
         loaded_count = 0
         for key in root_keys:
@@ -1918,6 +1974,7 @@ class _WorkspaceLoader:
                     reserved_uids=reserved_uids,
                     manifest_entries_by_path=manifest_entries_by_path,
                     manifest_direct_children=manifest_direct_children,
+                    pending_images=pending_images,
                 )
                 if target is not None:
                     loaded_count += 1
@@ -2281,10 +2338,15 @@ class _WorkspaceLoader:
     def _restore_replaced_workspace(
         self,
         backup_tree: xr.DataTree,
+        pending_images: Mapping[str, tuple[pathlib.Path, str] | None],
     ) -> None:
         self._manager.remove_all_tools()
         self._controller._drain_workspace_restore_events()
-        self._load_workspace_roots(backup_tree, [str(key) for key in backup_tree])
+        self._load_workspace_roots(
+            backup_tree,
+            [str(key) for key in backup_tree],
+            pending_images=pending_images,
+        )
         self._load_workspace_figures(backup_tree)
         self._controller._drain_workspace_restore_events()
 
@@ -2318,12 +2380,59 @@ class _WorkspaceLoader:
             )
         self._controller._drain_workspace_restore_events()
 
+    def _recoverable_pending_images(
+        self,
+        backup: _WorkspaceReplaceBackup,
+        tree: xr.DataTree,
+        *,
+        compare_contents: bool,
+    ) -> dict[str, tuple[pathlib.Path, str] | None]:
+        verified: set[FileVersion] = set()
+        for version in set(backup.backing_versions.values()):
+            with contextlib.suppress(OSError):
+                version.verify()
+                verified.add(version)
+        result: dict[str, tuple[pathlib.Path, str] | None] = {}
+        checked: dict[tuple[pathlib.Path, str], bool] = {}
+        cache = workspace_arrays._WorkspaceImageBackupCache()
+        for key, payload in backup.pending_images.items():
+            usable = backup.backing_versions.get(payload) in verified
+            if usable and compare_contents:
+                # Windows file change time can report creation time. Compare
+                # the captured variables before reconnecting an old window.
+                if payload not in checked:
+                    checked[payload] = False
+                    try:
+                        current = self._read_workspace_imagetool_payload_dataset(
+                            *payload, load_data=True, image_backup=cache
+                        )
+                        expected = typing.cast(
+                            "xr.DataTree", tree[f"{key}/imagetool"]
+                        ).to_dataset(inherit=False)
+                        checked[payload] = (
+                            workspace_arrays._WorkspaceDatasetSharing._equal(
+                                current, expected
+                            )
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Cannot verify pending ImageTool %s", key, exc_info=True
+                        )
+                usable = checked[payload]
+            result[key] = payload if usable else None
+        return result
+
     def _restore_replaced_workspace_backup(
         self, backup: _WorkspaceReplaceBackup
     ) -> None:
         with self._controller._workspace_load_context():
             if backup.tree is not None:
-                self._restore_replaced_workspace(backup.tree)
+                self._restore_replaced_workspace(
+                    backup.tree,
+                    self._recoverable_pending_images(
+                        backup, backup.tree, compare_contents=os.name == "nt"
+                    ),
+                )
             elif backup.file_path is not None:
                 self._restore_replaced_workspace_file(backup.file_path)
             self._restore_workspace_state_snapshot(backup.snapshot)

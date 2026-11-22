@@ -10,8 +10,9 @@ import pydantic
 import xarray as xr
 
 import erlab
-from erlab.interactive.imagetool._provenance._code import _format_selection_expr
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._calls import ArrayMethodOperation, AssignmentOperation, SetItem
+from erlab._provenance._code import _format_selection_expr
+from erlab._provenance._model import (
     _SORT_COORD_ORDER_DERIVATION_LABEL,
     ConsoleCall,
     ConsoleOperationPattern,
@@ -24,6 +25,7 @@ from erlab.interactive.imagetool._provenance._model import (
     _console_values_equal,
     _format_derivation_value,
     decode_provenance_value,
+    encode_provenance_value,
 )
 
 
@@ -96,6 +98,80 @@ class ImageToolSelectionSourceBinding(pydantic.BaseModel):
         if self.squeeze:
             operations.append(SqueezeOperation())
         return ToolProvenanceSpec(kind="selection").append_operations(*operations)
+
+
+def _item_literal(value) -> bool:
+    if value is None or type(value) in (bool, int, float, str):
+        return True
+    if isinstance(value, slice):
+        return all(
+            part is None or type(part) is int
+            for part in (value.start, value.stop, value.step)
+        )
+    if type(value) in (tuple, list):
+        return all(_item_literal(item) for item in value)
+    if type(value) is dict:
+        return all(
+            _item_literal(key) and _item_literal(item) for key, item in value.items()
+        )
+    return False
+
+
+def _item_key(key) -> bool:
+    def indexer(value):
+        return (
+            type(value) in (int, bool)
+            or isinstance(value, slice)
+            or (type(value) is list and all(type(i) in (int, bool) for i in value))
+        )
+
+    if type(key) is tuple:
+        return all(indexer(index) for index in key)
+    if type(key) is dict:
+        return all(indexer(index) for index in key.values())
+    return type(key) is str or indexer(key)
+
+
+class SetItemOperation(AssignmentOperation):
+    """A recorded DataArray assignment with portable literal operands."""
+
+    op: typing.Literal["set_item"] = "set_item"
+    key: pydantic.JsonValue
+    value: pydantic.JsonValue
+
+    @classmethod
+    def from_literals(cls, key, value) -> typing.Self | None:
+        # Numeric array scalars, live handles and custom Python types can change
+        # meaning when converted to JSON. Keep those on the existing edit path.
+        try:
+            if _item_literal(key) and _item_key(key) and _item_literal(value):
+                return cls(
+                    key=encode_provenance_value(key),
+                    value=encode_provenance_value(value),
+                )
+        except (TypeError, RecursionError):
+            # A recursive container or an unsupported dimension key cannot be stored.
+            pass
+        return None
+
+    @pydantic.field_validator("key", "value")
+    @classmethod
+    def _validate_literal(cls, value, info: pydantic.ValidationInfo):
+        decoded = decode_provenance_value(value)
+        if not _item_literal(decoded) or (
+            info.field_name == "key" and not _item_key(decoded)
+        ):
+            raise ValueError(f"Invalid literal assignment {info.field_name}")
+        return value
+
+    def assignment(self) -> SetItem:
+        return SetItem(
+            decode_provenance_value(self.key), decode_provenance_value(self.value)
+        )
+
+    def derivation_label(self) -> str:
+        key = _format_derivation_value(decode_provenance_value(self.key))
+        return f"Set item {key}"
 
 
 class QSelOperation(ToolProvenanceOperation):
@@ -298,7 +374,7 @@ class SortByOperation(ToolProvenanceOperation):
         variables: Hashable | list[Hashable] = (
             self.variables[0] if len(self.variables) == 1 else list(self.variables)
         )
-        args = erlab.interactive.utils._parse_single_arg(variables)
+        args = erlab.utils._code._parse_single_arg(variables)
         if self.ascending:
             return f"{input_name}.sortby({args})"
         return f"{input_name}.sortby({args}, ascending=False)"
@@ -318,11 +394,13 @@ class SelectCoordOperation(ToolProvenanceOperation):
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
-        coord_name_code = erlab.interactive.utils._parse_single_arg(self.coord_name)
+        coord_name_code = erlab.utils._code._parse_single_arg(self.coord_name)
         return f"{input_name}.coords[{coord_name_code}]"
 
 
-class TransposeOperation(ToolProvenanceOperation):
+class TransposeOperation(ArrayMethodOperation):
+    method: typing.ClassVar[str] = "transpose"
+
     op: typing.Literal["transpose"] = "transpose"
     dims: NullableProvenanceHashableTuple = None
 
@@ -347,27 +425,14 @@ class TransposeOperation(ToolProvenanceOperation):
             return cls(dims=tuple(call.args) or None)
         return None
 
-    def apply(self, data: xr.DataArray) -> xr.DataArray:
-        if self.dims:
-            return data.transpose(*self.dims)
-        return data.transpose()
+    def arguments(self) -> tuple[typing.Any, ...]:
+        return self.dims or ()
 
     def derivation_label(self) -> str:
         if self.dims:
             dims_tuple = tuple(self.dims)
             return f"transpose({_format_derivation_value(dims_tuple)})"
         return "transpose()"
-
-    def expression_code(
-        self, input_name: str, *, source_name: str | None = None
-    ) -> str:
-        if self.dims:
-            dims_tuple = tuple(self.dims)
-            return (
-                f"{input_name}.transpose(*"
-                f"{erlab.interactive.utils._parse_single_arg(dims_tuple)})"
-            )
-        return f"{input_name}.transpose()"
 
 
 class SqueezeOperation(ToolProvenanceOperation):
@@ -435,10 +500,12 @@ class SqueezeOperation(ToolProvenanceOperation):
             kwargs["drop"] = self.drop
         if not kwargs:
             return f"{input_name}.squeeze()"
-        return f"{input_name}.squeeze({erlab.interactive.utils.format_kwargs(kwargs)})"
+        return f"{input_name}.squeeze({erlab.utils._code.format_kwargs(kwargs)})"
 
 
-class RenameOperation(ToolProvenanceOperation):
+class RenameOperation(ArrayMethodOperation):
+    method: typing.ClassVar[str] = "rename"
+
     op: typing.Literal["rename"] = "rename"
     name: str | None
 
@@ -457,14 +524,8 @@ class RenameOperation(ToolProvenanceOperation):
             return cls(name=call.args[0])
         return None
 
-    def apply(self, data: xr.DataArray) -> xr.DataArray:
-        return data.rename(self.name)
+    def arguments(self) -> tuple[typing.Any, ...]:
+        return (self.name,)
 
     def derivation_label(self) -> str:
         return f"rename({_format_derivation_value(self.name)})"
-
-    def expression_code(
-        self, input_name: str, *, source_name: str | None = None
-    ) -> str:
-        name_code = erlab.interactive.utils._parse_single_arg(self.name)
-        return f"{input_name}.rename({name_code})"

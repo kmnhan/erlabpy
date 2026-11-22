@@ -12,18 +12,18 @@ import pydantic
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive._figurecomposer._ui._panel_controls import _step_toolbar_button
-from erlab.interactive._figurecomposer._ui._reorder_list import ReorderList
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ToolProvenanceOperation,
     decode_provenance_value,
     encode_provenance_value,
     full_data,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AssignAttrsOperation,
     AssignScalarCoordOperation,
 )
+from erlab.interactive._figurecomposer._ui._panel_controls import _step_toolbar_button
+from erlab.interactive._figurecomposer._ui._reorder_list import ReorderList
 from erlab.interactive.imagetool.manager._metadata_editor import (
     _parse_typed_value,
     _value_text,

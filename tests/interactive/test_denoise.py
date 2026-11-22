@@ -7,9 +7,9 @@ import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
+from erlab._provenance._operations import DenoiseOperation
 from erlab.interactive._dntool import DenoiseTool, _denoise_coordinator
 from erlab.interactive.colors import BetterColorBarItem
-from erlab.interactive.imagetool._provenance._operations import DenoiseOperation
 
 
 def test_dntool_controls_and_processing_status(qtbot):

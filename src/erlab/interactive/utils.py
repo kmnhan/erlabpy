@@ -101,6 +101,11 @@ if typing.TYPE_CHECKING:
     import varname
     from pyqtgraph.GraphicsScene.mouseEvents import MouseDragEvent
 
+    from erlab._provenance._model import (
+        ScriptInput,
+        ToolProvenanceOperation,
+        ToolProvenanceSpec,
+    )
     from erlab.interactive._code_trust._api import _DocumentTrust
     from erlab.interactive._code_trust._core import (
         CodeTrustEntry,
@@ -108,11 +113,6 @@ if typing.TYPE_CHECKING:
         CodeTrustManifest,
     )
     from erlab.interactive._figurecomposer._providers import FigureSourceProvider
-    from erlab.interactive.imagetool._provenance._model import (
-        ScriptInput,
-        ToolProvenanceOperation,
-        ToolProvenanceSpec,
-    )
 else:
     import lazy_loader as _lazy
 
@@ -4331,9 +4331,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         self,
         operations: ToolProvenanceOperation | Sequence[ToolProvenanceOperation] | None,
     ) -> tuple[ToolProvenanceOperation, ...]:
-        from erlab.interactive.imagetool._provenance._model import (
-            ToolProvenanceOperation,
-        )
+        from erlab._provenance._model import ToolProvenanceOperation
 
         if operations is None:
             return ()
@@ -4352,10 +4350,8 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         script_inputs: Sequence[ScriptInput] = (),
         primary_input: str | None = None,
     ) -> ToolProvenanceSpec | None:
-        from erlab.interactive.imagetool._provenance._model import script
-        from erlab.interactive.imagetool._provenance._operations import (
-            ScriptCodeOperation,
-        )
+        from erlab._provenance._model import script
+        from erlab._provenance._operations import ScriptCodeOperation
 
         operations: tuple[
             ToolProvenanceOperation,
@@ -4880,7 +4876,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         state: typing.Literal["fresh", "stale", "unavailable"] = "fresh",
     ) -> None:
         """Set the fixed named input bindings for this tool."""
-        from erlab.interactive.imagetool._provenance._model import ScriptInput
+        from erlab._provenance._model import ScriptInput
 
         provided = tuple(script_inputs)
         if any(not isinstance(item, ScriptInput) for item in provided):
@@ -5433,9 +5429,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
     def _canonical_saved_script_inputs(
         script_inputs: Sequence[ScriptInput],
     ) -> tuple[ScriptInput, ...]:
-        from erlab.interactive.imagetool._provenance._model import (
-            _normalize_legacy_script_input,
-        )
+        from erlab._provenance._model import _normalize_legacy_script_input
 
         return tuple(_normalize_legacy_script_input(item) for item in script_inputs)
 
@@ -5686,7 +5680,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         authorization: object | None = None,
     ) -> xr.DataArray:
         """Apply the optional canonical transform stored on a data reference."""
-        from erlab.interactive.imagetool._provenance._model import (
+        from erlab._provenance._model import (
             parse_tool_provenance_spec,
             require_live_source_spec,
         )
@@ -5814,15 +5808,13 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         source_parent_data: xr.DataArray | None = None,
     ) -> tuple[tuple[ScriptInput, ...], str | None]:
         """Decode canonical inputs and the released unary metadata format."""
-        from erlab.interactive.imagetool._provenance._model import (
+        from erlab._provenance._model import (
             ScriptInput,
             parse_script_inputs,
             parse_tool_provenance_spec,
             require_live_source_spec,
         )
-        from erlab.interactive.imagetool._provenance._operations import (
-            ImageToolSelectionSourceBinding,
-        )
+        from erlab._provenance._operations import ImageToolSelectionSourceBinding
 
         def _legacy_value(name: str, decode: Callable[[typing.Any], typing.Any]):
             raw_value = attrs.get(name)
@@ -5988,7 +5980,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             Callable[[Iterable[CodeTrustEntry]], tuple[CodeTrustEntry, ...]] | None
         ) = None,
     ) -> xr.DataArray:
-        from erlab.interactive.imagetool._provenance._model import (
+        from erlab._provenance._model import (
             parse_tool_provenance_spec,
             require_live_source_spec,
         )
@@ -6683,7 +6675,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         cls,
         references: Mapping[str, Mapping[str, typing.Any]],
     ) -> Iterable[CodeTrustEntry]:
-        from erlab.interactive.imagetool._provenance._model import (
+        from erlab._provenance._model import (
             parse_tool_provenance_spec,
             require_live_source_spec,
         )

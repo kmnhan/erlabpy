@@ -2,6 +2,7 @@ import datetime
 import hashlib
 import json
 import logging
+import os
 import pathlib
 import shutil
 import subprocess
@@ -31,12 +32,8 @@ import erlab.interactive.imagetool.manager._workspace._storage as workspace_stor
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.plot_items as imagetool_plot_items
 import erlab.interactive.imagetool.viewer as imagetool_viewer
-from erlab.interactive import _persistence_constants
-from erlab.interactive.angle_calculator._state import AngleCalculatorState
-from erlab.interactive.derivative import DerivativeTool
-from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._load_source import _serialize_loader_kwargs
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._files import _serialize_loader_kwargs
+from erlab._provenance._model import (
     FileDataSelection,
     ScriptInput,
     ToolProvenanceSpec,
@@ -44,13 +41,17 @@ from erlab.interactive.imagetool._provenance._model import (
     full_data,
     script,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     ExtensionRoutineOperation,
     GaussianFilterOperation,
     ImageToolSelectionSourceBinding,
     RenameOperation,
     ScriptCodeOperation,
 )
+from erlab.interactive import _persistence_constants
+from erlab.interactive.angle_calculator._state import AngleCalculatorState
+from erlab.interactive.derivative import DerivativeTool
+from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import ImageToolManager
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
@@ -5215,6 +5216,149 @@ def test_workspace_failed_load_restores_revision_ownership(
         )
 
 
+@pytest.mark.parametrize("broken", [False, True])
+def test_workspace_replacement_owns_interpolation_history_and_pending_auto(
+    qtbot, tmp_path, manager_context, monkeypatch, broken
+):
+    import gc
+
+    from erlab._provenance._operations import NormalizeOperation
+    from erlab.interactive.imagetool.dialogs import InterpolationDialog
+    from erlab.interactive.imagetool.manager._console import ToolsNamespace
+
+    raw = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        coords={"x": [0.0, 1.0, 2.0], "y": [0.0, 1.0, 2.0, 3.0]},
+        dims=("x", "y"),
+        name="spectrum",
+    )
+    expected = raw.isel(x=[0, 2], y=[1, 3])
+    path = tmp_path / "incoming.itws"
+    with manager_context() as manager:
+
+        def add(array):
+            return manager._node_for_target(
+                manager.add_imagetool(
+                    itool(array, manager=False, execute=False), show=False
+                )
+            )
+
+        source = add(raw)
+        grid = add(xr.zeros_like(expected).rename("grid"))
+        dialog = InterpolationDialog(source.slicer_area)
+        dialog.target_tabs.setCurrentIndex(1)
+        dialog.target_tool_selector.set_current_uid(grid.uid)
+        dialog.accept()
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+        child_uid = source._childtool_indices[-1]
+        session = manager._operations
+        graph = session.graph
+        child_source = graph.source_revision(child_uid)
+        if broken:
+            manager._node_for_target(child_uid).slicer_area.apply_filter_operation(
+                NormalizeOperation(dims=("x",), mode="min")
+            )
+        child_revision = graph.current_revision(child_uid)
+        original = graph.current_revision(source.uid)
+        loader = manager._workspace_controller.loading
+        if broken:
+            with h5py.File(path, "w") as document:
+                document.attrs["imagetool_workspace_schema_version"] = 4
+                document.create_group("0")
+        else:
+            manager._workspace_controller.saving._save_workspace_document(path)
+
+        ToolsNamespace(manager)[source.index][:] = 40.0
+        qtbot.wait_until(lambda: graph.is_stale(child_uid))
+        graph_ids = graph.revision_ids
+        current_inputs = graph.next_inputs(child_uid)
+        # Queue a genuine Auto refresh on the last turn of the old document.
+        # Replace drains GUI events while the incoming windows are installed.
+        backup = loader._workspace_replace_backup_for_load
+
+        def queue_auto_after_backup(path):
+            result = backup(path)
+            manager._node_for_target(child_uid)._set_source_auto_update(True)
+            return result
+
+        remove_all = manager.remove_all_tools
+
+        def close_windows():
+            remove_all()
+            QtWidgets.QApplication.processEvents()
+            assert graph.current_revision(child_uid) == child_revision
+
+        def replace_workspace():
+            with monkeypatch.context() as boundary:
+                boundary.setattr(
+                    loader,
+                    "_workspace_replace_backup_for_load",
+                    queue_auto_after_backup,
+                )
+                boundary.setattr(manager, "remove_all_tools", close_windows)
+                return loader._load_workspace_file(
+                    path, replace=True, associate=True, mark_dirty=False, select=False
+                )
+
+        if broken:
+            with pytest.raises(ValueError, match="No workspace windows"):
+                replace_workspace()
+            assert manager._operations is session
+            assert graph.revision_ids == graph_ids
+            assert graph.next_inputs(child_uid) == current_inputs
+            restored_source = manager._node_for_target(source.uid)
+            assert restored_source.revision_id_for_role(
+                "displayed", graph_owned=True
+            ) == graph.current_revision(source.uid)
+            child = manager._node_for_target(child_uid)
+            assert child.source_auto_update
+            manager._set_metadata_node(child)
+            assert not manager.next_inputs_box.isHidden()
+            assert child.current_revision_id == child_source
+            assert (
+                child.revision_id_for_role("displayed", graph_owned=True)
+                == child_revision
+            )
+            xr.testing.assert_identical(
+                ToolsNamespace(manager).checkpoint(original), raw
+            )
+            xr.testing.assert_identical(graph.data(child_source), expected)
+            np.testing.assert_array_equal(
+                graph.data(child_revision), expected - expected.min("x")
+            )
+            qtbot.wait_until(
+                lambda: graph.current_revision(child_uid) != child_revision
+            )
+            np.testing.assert_array_equal(
+                child.slicer_area.displayed_data, xr.zeros_like(expected)
+            )
+            child.slicer_area.apply_filter_operation(None)
+            xr.testing.assert_identical(
+                child.slicer_area.displayed_data, xr.full_like(expected, 40)
+            )
+            # Releasing the last follower keeps each restored source's checkpoint.
+            grid_revision = graph.current_revision(grid.uid)
+            manager._remove_uid_target(child_uid)
+            assert grid.uid not in graph
+            xr.testing.assert_identical(
+                manager._provenance_revisions.resolve_data(grid_revision),
+                xr.zeros_like(expected).rename("grid"),
+            )
+        else:
+            assert replace_workspace()
+            assert manager._operations is not session
+            assert manager._provenance_revisions is not session.revisions
+            assert not graph.entry_ids
+            assert not session.revisions.revision_ids
+            child = manager._node_for_target(child_uid)
+            assert child.current_revision_id == child_revision
+            xr.testing.assert_identical(child.data_for_role("source"), expected)
+            old_graph = weakref.ref(graph)
+            del session, graph
+            gc.collect()
+            assert old_graph() is None
+
+
 def test_manager_workspace_replace_load_failure_restores_previous_workspace(
     qtbot,
     tmp_path,
@@ -5312,6 +5456,225 @@ def test_manager_workspace_replace_load_failure_uses_clean_file_backup(
         assert manager.ntools == 1
         xarray.testing.assert_equal(manager.get_imagetool(0).slicer_area._data, data)
         assert not manager.is_workspace_modified
+
+
+@pytest.mark.parametrize(
+    "source_state", ["available", "missing_before", "moved_during", "modified_during"]
+)
+def test_workspace_replace_backs_up_shared_pending_images(
+    monkeypatch, tmp_path, manager_context, source_state
+) -> None:
+    source = tmp_path / "imported.itws"
+    incoming = tmp_path / "broken.itws"
+    data = xr.DataArray(
+        np.arange(25.0).reshape(5, 5),
+        coords={"x": np.arange(5), "y": np.arange(5)},
+        name="saved",
+    )
+    with manager_context() as manager:
+        tool = itool(data, manager=False, execute=False)
+        manager.add_imagetool(tool, show=False)
+        tool.hide()
+        saver = manager._workspace_controller.saving
+        monkeypatch.setattr(saver, "_workspace_compression_mode", lambda: "none")
+        saver._save_workspace_document(source)
+        manager.remove_all_tools()
+        original_group = _current_workspace_payload_path(source)
+        with h5py.File(source, "r+") as doc:
+            alternate = doc.create_group("alias")
+            for name, dataset in doc[original_group].items():
+                alternate[name] = dataset
+            alternate.attrs.update(doc[original_group].attrs)
+            alternate.attrs["row_setting"] = "stored in alternate group"
+        loader = manager._workspace_controller.loading
+        for _ in range(2):
+            assert loader._load_workspace_file(
+                source, replace=False, associate=False, mark_dirty=True, select=False
+            )
+        nodes = tuple(manager._tool_graph.root_wrappers.values())
+        assert len(nodes) == 2
+        payload = nodes[0].pending_workspace_memory_payload
+        assert payload is not None
+        assert nodes[1].pending_workspace_memory_payload == payload
+        expected = {}
+        for idx, node in enumerate(nodes):
+            node.name = f"image-{idx}"
+            node.note = f"note-{idx}"
+            expected[node.uid] = (
+                node.index,
+                node.name,
+                node.note,
+                node.snapshot_token,
+                node.current_revision_id,
+            )
+        # A pending row can inherit its window settings from the stored object.
+        nodes[1].set_pending_workspace_memory_payload(source, "alias")
+        payloads = {node.uid: node.pending_workspace_memory_payload for node in nodes}
+        with h5py.File(incoming, "w") as doc:
+            doc.attrs["imagetool_workspace_schema_version"] = 4
+            doc.create_group("0")
+        capturing = False
+        signal_reads = []
+        getitem = h5py.Dataset.__getitem__
+
+        def record_read(dataset, key, *args, **kwargs):
+            if (
+                capturing
+                and dataset.name.rsplit("/", 1)[-1]
+                == _persistence_constants.ITOOL_DATA_NAME
+            ):
+                signal_reads.append(dataset.name)
+            return getitem(dataset, key, *args, **kwargs)
+
+        monkeypatch.setattr(h5py.Dataset, "__getitem__", record_read)
+
+        def reject_materialization(*args, **kwargs):
+            pytest.fail(
+                "Replace constructed a pending window while capturing its backup"
+            )
+
+        monkeypatch.setattr(
+            loader.pending,
+            "_materialize_pending_workspace_payload",
+            reject_materialization,
+        )
+        moved = tmp_path / "moved.itws"
+        if source_state == "missing_before":
+            source.rename(moved)
+            with pytest.raises(FileNotFoundError):
+                loader._load_workspace_file(
+                    incoming,
+                    replace=True,
+                    associate=True,
+                    mark_dirty=False,
+                    select=False,
+                )
+            assert tuple(manager._tool_graph.root_wrappers.values()) == nodes
+            lock = workspace_storage._acquire_workspace_document_lock(incoming)
+            lock.unlock()
+            return
+        recover = loader._recoverable_pending_images
+        if source_state == "available":
+            # Exercise the Windows content comparison on all test hosts.
+            monkeypatch.setattr(
+                loader,
+                "_recoverable_pending_images",
+                lambda backup, tree, **kwargs: recover(
+                    backup, tree, compare_contents=True
+                ),
+            )
+        capture = loader._workspace_replace_backup_for_load
+
+        def change_after_capture(*args):
+            nonlocal capturing
+            capturing = True
+            try:
+                backup = capture(*args)
+            finally:
+                capturing = False
+            if source_state == "moved_during":
+                source.rename(moved)
+            elif source_state == "modified_during":
+                info = source.stat()
+                with h5py.File(source) as doc:
+                    signal = doc[original_group][_persistence_constants.ITOOL_DATA_NAME]
+                    assert signal.id.get_create_plist().get_nfilters() == 0
+                    offset = (
+                        signal.id.get_offset()
+                        if signal.chunks is None
+                        else signal.id.get_chunk_info_by_coord((0, 0)).byte_offset
+                    )
+                    value = np.array(-999, dtype=signal.dtype).tobytes()
+                with source.open("r+b") as stream:
+                    stream.seek(offset)
+                    stream.write(value)
+                with h5py.File(source) as doc:
+                    assert (
+                        doc[original_group][_persistence_constants.ITOOL_DATA_NAME][
+                            0, 0
+                        ]
+                        == -999
+                    )
+                os.utime(source, ns=(info.st_atime_ns, info.st_mtime_ns))
+                changed = source.stat()
+                assert (changed.st_ino, changed.st_size, changed.st_mtime_ns) == (
+                    info.st_ino,
+                    info.st_size,
+                    info.st_mtime_ns,
+                )
+            return backup
+
+        monkeypatch.setattr(
+            loader, "_workspace_replace_backup_for_load", change_after_capture
+        )
+        with pytest.raises(ValueError, match="No workspace windows"):
+            loader._load_workspace_file(
+                incoming, replace=True, associate=True, mark_dirty=False, select=False
+            )
+        assert len(signal_reads) == 1
+        assert set(manager._tool_graph.nodes) == set(expected)
+        monkeypatch.undo()
+        for uid, (index, name, note, token, revision) in expected.items():
+            restored = manager._node_for_target(index)
+            assert (
+                restored.uid,
+                restored.name,
+                restored.note,
+                restored.snapshot_token,
+                restored.current_revision_id,
+            ) == (uid, name, note, token, revision)
+            if source_state == "available":
+                assert restored.imagetool is None
+                assert restored.pending_workspace_memory_payload == payloads[uid]
+                if payloads[uid] == (source, "alias"):
+                    assert (
+                        restored.pending_workspace_payload_attrs["row_setting"]
+                        == "stored in alternate group"
+                    )
+            else:
+                assert restored.imagetool is not None
+            xr.testing.assert_identical(
+                manager.get_imagetool(index).slicer_area._data, data.rename(name)
+            )
+        if source_state != "available":
+            left, right = (
+                manager.get_imagetool(node.index).slicer_area._data for node in nodes
+            )
+            assert not np.shares_memory(left.values, right.values)
+        assert manager.is_workspace_modified
+    # The external document and the failed target must both release their locks.
+    for path in (source, incoming):
+        lock = workspace_storage._acquire_workspace_document_lock(path)
+        lock.unlock()
+
+
+def test_workspace_replace_skips_pending_images_below_unsavable_tool(
+    monkeypatch, tmp_path, manager_context
+) -> None:
+    data = xr.DataArray(np.arange(9.0).reshape(3, 3), dims=("x", "y"))
+    with manager_context() as manager:
+        root = manager.add_imagetool(
+            itool(data, manager=False, execute=False), show=False
+        )
+        tool = _AddedTimeChildTool(data)
+        parent = add_source_childtool(manager, tool, root, show=False)
+        loader = manager._workspace_controller.loading
+        child = loader.pending._register_pending_workspace_imagetool(
+            xr.Dataset(),
+            parent_target=parent,
+            node_path=None,
+            kwargs={},
+            pending_workspace_memory_payload=(tmp_path / "unavailable.itws", "image"),
+            loaded_targets_by_uid=None,
+        )
+        monkeypatch.setattr(tool, "can_save_and_load", lambda: False)
+        backup = loader._workspace_replace_backup_for_load(None)
+        try:
+            assert backup.tree is not None
+            assert set(backup.tree[str(root)].children) == {"imagetool"}
+            assert manager._node_for_target(child).imagetool is None
+        finally:
+            backup.close()
 
 
 def test_manager_workspace_replace_load_failure_keeps_dirty_memory_backup(

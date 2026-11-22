@@ -15,8 +15,7 @@ import pydantic
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive._figurecomposer._ui._panel_controls import _step_toolbar_button
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     _ProvenanceStepRef,
@@ -25,10 +24,11 @@ from erlab.interactive.imagetool._provenance._model import (
     iter_operation_refs,
     require_live_source_spec,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AssignAttrsOperation,
     AssignScalarCoordOperation,
 )
+from erlab.interactive._figurecomposer._ui._panel_controls import _step_toolbar_button
 
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Iterable, Iterator, Mapping, Sequence

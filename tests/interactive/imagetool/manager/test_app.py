@@ -30,10 +30,10 @@ import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._updater_core as manager_updater_core
 import erlab.interactive.imagetool.manager._updater_gui as manager_updater_gui
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
+from erlab._provenance._model import ScriptInput
 from erlab.interactive._options.schema import AppOptions
 from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
 from erlab.interactive.imagetool._frozen_numba_cache import PyInstallerCacheLocator
-from erlab.interactive.imagetool._provenance._model import ScriptInput
 from erlab.interactive.imagetool.manager import load_in_manager
 from erlab.interactive.imagetool.manager._server import (
     AddDataPacket,
@@ -814,6 +814,7 @@ def test_manager_main_configure_packaged_runtime_caches_skips_source_launch(
 def test_manager_main_configure_packaged_runtime_caches_sets_packaged_env(
     tmp_path, monkeypatch
 ) -> None:
+    monkeypatch.setattr(os, "environ", os.environ.copy())
     cache_root = tmp_path / "cache-root"
     monkeypatch.delenv("MPLCONFIGDIR", raising=False)
     monkeypatch.delenv("NUMBA_CACHE_DIR", raising=False)

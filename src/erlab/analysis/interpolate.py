@@ -2,6 +2,7 @@
 
 __all__ = [
     "FastInterpolator",
+    "interp_like",
     "interpn",
     "leading_edge",
     "slice_along_path",
@@ -12,7 +13,7 @@ import itertools
 import math
 import threading
 import typing
-from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Hashable, Iterable, Mapping, Sequence
 
 import numba
 import numpy as np
@@ -24,6 +25,96 @@ import xarray.core.missing
 
 import erlab
 from erlab.accessors.utils import either_dict_or_kwargs
+
+
+def _prepare_interpolation_source(
+    data: xr.DataArray, dimensions: Collection[Hashable]
+) -> xr.DataArray:
+    indexers: dict[Hashable, slice | np.ndarray] = {}
+    for dim in dimensions:
+        values = np.asarray(data[dim].values)
+        if values.ndim != 1:
+            raise ValueError("Input DataArray is not 1-D.")
+        if np.all(values[1:] > values[:-1]):
+            continue
+        if np.all(values[1:] < values[:-1]):
+            indexers[dim] = slice(None, None, -1)
+        else:
+            indexers[dim] = np.argsort(values, kind="stable")
+    return data.isel(indexers) if indexers else data
+
+
+def _target_dimensions(
+    data: xr.DataArray, target: xr.DataArray, dimensions: tuple[Hashable, ...] | None
+) -> tuple[Hashable, ...]:
+    if dimensions is not None:
+        return dimensions
+    return tuple(
+        dim
+        for dim in data.dims
+        if len(target.xindexes.get_all_coords(dim, errors="ignore")) == 1
+    )
+
+
+def _validate_interp_like(
+    data: xr.DataArray, target: xr.DataArray, dimensions: tuple[Hashable, ...]
+) -> None:
+    if not dimensions:
+        raise ValueError("The target has no matching dimension coordinates.")
+    for dim in dimensions:
+        if dim not in data.dims:
+            raise ValueError(f"The source dimension {dim!r} is not available.")
+        if dim not in target.dims or dim not in target.coords:
+            raise ValueError(
+                f"The target dimension coordinate {dim!r} is not available."
+            )
+        for label, coord in (
+            ("source", data[dim]),
+            ("target", target.coords[dim]),
+        ):
+            values = np.asarray(coord.values)
+            if coord.dims != (dim,) or values.ndim != 1:
+                raise ValueError(
+                    f"The {label} coordinate {dim!r} must be one-dimensional."
+                )
+            if not np.issubdtype(values.dtype, np.number) or np.issubdtype(
+                values.dtype, np.complexfloating
+            ):
+                raise TypeError(
+                    f"The {label} coordinate {dim!r} must contain real numbers."
+                )
+            if values.size == 0 or not np.all(np.isfinite(values)):
+                raise ValueError(
+                    f"The {label} coordinate {dim!r} must be nonempty and finite."
+                )
+            if label == "source" and np.unique(values).size != values.size:
+                raise ValueError(
+                    f"The source coordinate {dim!r} values must be unique."
+                )
+
+
+def interp_like(
+    data: xr.DataArray,
+    target: xr.DataArray,
+    *,
+    dimensions: tuple[Hashable, ...] | None = None,
+    method: typing.Literal["linear", "nearest"] = "linear",
+) -> xr.DataArray:
+    """Interpolate along the real dimension coordinates of another array.
+
+    With no dimension selection, use all matching coordinates as in
+    :meth:`xarray.DataArray.interp_like`. With a selection, use the target's
+    labeled coordinate arrays as indexers. A sorted source keeps its data order.
+    Descending and unordered source coordinates are sorted before interpolation.
+    """
+    dims = _target_dimensions(data, target, dimensions)
+    _validate_interp_like(data, target, dims)
+    source = _prepare_interpolation_source(data, dims)
+    if dimensions is None:
+        return source.interp_like(target, method=method, assume_sorted=True)
+    return source.interp(
+        {dim: target.coords[dim] for dim in dims}, method=method, assume_sorted=True
+    )
 
 
 class FastInterpolator(scipy.interpolate.RegularGridInterpolator):

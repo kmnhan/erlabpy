@@ -23,18 +23,15 @@ import erlab.interactive.imagetool.manager._io as manager_io
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 import erlab.interactive.imagetool.viewer_linking as imagetool_viewer_linking
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
-from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     FileDataSelection,
     ScriptInput,
     ToolProvenanceSpec,
     full_data,
     script,
 )
-from erlab.interactive.imagetool._provenance._operations import (
-    GaussianFilterOperation,
-    ScriptCodeOperation,
-)
+from erlab._provenance._operations import GaussianFilterOperation, ScriptCodeOperation
+from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import ImageToolManager, load_in_manager
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._dialogs import (
@@ -52,11 +49,9 @@ from erlab.interactive.imagetool.manager._modelview import (
     _RowBadge,
 )
 from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
-from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
-
-from .helpers import (
+from tests.interactive.imagetool.manager.helpers import (
     assert_nonempty_tooltip,
     click_tree_view_pos,
     metadata_detail_map,
@@ -3744,7 +3739,9 @@ def test_remove_imagetool_removes_childtools() -> None:
     removed_rows: list[int] = []
     refresh_calls: list[None] = []
     cleared_dependency_uids: list[str] = []
+    closed_graph_uids: list[str] = []
     canceled_node_change_uids: list[str] = []
+    nodes_at_checkpoint_cleanup: list[set[str]] = []
 
     class _DummyWrapper:
         def __init__(self):
@@ -3767,12 +3764,15 @@ def test_remove_imagetool_removes_childtools() -> None:
     tool_graph.nodes[wrapper.uid] = wrapper
     manager = types.SimpleNamespace(
         _tool_graph=tool_graph,
-        _provenance_revisions=_ProvenanceRevisionStore(),
         _workspace_controller=types.SimpleNamespace(
-            local_provenance_change=contextlib.nullcontext
+            local_provenance_change=contextlib.nullcontext,
+            _discard_unreachable_provenance_revisions=lambda: (
+                nodes_at_checkpoint_cleanup.append(set(tool_graph.nodes))
+            ),
         ),
         _bulk_remove_depth=0,
         _cancel_managed_node_change=canceled_node_change_uids.append,
+        _operations=types.SimpleNamespace(removed=closed_graph_uids.append),
         _mark_removed_subtree_dirty=lambda _uid: None,
         _mark_singleton_workspace_link_groups_dirty=lambda _link_keys: None,
         _remove_uid_target=lambda child_uid, **_kwargs: (
@@ -3798,8 +3798,10 @@ def test_remove_imagetool_removes_childtools() -> None:
     assert removed_uids == [uid]
     assert removed_rows == [0]
     assert refresh_calls == [None]
+    assert closed_graph_uids == [wrapper.uid]
     assert cleared_dependency_uids == [wrapper.uid]
     assert canceled_node_change_uids == [wrapper.uid]
+    assert nodes_at_checkpoint_cleanup == [set()]
     assert wrapper.disposed
     assert wrapper.deleted
     assert manager._tool_graph.root_wrappers == {}
@@ -4629,7 +4631,7 @@ def test_manager_multifile_handler_selection_failure_branches(
             "_select_input_dataarrays",
             lambda _data, _parent: None,
         )
-        handler._on_loaded(file_path, data)
+        handler._on_loaded(file_path, data, None)
 
         assert handler.canceled == [file_path]
         assert finished == [([], [file_path], [])]
@@ -4643,7 +4645,7 @@ def test_manager_multifile_handler_selection_failure_branches(
             "_select_input_dataarrays",
             _raise_selection_error,
         )
-        handler._on_loaded(file_path, data)
+        handler._on_loaded(file_path, data, None)
 
         assert handler.failed == [file_path]
         assert finished == [([], [], [file_path])]
@@ -4706,7 +4708,7 @@ def test_manager_multifile_handler_records_delivery_result(
         handler, "_on_failed", lambda path, _details: handler.failed.append(path)
     )
 
-    handler._deliver_and_queue(file_path, (prepared,))
+    handler._deliver_and_queue(file_path, (prepared,), None)
 
     assert (file_path in handler.loaded) is loaded
     assert (file_path in handler.failed) is failed

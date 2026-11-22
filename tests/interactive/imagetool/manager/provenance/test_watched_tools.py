@@ -14,6 +14,8 @@ import erlab.interactive.imagetool._highdim as imagetool_highdim
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
+from erlab._provenance._model import FileDataSelection, ScriptInput, full_data
+from erlab._provenance._operations import AverageOperation, RenameOperation
 from erlab.interactive import _persistence_constants
 from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive._fit2d import Fit2DTool
@@ -21,15 +23,6 @@ from erlab.interactive._mesh import MeshTool
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._provenance._model import (
-    FileDataSelection,
-    ScriptInput,
-    full_data,
-)
-from erlab.interactive.imagetool._provenance._operations import (
-    AverageOperation,
-    RenameOperation,
-)
 from erlab.interactive.imagetool.manager import fetch
 from erlab.interactive.imagetool.manager._server import _remove_idx, _show_idx
 from tests.interactive.imagetool.manager.helpers import (
@@ -1569,8 +1562,8 @@ def test_manager_dntool_image_menu_source_and_result(
         lambda: tmp_path / "manager.log",
     )
     pytest.importorskip("onnxruntime")
+    from erlab._provenance._operations import DenoiseOperation
     from erlab.interactive._dntool import DenoiseTool
-    from erlab.interactive.imagetool._provenance._operations import DenoiseOperation
 
     data = xr.DataArray(
         np.arange(1.0, 31.0).reshape(5, 6),
@@ -1791,9 +1784,9 @@ def test_manager_dntool_output_provenance_edit_and_copy(
 ):
     from qtpy import QtWidgets
 
+    from erlab._provenance._operations import DenoiseOperation
     from erlab.interactive._dntool import DenoiseTool
     from erlab.interactive.imagetool import dialogs
-    from erlab.interactive.imagetool._provenance._operations import DenoiseOperation
 
     monkeypatch.setattr(
         "erlab.interactive.imagetool.manager._logging.get_log_file_path",
@@ -1912,8 +1905,8 @@ def test_manager_dntool_source_refresh_is_responsive_and_atomic(
 ):
     from qtpy import QtCore, QtWidgets
 
+    from erlab._provenance._operations import DenoiseOperation
     from erlab.interactive._dntool import DenoiseTool
-    from erlab.interactive.imagetool._provenance._operations import DenoiseOperation
 
     monkeypatch.setattr(
         "erlab.interactive.imagetool.manager._logging.get_log_file_path",
@@ -2020,8 +2013,8 @@ def test_manager_dntool_source_refresh_is_responsive_and_atomic(
 def test_manager_dntool_source_refresh_uses_latest_queued_input(
     qtbot, manager_context, monkeypatch, tmp_path, completion
 ):
+    from erlab._provenance._operations import DenoiseOperation
     from erlab.interactive._dntool import DenoiseTool, _denoise_coordinator
-    from erlab.interactive.imagetool._provenance._operations import DenoiseOperation
 
     monkeypatch.setattr(
         "erlab.interactive.imagetool.manager._logging.get_log_file_path",

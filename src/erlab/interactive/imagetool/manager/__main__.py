@@ -57,6 +57,11 @@ def _configure_packaged_runtime_caches() -> None:
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
+    if sys.argv[1:2] == ["--erlab-extension-worker"]:
+        from erlab.extensions._subprocess import serve_worker
+
+        serve_worker(int(sys.argv[2]))
+        sys.exit(0)
     _configure_packaged_runtime_caches()
 
     from erlab.interactive.imagetool.manager import main

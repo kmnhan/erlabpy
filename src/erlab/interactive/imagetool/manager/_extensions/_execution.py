@@ -1,10 +1,9 @@
-"""Serialized in-process execution for ImageTool Manager extensions."""
+"""Serialized execution for ImageTool Manager extensions."""
 
 from __future__ import annotations
 
 import collections.abc
 import contextlib
-import copy
 import dataclasses
 import hashlib
 import logging
@@ -19,13 +18,18 @@ import typing
 import uuid
 from collections import deque
 
-import numpy as np
 import xarray as xr
 from qtpy import QtCore
 
 import erlab
+from erlab._provenance._model import compose_display_provenance, full_data
+from erlab._provenance._operations import ExtensionRoutineOperation
+from erlab._provenance._settings import ExecutionSettings
 from erlab.extensions import (
     ExtensionExecutionError,
+    ExtensionImportError,
+    ExtensionNotFoundError,
+    ExtensionSignatureError,
     LoadedScript,
     LoaderDescriptor,
     RoutineDescriptor,
@@ -37,13 +41,6 @@ from erlab.extensions._api import (
 )
 from erlab.extensions._models import _require_finite_parameter_values, _script_name_key
 from erlab.interactive.imagetool._mainwindow import ImageTool
-from erlab.interactive.imagetool._provenance._model import (
-    compose_display_provenance,
-    full_data,
-)
-from erlab.interactive.imagetool._provenance._operations import (
-    ExtensionRoutineOperation,
-)
 from erlab.interactive.imagetool.manager._extensions._catalog import (
     _capability_descriptor,
     _capability_status,
@@ -62,7 +59,8 @@ from erlab.io.dataloader import LoaderBase
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping
 
-    from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
+    from erlab._provenance._model import ToolProvenanceOperation
+    from erlab.extensions._routine import RoutineProcesses
     from erlab.interactive.imagetool.manager._extensions._catalog import (
         _ExtensionCatalog,
     )
@@ -202,6 +200,9 @@ class _ExtensionRoutineJob:
     input_uid: str
     input_snapshot: str
     input_data: xr.DataArray
+    settings: ExecutionSettings = dataclasses.field(
+        default_factory=ExecutionSettings.capture
+    )
 
     @property
     def script_name(self) -> str:
@@ -636,103 +637,6 @@ class _ExtensionWorkerSignals(QtCore.QObject):
     finished = QtCore.Signal(object)
 
 
-def _copied_xindexes(data: xr.DataArray) -> dict[typing.Hashable, xr.Index]:
-    """Copy each unique xarray index without splitting shared index groups."""
-    copies: dict[int, xr.Index] = {}
-    indexes: dict[typing.Hashable, xr.Index] = {}
-    for name, index in data.xindexes.items():
-        index_key = id(index)
-        copied = copies.get(index_key)
-        if copied is None:
-            copied = index.copy(deep=True)
-            copies[index_key] = copied
-        indexes[name] = copied
-    return indexes
-
-
-def _readonly_array(data: xr.DataArray) -> xr.DataArray:
-    """Return an isolated xarray wrapper backed by read-only NumPy views."""
-    values = data.data
-    if isinstance(values, np.ndarray):
-        values = values.view()
-        values.flags.writeable = False
-    coordinates: dict[typing.Hashable, xr.Variable] = {}
-    for name, coordinate in data.coords.items():
-        coordinate_data = coordinate.data
-        if isinstance(coordinate_data, np.ndarray):
-            coordinate_data = coordinate_data.view()
-            coordinate_data.flags.writeable = False
-        coordinates[name] = xr.Variable(
-            coordinate.dims,
-            coordinate_data,
-            attrs=copy.deepcopy(coordinate.attrs),
-            encoding=copy.deepcopy(coordinate.encoding),
-        )
-    result = xr.DataArray(
-        xr.Variable(
-            data.dims,
-            values,
-            attrs=copy.deepcopy(data.attrs),
-        ),
-        coords=xr.Coordinates(coordinates, indexes=_copied_xindexes(data)),
-        name=data.name,
-    )
-    result.encoding = copy.deepcopy(data.encoding)
-    for coordinate in result.coords.values():
-        if isinstance(coordinate.data, np.ndarray):
-            coordinate.data.flags.writeable = False
-    return result
-
-
-def _detached_routine_output(
-    output: xr.DataArray, input_data: xr.DataArray
-) -> xr.DataArray:
-    """Detach result buffers that are read-only or still alias the routine input."""
-    input_buffers = tuple(
-        value
-        for value in (
-            input_data.data,
-            *(coordinate.data for coordinate in input_data.coords.values()),
-        )
-        if isinstance(value, np.ndarray)
-    )
-
-    def detached(values: typing.Any) -> tuple[typing.Any, bool]:
-        if not isinstance(values, np.ndarray):
-            return values, False
-        if values.flags.writeable and not any(
-            np.may_share_memory(values, source) for source in input_buffers
-        ):
-            return values, False
-        return values.copy(), True
-
-    values, data_changed = detached(output.data)
-    coordinates: dict[typing.Hashable, xr.Variable] = {}
-    coordinates_changed = False
-    for name, coordinate in output.coords.items():
-        coordinate_values, changed = detached(coordinate.data)
-        coordinates_changed |= changed
-        coordinates[name] = xr.Variable(
-            coordinate.dims,
-            coordinate_values,
-            attrs=dict(coordinate.attrs),
-            encoding=dict(coordinate.encoding),
-        )
-    if not data_changed and not coordinates_changed:
-        return output
-    result = xr.DataArray(
-        xr.Variable(
-            output.dims,
-            values,
-            attrs=dict(output.attrs),
-        ),
-        coords=xr.Coordinates(coordinates, indexes=_copied_xindexes(output)),
-        name=output.name,
-    )
-    result.encoding = dict(output.encoding)
-    return result
-
-
 def _require_loader_entry(
     call: _ExtensionLoaderCall,
     entry: tuple[LoaderDescriptor, Callable[..., typing.Any]] | None,
@@ -784,25 +688,6 @@ def _xarray_log_fields(
                 }
             )
     return fields
-
-
-def _require_routine(
-    loaded: erlab.extensions.LoadedScript, routine_id: str
-) -> tuple[RoutineDescriptor, Callable[..., typing.Any]]:
-    entry = loaded.erlab.routines.get(routine_id)
-    if entry is None:
-        raise ExtensionExecutionError(
-            f"Routine {routine_id!r} is missing from the registered source"
-        )
-    return entry
-
-
-def _require_dataarray(value: typing.Any) -> xr.DataArray:
-    if not isinstance(value, xr.DataArray):
-        raise ExtensionExecutionError(
-            f"Routine returned {type(value).__name__}; expected DataArray"
-        )
-    return value
 
 
 def _reject_builtin_loader_filter_conflicts(
@@ -880,7 +765,6 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
         *,
         manager_session_id: str,
         catalog_store: _ExtensionCatalogStore,
-        script_modules: dict[tuple[str, str, str], LoadedScript],
         source_is_healthy: Callable[[str, str], bool],
     ) -> None:
         super().__init__()
@@ -890,7 +774,6 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
         self.job = job
         self.manager_session_id = manager_session_id
         self.catalog_store = catalog_store
-        self.script_modules = script_modules
         self.source_is_healthy = source_is_healthy
         self.signals = _ExtensionWorkerSignals()
         self.result: _ExtensionRoutineResult | None = None
@@ -956,30 +839,25 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
             self._started.set()
             self.signals.started.emit()
             logger.info("Importing extension source", extra=fields)
-            module_name = _manager_module_name(
-                self.manager_session_id,
-                self.job.script_name,
-                self.job.source_hash,
-                self.job.snapshot.registered_path,
-            )
+            from erlab.extensions._routine import run_recorded_routine
+
             try:
-                loaded = _cached_script(
-                    self.script_modules,
-                    snapshot=self.job.snapshot,
-                    module_name=module_name,
+                result = run_recorded_routine(
+                    self.job.input_data,
+                    source=self.job.snapshot.source_bytes,
+                    path=self.job.snapshot.registered_path,
+                    source_hash=self.job.source_hash,
+                    routine_id=self.job.routine.id,
+                    parameters=self.job.parameters,
+                    settings=self.job.settings,
                 )
-                entry = _require_routine(loaded, self.job.routine.id)
-            except BaseException as error:
+            except (
+                ExtensionImportError,
+                ExtensionNotFoundError,
+                ExtensionSignatureError,
+            ):
                 source_failure = True
-                raise _ExtensionSourceLoadFailure(
-                    f"Extension routine {self.job.routine.id!r} could not be imported"
-                ) from error
-            parameters = _coerce_call_parameters(entry[1], self.job.parameters)
-            logger.info("Invoking extension routine", extra=fields)
-            result = _require_dataarray(
-                entry[1](_readonly_array(self.job.input_data), **parameters)
-            )
-            result = _detached_routine_output(result, self.job.input_data)
+                raise
             erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(result)
             output = result
             status = "success"
@@ -1041,6 +919,7 @@ class _ExtensionExecutionController(QtCore.QObject):
         self._manager = manager
         self._catalog = catalog
         self._manager_session_id = manager._manager_record.internal_id
+        self._routine_processes: RoutineProcesses | None = None
         self._pool = QtCore.QThreadPool(self)
         self._pool.setStackSize(erlab.interactive.utils._python_thread_stack_size())
         self._pool.setMaxThreadCount(1)
@@ -1469,7 +1348,10 @@ class _ExtensionExecutionController(QtCore.QObject):
         if not self._accepting:
             raise RuntimeError("Extension execution is shutting down")
         node = self._manager._node_for_target(target)
-        data = node.data_for_role("displayed")
+        revision = node.revision_id_for_role("displayed")
+        # The queue owns this captured value even if an external producer reuses
+        # the display buffer before the worker starts. IPC protects it on execution.
+        data = self._manager._provenance_revisions._captured_data(revision)
         job = self._routine_job(
             script_name=script_name,
             source_hash=source_hash,
@@ -1509,6 +1391,9 @@ class _ExtensionExecutionController(QtCore.QObject):
             input_data=data,
             input_uid="provenance-replay",
             input_snapshot="pinned-source",
+            settings=ExecutionSettings.from_options(operation.execution_options)
+            if operation.execution_options is not None
+            else None,
         )
         worker = self._routine_worker(job)
         self._pool.start(worker)
@@ -1542,6 +1427,7 @@ class _ExtensionExecutionController(QtCore.QObject):
         input_data: xr.DataArray,
         input_uid: str,
         input_snapshot: str,
+        settings: ExecutionSettings | None = None,
     ) -> _ExtensionRoutineJob:
         """Pin catalog state and input identity before queue admission."""
         _require_finite_parameter_values(parameters)
@@ -1569,6 +1455,7 @@ class _ExtensionExecutionController(QtCore.QObject):
             input_uid=input_uid,
             input_snapshot=input_snapshot,
             input_data=input_data,
+            settings=ExecutionSettings.capture() if settings is None else settings,
         )
 
     @QtCore.Slot(str)
@@ -1588,11 +1475,15 @@ class _ExtensionExecutionController(QtCore.QObject):
         self.queue_changed.emit()
 
     def _routine_worker(self, job: _ExtensionRoutineJob) -> _ExtensionRoutineWorker:
+        if self._routine_processes is None:
+            from erlab.extensions._routine import routine_processes
+
+            routine_processes.acquire()
+            self._routine_processes = routine_processes
         return _ExtensionRoutineWorker(
             job,
             manager_session_id=self._manager_session_id,
             catalog_store=self._catalog.store,
-            script_modules=self._script_modules,
             source_is_healthy=self._source_is_healthy,
         )
 
@@ -1682,6 +1573,7 @@ class _ExtensionExecutionController(QtCore.QObject):
             routine_id=result.job.routine.id,
             routine_name=result.job.routine.name,
             parameters=result.job.parameters,
+            execution_options=result.job.settings.as_dict(),
         )
         provenance = compose_display_provenance(
             node.displayed_provenance_spec,
@@ -1768,5 +1660,8 @@ class _ExtensionExecutionController(QtCore.QObject):
         with self._blocking_tasks_lock:
             self._blocking_tasks.clear()
         self._script_modules.clear()
+        if self._routine_processes is not None:
+            self._routine_processes.release()
+            self._routine_processes = None
         _remove_manager_modules(self._manager_session_id)
         self._shutdown_complete = True

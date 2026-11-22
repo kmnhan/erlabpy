@@ -18,9 +18,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from erlab.interactive import _persistence_constants
-from erlab.interactive.imagetool._provenance._execution import replay_script_provenance
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ReplayStep,
     ScriptInput,
     full_data,
@@ -29,13 +27,17 @@ from erlab.interactive.imagetool._provenance._model import (
     script,
     selection,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AssignAttrsOperation,
     AssignScalarCoordOperation,
     IselOperation,
     ScriptCodeOperation,
     ShiftFromInputOperation,
 )
+from erlab.interactive import _persistence_constants
+from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool._provenance._execution import replay_script_provenance
+from erlab.interactive.imagetool.dialogs import InterpolationDialog
 from erlab.interactive.imagetool.manager._revisions import (
     _ProvenanceRevisionStore,
     _RevisionCheckpointSource,
@@ -334,6 +336,61 @@ def test_refresh_retention_preserves_inputs_operation_states_and_temporary_roots
     registry.discard_unreachable((latest,))
     assert not registry.has_data(edited)
     assert registry.has_data(original)  # Preserve the distinct operation boundary.
+
+
+def test_workspace_retains_graph_result_and_inputs_across_refresh(
+    qtbot, manager_context
+):
+    scan = xr.DataArray(
+        np.arange(24.0).reshape(6, 4),
+        dims=("x", "y"),
+        coords={"x": np.arange(6), "y": np.arange(4)},
+        name="scan",
+    )
+    grid = scan.isel(x=[1, 3], y=[0, 2]).rename("grid")
+    with manager_context() as manager:
+        for data in (scan, grid):
+            manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
+        source, target = (manager._node_for_target(i) for i in (0, 1))
+        dialog = InterpolationDialog(source.slicer_area)
+        qtbot.addWidget(dialog)
+        dialog.target_tabs.setCurrentIndex(1)
+        dialog.target_tool_selector.set_current_uid(target.uid)
+        dialog.accept()
+        child = source._childtool_indices[-1]
+        graph = manager._operations.graph
+        store = manager._provenance_revisions
+        scan_id, grid_id, result_id = (
+            graph.current_revision(uid) for uid in (source.uid, target.uid, child)
+        )
+        with store.retain((scan_id,)):
+            with store.retain((result_id,)):
+                manager._data_replace(
+                    [scan + 1, grid + 1], [source.index, target.index]
+                )
+                assert manager._operations.update(child)
+                xr.testing.assert_identical(
+                    store.resolve_data(result_id), scan.interp_like(grid)
+                )
+                xr.testing.assert_identical(store.resolve_data(scan_id), scan)
+                xr.testing.assert_identical(store.resolve_data(grid_id), grid)
+
+                intermediate = graph.current_revision(child)
+                manager._data_replace([scan + 2], [source.index])
+                assert manager._operations.update(child)
+                assert intermediate not in store
+
+                # An independent recorded result also needs the original grid.
+                store.add(
+                    spec=script(
+                        start_label="Old grid",
+                        root_input=ScriptInput(name="grid", revision_id=grid_id),
+                    )
+                )
+            assert result_id not in store
+            xr.testing.assert_identical(store.resolve_data(scan_id), scan)
+        assert scan_id not in store
+        xr.testing.assert_identical(store.resolve_data(grid_id), grid)
 
 
 def test_refresh_retention_roundtrip_keeps_metadata_without_reading_old_arrays(
@@ -773,7 +830,7 @@ def test_bound_revision_requires_explicit_legacy_normalization_seed() -> None:
 
 
 def test_bound_revision_keeps_loader_arguments_exact() -> None:
-    from erlab.interactive.imagetool._provenance._model import (
+    from erlab._provenance._model import (
         FileDataSelection,
         FileLoadSource,
         FileReplayCall,
@@ -1467,15 +1524,8 @@ def test_revision_retention_includes_tool_inputs_and_current_role_caches() -> No
         script_inputs=(ScriptInput(name="inner", revision_id=nested_id),),
     )
     node = SimpleNamespace(
-        _current_revision_id=current,
-        _revision_ids_by_role={
-            "source": ("stale-source", stale),
-            "displayed": ("live-display", displayed),
-        },
-        snapshot_token_for_role=lambda role: {
-            "source": "live-source",
-            "displayed": "live-display",
-        }[role],
+        _legacy_source_history_id=current,
+        active_revision_ids=lambda: iter((displayed,)),
         passive_displayed_provenance_spec=None,
         source_spec=None,
         active_tool_script_inputs=(

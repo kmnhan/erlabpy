@@ -13,8 +13,8 @@
         :class: only-dark
 """
 
-from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._model import ToolProvenanceOperation
+from erlab._provenance._operations import (
     BoxcarFilterOperation,
     FillNaOperation,
     GaussianFilterOperation,

@@ -208,13 +208,13 @@ def test_provenance_layers_load_in_one_direction() -> None:
         import importlib.util
         import sys
 
-        from erlab.interactive.imagetool._provenance import _model
+        from erlab._provenance import _model
 
         prefix = "erlab.interactive.imagetool._provenance"
-        assert f"{prefix}._code" in sys.modules
+        assert "erlab._provenance._code" in sys.modules
         assert f"{prefix}._graph" not in sys.modules
         assert f"{prefix}._execution" not in sys.modules
-        assert f"{prefix}._operations" not in sys.modules
+        assert "erlab._provenance._operations" not in sys.modules
         assert "qtpy.QtWidgets" not in sys.modules
         assert "pyqtgraph" not in sys.modules
 
@@ -222,7 +222,7 @@ def test_provenance_layers_load_in_one_direction() -> None:
             {"op": "rename", "name": "renamed"}
         )
         assert operation.name == "renamed"
-        assert f"{prefix}._operations" in sys.modules
+        assert "erlab._provenance._operations" in sys.modules
         assert f"{prefix}._graph" not in sys.modules
         assert f"{prefix}._execution" not in sys.modules
 

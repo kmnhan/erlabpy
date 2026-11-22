@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from erlab.interactive.imagetool._provenance._code import (
+from erlab._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
     _expression_receiver_code,
     _validate_script_replay_code,
 )
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ConsoleCall,
     ScriptInput,
     ToolProvenanceOperation,
@@ -15,7 +15,7 @@ from erlab.interactive.imagetool._provenance._model import (
     operation_from_console_call,
     script,
 )
-from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
+from erlab._provenance._operations import ScriptCodeOperation
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 
 __all__ = ["ToolNamespace", "ToolsNamespace", "_ImageToolManagerJupyterConsole"]
@@ -1417,32 +1417,46 @@ class ToolNamespace(_ConsoleDataHandleBase):
             prepared_data = self._prepare_data_item_assignment(
                 key_operand.value, value_operand.value
             )
-            if prepared_data is None:
-                self._set_data_item(
-                    key_operand.value,
-                    value_operand.value,
-                    emit_signals=False,
-                )
+            from erlab._provenance._operations import SetItemOperation
+
+            area = self.tool.slicer_area
+            operation = None
+            if (
+                prepared_data is not None
+                or area._data.dims == area._public_source_dims_for_current_layout()
+            ):
+                operation = SetItemOperation.from_literals(key, value)
+            with manager._operations.authored_edit(
+                self._wrapper,
+                operation,
+                input_role="source" if prepared_data is None else "displayed",
+            ):
+                if prepared_data is None:
+                    self._set_data_item(
+                        key_operand.value,
+                        value_operand.value,
+                        emit_signals=False,
+                    )
+                    self._wrapper.set_detached_provenance(
+                        provenance_spec,
+                        replay_source_data=None,
+                    )
+                    slicer_area = self.tool.slicer_area
+                    slicer_area.sigSourceDataChanged.emit()
+                    slicer_area.sigSourceDataReplaced.emit(
+                        slicer_area._tool_source_parent_data()
+                    )
+                    slicer_area.sigDataEdited.emit()
+                    return
                 self._wrapper.set_detached_provenance(
                     provenance_spec,
                     replay_source_data=None,
                 )
-                slicer_area = self.tool.slicer_area
-                slicer_area.sigSourceDataChanged.emit()
-                slicer_area.sigSourceDataReplaced.emit(
-                    slicer_area._tool_source_parent_data()
+                self._set_data_item(
+                    key_operand.value,
+                    value_operand.value,
+                    prepared_data=prepared_data,
                 )
-                slicer_area.sigDataEdited.emit()
-                return
-            self._wrapper.set_detached_provenance(
-                provenance_spec,
-                replay_source_data=None,
-            )
-            self._set_data_item(
-                key_operand.value,
-                value_operand.value,
-                prepared_data=prepared_data,
-            )
 
     def __getattr__(self, attr):  # implicitly wrap methods from ImageToolWrapper
         if hasattr(self._wrapper, attr):
@@ -1832,6 +1846,10 @@ class ToolsNamespace:
         if manager:
             return manager
         raise LookupError("Parent was destroyed")
+
+    def checkpoint(self, revision_id: str) -> xr.DataArray:
+        """Return an independent copy of a recorded graph input for notebook replay."""
+        return self._manager._operations.graph.data(revision_id)
 
     @property
     def selected_data(self) -> list[xr.DataArray]:

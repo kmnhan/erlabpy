@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import functools
 import math
 import operator
 import traceback
@@ -18,15 +19,8 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool import _kspace_conversion
-from erlab.interactive.imagetool._dialog_widgets import (
-    CoordinateEditorWidget,
-    CoordinateGridWidget,
-    KspaceInputCoordinatesControl,
-    prompt_kspace_input_coordinates,
-)
-from erlab.interactive.imagetool._provenance._code import _provenance_value_code
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._code import _provenance_value_code
+from erlab._provenance._model import (
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     compose_full_provenance,
@@ -34,7 +28,7 @@ from erlab.interactive.imagetool._provenance._model import (
     public_data,
     require_live_source_spec,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     SHIFT_MODES,
     AffineCoordOperation,
     AssignAttrsOperation,
@@ -78,6 +72,13 @@ from erlab.interactive.imagetool._provenance._operations import (
     SymmetrizeOperation,
     ThinOperation,
     UniformInterpolationOperation,
+)
+from erlab.interactive.imagetool import _kspace_conversion
+from erlab.interactive.imagetool._dialog_widgets import (
+    CoordinateEditorWidget,
+    CoordinateGridWidget,
+    KspaceInputCoordinatesControl,
+    prompt_kspace_input_coordinates,
 )
 from erlab.interactive.imagetool.viewer_state import _child_colormap_kwargs
 
@@ -3029,12 +3030,15 @@ class InterpolationDialog(DataTransformDialog):
         target_layout = QtWidgets.QVBoxLayout(target_page)
         from erlab.interactive.imagetool.manager._source_selector import (
             ManagerSourceSelector,
+            _DeferredSourceEligibility,
         )
 
         manager, target = self._manager_target()
         target_layout.addWidget(QtWidgets.QLabel("ImageTool"))
         self.target_tool_selector = ManagerSourceSelector(
-            manager, eligibility=self._target_candidate_error, parent=self
+            manager,
+            eligibility=_DeferredSourceEligibility(self._target_eligibility),
+            parent=self,
         )
         target_layout.addWidget(self.target_tool_selector)
         self.all_coords_check = QtWidgets.QCheckBox("All matching coordinates")
@@ -3162,12 +3166,8 @@ class InterpolationDialog(DataTransformDialog):
             coord = np.arange(self._source_data.sizes[dim], dtype=np.float64)
         self.coord_widget.set_reference_coord(coord)
 
-    def _candidate_data(
-        self,
-        manager: ImageToolManager,
-        uid: str,
-        source_data: xr.DataArray,
-    ) -> xr.DataArray:
+    @staticmethod
+    def _current_target_node(manager: ImageToolManager, uid: str) -> _ManagedWindowNode:
         node = manager._tool_graph.nodes.get(uid)
         if node is None or not node.is_imagetool:
             raise ValueError("The selected target ImageTool is no longer available.")
@@ -3176,15 +3176,32 @@ class InterpolationDialog(DataTransformDialog):
             "missing",
         }:
             raise ValueError("The selected target ImageTool is not current.")
-        target_data = node.data_for_role("displayed", owner_node=node)
+        return node
+
+    def _target_coordinates_error(
+        self, source_data: xr.DataArray, target_data: xr.DataArray
+    ) -> str | None:
         matching = self._matching_dimensions(source_data, target_data)
         if not matching:
-            raise ValueError("The ImageTools have no matching dimension coordinates.")
+            return "The ImageTools have no matching dimension coordinates."
         if all(
             self._coordinate_error(source_data, target_data, dim) is not None
             for dim in matching
         ):
-            raise ValueError("The ImageTools have no usable matching coordinates.")
+            return "The ImageTools have no usable matching coordinates."
+        return None
+
+    def _candidate_data(
+        self,
+        manager: ImageToolManager,
+        uid: str,
+        source_data: xr.DataArray,
+    ) -> xr.DataArray:
+        node = self._current_target_node(manager, uid)
+        target_data = node.data_for_role("displayed", owner_node=node)
+        error = self._target_coordinates_error(source_data, target_data)
+        if error is not None:
+            raise ValueError(error)
         return target_data
 
     @staticmethod
@@ -3205,23 +3222,46 @@ class InterpolationDialog(DataTransformDialog):
             return str(exc)
         return None
 
-    def _target_candidate_error(self, node: _ManagedWindowNode) -> str | None:
+    def _target_eligibility(self) -> Callable[[_ManagedWindowNode], str | None]:
         manager, target = self._manager_target()
         if manager is None or target is None or self.is_batch_mode:
-            return "Select a target from an individual ImageTool in Manager."
+            return lambda _node: (
+                "Select a target from an individual ImageTool in Manager."
+            )
         try:
-            if node.uid == manager._node_for_target(target).uid:
-                return "Select another ImageTool as the interpolation target."
-            self._candidate_data(manager, node.uid, self._source_data)
-        except (LookupError, OSError, RuntimeError, TypeError, ValueError) as exc:
-            return str(exc)
-        return None
+            source_uid = manager._node_for_target(target).uid
+        except LookupError as exc:
+            message = str(exc)
+            return lambda _node: message
+        coordinate_error = functools.partial(
+            self._target_coordinates_error, self._source_data
+        )
+        check_pending = (
+            manager._workspace_controller.loading.pending._pending_coordinate_check(
+                coordinate_error
+            )
+        )
+
+        def check(node: _ManagedWindowNode) -> str | None:
+            try:
+                if node.uid == source_uid:
+                    return "Select another ImageTool as the interpolation target."
+                self._current_target_node(manager, node.uid)
+                if node.pending_workspace_memory_payload is not None:
+                    return check_pending(node)
+                return coordinate_error(
+                    node.data_for_role("displayed", owner_node=node)
+                )
+            except (LookupError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                return str(exc)
+
+        return check
 
     def _target_data(self) -> xr.DataArray:
         uid = self.target_tool_selector.current_uid
+        if self._recorded_target is not None:
+            return self._recorded_target
         if uid is None:
-            if self._recorded_target is not None:
-                return self._recorded_target
             raise ValueError("Select a target ImageTool.")
         manager, _target = self._manager_target()
         if manager is None:
@@ -3558,9 +3598,7 @@ class InterpolationDialog(DataTransformDialog):
         recorded_data: xr.DataArray | None = None,
     ) -> None:
         self.target_tool_selector.set_current_uid(uid)
-        self._recorded_target = (
-            recorded_data if self.target_tool_selector.current_uid is None else None
-        )
+        self._recorded_target = recorded_data
         self.restore_transform_operation(operation)
 
     def _copy_code_for_operations(
@@ -3595,61 +3633,28 @@ class InterpolationDialog(DataTransformDialog):
         uid = self.target_tool_selector.current_uid
         if uid is None:
             raise ValueError("Select a target ImageTool.")
-        data = current_node.data_for_role("displayed", owner_node=current_node)
-        target_data = self._candidate_data(manager, uid, data)
-        operation = typing.cast(
-            "InterpolationFromInputOperation", self.source_transform_operation()
-        )
+        operation = self.source_transform_operation()
         if self.launch_mode == "replace" and not self._replacement_is_safe():
             raise ValueError(
                 "Replacement would create a dependency cycle. Select a child or "
                 "top-level result."
             )
-        processed = operation.apply_with_inputs(data, {"target": target_data}).rename(
-            data.name
-        )
-        provenance_spec = manager._multi_input_operation_provenance(
-            (target, uid),
-            operation=operation,
-            active_name="interpolated",
-            start_label="Interpolate ImageTool data",
-            detached_input_uid=(
-                current_node.uid if self.launch_mode == "replace" else None
-            ),
-            data_role="displayed",
-            input_names=("data", "target"),
-            primary_input="data",
-            input_bindings={"target": "target"},
+
+        def make_window(data: xr.DataArray) -> erlab.interactive.imagetool.ImageTool:
+            tool = erlab.interactive.itool(manager=False, **self._itool_kwargs(data))
+            if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
+                raise TypeError("Expected an interpolated ImageTool.")
+            return tool
+
+        manager._operations.submit(
+            operation,
+            {"data": current_node.uid, "target": uid},
+            placement=self.launch_mode,
+            make_window=make_window,
+            output_name="interpolated",
         )
         if self.launch_mode == "replace":
-            current_node.replace_with_detached_data(
-                processed,
-                provenance_spec,
-                propagate_descendants=True,
-                preserve_filter=False,
-                replay_source_data=data,
-            )
-            manager.tree_view.refresh(current_node.uid)
             manager._sigDataReplaced.emit()
-        else:
-            tool = typing.cast(
-                "erlab.interactive.imagetool.ImageTool | None",
-                erlab.interactive.itool(manager=False, **self._itool_kwargs(processed)),
-            )
-            if tool is None:
-                raise RuntimeError("Could not create the interpolated ImageTool.")
-            if self.launch_mode == "nest":
-                manager.add_imagetool_child(
-                    tool,
-                    target,
-                    activate=True,
-                    provenance_spec=provenance_spec,
-                    source_state="fresh",
-                )
-            else:
-                manager.add_imagetool(
-                    tool, activate=True, provenance_spec=provenance_spec
-                )
 
     @QtCore.Slot()
     def accept(self) -> None:

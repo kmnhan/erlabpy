@@ -21,9 +21,9 @@ import erlab.interactive.imagetool.manager._workspace._pending as workspace_pend
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 import erlab.interactive.imagetool.plot_items as imagetool_plot_items
 import erlab.interactive.utils
+from erlab._provenance._model import full_data
 from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._provenance._model import full_data
 from tests.interactive.imagetool.manager.helpers import select_tools
 from tests.interactive.imagetool.manager.workspace._support import (
     _edit_current_workspace_payload_attrs,

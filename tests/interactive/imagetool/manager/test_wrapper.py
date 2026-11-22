@@ -14,20 +14,20 @@ import xarray as xr
 from qtpy import QtCore, QtGui
 
 import erlab
-from erlab.interactive import _persistence_constants
-from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._load_source import (
+from erlab._provenance._files import (
     _load_code_from_file_details,
     _load_provenance_from_file_details,
     _load_source_label_and_text,
     _loader_callable_text,
 )
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     FileDataSelection,
     ScriptInput,
     ToolProvenanceSpec,
     full_data,
 )
+from erlab.interactive import _persistence_constants
+from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._provenance._trust import remap_script_input_provenance
 from erlab.interactive.imagetool.manager._wrapper import (
     _coerce_added_time,
@@ -219,7 +219,7 @@ def test_wrapper_applies_tool_owned_script_inputs(qtbot) -> None:
         _set_workspace_tool_data_references=lambda _references: None,
         _source_spec=None,
         _provenance_spec=None,
-        _current_revision_id=None,
+        _legacy_source_history_id=None,
         _revision_ids_by_role={},
         _mark_provenance_changed=lambda **_kwargs: None,
     )
@@ -242,7 +242,7 @@ def test_wrapper_applies_tool_owned_script_inputs(qtbot) -> None:
         tool_input_state=state,
         pending_payload_attrs=None,
         workspace_tool_data_references={},
-        node_current_revision_id=None,
+        node_legacy_source_history_id=None,
         node_revision_ids_by_role={},
     )
 
@@ -730,3 +730,146 @@ def test_wrapper_source_data_replaced_uses_parent_fallback(
         assert len(propagated) == 1
         assert propagated[0][0] == wrapper.uid
         xr.testing.assert_identical(propagated[0][1], updated)
+
+
+@pytest.mark.parametrize("case", ["ordinary", "filtered", "promoted_1d", "no_array"])
+def test_graph_captures_the_signaled_public_data(manager_context, monkeypatch, case):
+    from erlab._provenance._operations import NormalizeOperation
+
+    arr = xr.DataArray(
+        np.arange(12.0).reshape(4, 3) + 1,
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0, 3.0, 7.0], "y": [0.0, 1.0, 2.0]},
+        attrs={"sample": ["original"]},
+        name="test",
+    )
+    if case == "promoted_1d":
+        arr = arr.isel(y=0, drop=True)
+    with manager_context() as manager:
+        tool = itool(arr, manager=False, execute=False)
+        index = manager.add_imagetool(tool, show=False, source_input_ndim=arr.ndim)
+        node = manager._node_for_target(index)
+        operations = manager._operations
+        operations.observe(node)
+        previous = operations.graph.current_revision(node.uid)
+        requested = []
+        data_for_role = node.data_for_role
+
+        def record(role, **kwargs):
+            requested.append(role)
+            return data_for_role(role, **kwargs)
+
+        monkeypatch.setattr(node, "data_for_role", record)
+        if case == "filtered":
+            tool.slicer_area.apply_filter_operation(
+                NormalizeOperation(dims=("x",), mode="min"), emit_edited=True
+            )
+        elif case == "no_array":
+            node._handle_source_data_replaced(None)
+        else:
+            manager._data_replace(
+                [(arr + 3).assign_attrs(arr.attrs).rename(arr.name)], [index]
+            )
+
+        key = operations.graph.current_revision(node.uid)
+        assert key != previous
+        assert key in node.active_revision_ids()
+        if case != "filtered":
+            assert previous not in node.active_revision_ids()
+        assert requested.count("displayed") == (1 if case == "no_array" else 0)
+        expected = data_for_role("displayed")
+        stored = operations.graph.data(key)
+        xr.testing.assert_identical(stored, expected)
+        if case == "promoted_1d":
+            assert stored.attrs["_erlab_promoted_from_1d_source"]
+        if case == "filtered":
+            assert not stored.equals(data_for_role("source"))
+        with pytest.raises(ValueError, match="read-only"):
+            expected.values[:] = -123
+        xr.testing.assert_identical(operations.graph.data(key), stored)
+
+
+@pytest.mark.parametrize("grid_size", [2, 512])
+def test_managed_operation_shares_published_result_on_create_and_refresh(
+    qtbot, manager_context, grid_size
+):
+    from erlab.interactive.imagetool.dialogs import InterpolationDialog
+
+    def window(data):
+        return itool(data, manager=False, execute=False)
+
+    spectrum = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        coords={"x": np.arange(3.0), "y": np.arange(4.0)},
+        name="source",
+    )
+    spectrum = spectrum.assign_coords(detector=spectrum + 100)
+    axis = np.linspace(0, 2, grid_size)
+    grid = xr.DataArray(
+        np.zeros((grid_size, grid_size)),
+        dims=("x", "y"),
+        coords={"x": axis, "y": axis},
+        name="grid",
+    )
+    with manager_context() as manager:
+        source = manager._node_for_target(
+            manager.add_imagetool(window(spectrum), show=False)
+        )
+        target = manager._node_for_target(
+            manager.add_imagetool(window(grid), show=False)
+        )
+        dialog = InterpolationDialog(source.slicer_area)
+        qtbot.addWidget(dialog)
+        dialog.target_tabs.setCurrentIndex(1)
+        dialog.target_tool_selector.set_current_uid(target.uid)
+        dialog.accept()
+        child = manager._child_node(source._childtool_indices[-1])
+        graph = manager._operations.graph
+
+        def check_published(expected):
+            key = graph.current_revision(child.uid)
+            public = child.slicer_area.displayed_data
+            stored = manager._provenance_revisions._captured_data(key)
+            xr.testing.assert_identical(public, expected)
+            captured = graph._displayed[key].data
+            for value in (public, stored):
+                for actual, reference in (
+                    (value, captured),
+                    (value.detector, captured.detector),
+                ):
+                    assert np.shares_memory(actual.values, reference.values)
+                    assert not actual.values.flags.writeable
+            return public
+
+        before = check_published(spectrum.interp_like(grid))
+        changed = grid.assign_coords(x=0.5 + 0.5 * grid.x)
+        target.slicer_area.replace_source_data(changed)
+        manager._set_metadata_node(child)
+        manager.refresh_revision_button.click()
+        check_published(spectrum.interp_like(changed))
+        xr.testing.assert_identical(before, spectrum.interp_like(grid))
+
+
+@pytest.mark.parametrize("nonuniform", [False, True])
+def test_managed_slicer_shares_the_owned_dimension_in_a_promoted_spectrum(
+    manager_context, nonuniform
+):
+    indices = np.arange(2048, dtype=np.float64)
+    if nonuniform:
+        indices[-1] += 0.5
+    spectrum = xr.DataArray(np.zeros_like(indices), dims="x", coords={"x": indices})
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            itool(spectrum, manager=False, execute=False), show=False
+        )
+        area = manager._node_for_target(index).slicer_area
+        stored = area.displayed_data.x.values
+        rendered = area.data
+        assert len(rendered.stack_dim) == 1
+        assert ("x_idx" in rendered.dims) is nonuniform
+        assert not np.shares_memory(stored, indices)
+        assert np.shares_memory(rendered.x.values, stored)
+        assert not stored.flags.writeable
+        indices[:] = -1
+        assert rendered.x.values[-1] == (2047.5 if nonuniform else 2047.0)

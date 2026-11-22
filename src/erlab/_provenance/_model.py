@@ -48,71 +48,29 @@ Manager children opened from an ImageTool cursor or bin selection keep the expli
 ``qsel`` or ``isel`` arguments generated when the child is opened. Legacy selection
 source bindings are materialized once into a normal source spec before refresh.
 
-Adding a new provenance-carrying operation follows the same pattern every time:
+Define a built-in calculation with :class:`~erlab._provenance._calls.CallOperation`.
+Its ``invocation`` method returns one public function or method call.
+Use an :class:`~erlab._provenance._calls.InputRef` for each array argument and
+ordinary Python values for parameters. Declare extra operands with
+:meth:`ToolProvenanceOperation.input_slots`. A new operation also defines a
+unique ``op`` discriminator and a derivation label. Its saved parameters drive
+both evaluation and notebook code.
+:class:`~erlab._provenance._calls.TupleOutputOperation` preserves notebook unpacking
+when a function returns several outputs.
+:class:`~erlab._provenance._calls.MetadataSetterOperation` describes a public setter.
 
-1. Define a new :class:`ToolProvenanceOperation` subclass with a unique ``op``
-   discriminator literal. Subclasses register themselves automatically so serialized
-   payloads can dispatch to the right model.
-
-2. Prefer the annotated provenance field aliases defined in this module for hashable
-   dimension identifiers and dim-keyed mappings so runtime values stay decoded while
-   JSON dumps remain lossless.
-
-3. If the operation needs already-encoded payloads such as xarray objects or array-like
-   vertex data, validate them with
-   :meth:`ToolProvenanceOperation._validate_encoded_field` and expose decoded
-   convenience properties for runtime use.
-
-4. Implement :meth:`ToolProvenanceOperation.apply` so it transforms a derived array
-   using only its recorded parameters. If the operation also needs named inputs,
-   implement :meth:`ToolProvenanceOperation.apply_with_inputs` and declare their
-   semantic slots with :meth:`ToolProvenanceOperation.input_slots`.
-
-5. Implement :meth:`ToolProvenanceOperation.expression_code` and
-   :meth:`ToolProvenanceOperation.derivation_label` so copied code and manager
-   derivation entries come from the same operation metadata. Override
-   :meth:`ToolProvenanceOperation.derivation_entry` only when the operation is not a
-   structured transform, such as free-form script code. Operations with named inputs
-   should also implement :meth:`ToolProvenanceOperation.expression_code_with_inputs`.
-
-6. If the public API for the operation is mutating and cannot be represented as a
-   single expression, implement :meth:`ToolProvenanceOperation.statement_code` and set
-   :attr:`ToolProvenanceOperation.statement_mutates_input`. Mixed expression and
-   statement operation chains are still emitted as ordinary public Python code.
-
-7. If several primitive operations form one user-editable action, stamp the complete
-   contiguous sequence with :func:`stamp_operation_group`. Group-aware dialogs should
-   validate the complete group with :func:`operation_group_range` plus any
-   operation-specific rule, and clipboard code should call
-   :func:`strip_partial_operation_groups` when users copy a subset of rows. Paste code
-   should call :func:`restamp_operation_groups` before appending copied rows to another
-   provenance chain.
-
-8. If the operation maps cleanly from manager-console calls, declare
-   :attr:`ToolProvenanceOperation.console_patterns` or implement
-   :meth:`ToolProvenanceOperation.from_console_call`. Unsupported or ambiguous console
-   calls should return ``None`` so they remain valid script provenance instead of being
-   recorded as lossy structured operations.
-
-9. Make generated code executable in the replay namespace. Use the literal helpers in
-   this module for persisted values, and make ``expression_code`` honor the input name
-   it is given. The base ``replay_code`` wrapper assigns the caller-selected output
-   name.
-
-10. Export the operation class from the concrete operation catalog so runtime call
-    sites can instantiate it directly.
-
-11. Add tests that cover round-trip validation, :meth:`apply`, derivation text/code,
-    console matching when supported, and any save/load or reload path that persists the
-    new operation. For grouped operations, also cover full-group copy/paste, partial
-    group stripping, group replacement/deletion, and generated-code execution.
+Use the annotated provenance field aliases for hashable dimension identifiers
+and mappings. For a user-editable group of steps, see :func:`stamp_operation_group`.
+Use :attr:`ToolProvenanceOperation.console_patterns` when a console call maps
+exactly to the operation. Export the class from the operation catalog and test
+that executing its saved record and notebook code gives the expected array.
 
 Parsing of serialized payloads happens only through :func:`parse_tool_provenance_spec`,
 :func:`parse_tool_provenance_operation`, and :func:`parse_script_inputs`. Runtime
 authoring code should create specs with :func:`full_data`, :func:`public_data`,
 :func:`selection`, :func:`file_load`, or :func:`script`, then instantiate operation
 models from
-:mod:`erlab.interactive.imagetool._provenance._operations` directly.
+:mod:`erlab._provenance._operations` directly.
 """
 
 from __future__ import annotations
@@ -134,8 +92,7 @@ import pydantic
 import xarray as xr
 
 import erlab
-from erlab.extensions._models import _script_name_key, _validate_source_hash
-from erlab.interactive.imagetool._provenance._code import (
+from erlab._provenance._code import (
     _DATAARRAY_MARKER,
     _DATASET_MARKER,
     _FIT_DATASET_MARKER,
@@ -149,6 +106,7 @@ from erlab.interactive.imagetool._provenance._code import (
     _script_codes_output_name,
     _validate_active_name,
 )
+from erlab.extensions._models import _script_name_key, _validate_source_hash
 
 if typing.TYPE_CHECKING:
     from collections.abc import Iterator
@@ -622,7 +580,7 @@ def _redact_opaque_fit_results(value: typing.Any) -> typing.Any:
 def _format_derivation_value(value: typing.Any) -> str:
     decoded = decode_provenance_value(_redact_opaque_fit_results(value))
     if isinstance(decoded, Mapping):
-        return erlab.interactive.utils.format_kwargs(dict(decoded))
+        return erlab.utils._code.format_kwargs(dict(decoded))
     if isinstance(decoded, (tuple, list)):
         return repr(tuple(decoded))
     return repr(decoded)
@@ -648,7 +606,7 @@ _OPERATION_TYPES: dict[str, type[ToolProvenanceOperation]] = {}
 
 def _ensure_operation_catalog_loaded() -> None:
     """Load concrete operations before resolving a serialized discriminator."""
-    importlib.import_module("erlab.interactive.imagetool._provenance._operations")
+    importlib.import_module("erlab._provenance._operations")
 
 
 def _operation_is(operation: ToolProvenanceOperation, *operation_names: str) -> bool:
@@ -1084,12 +1042,11 @@ def _assignment_code(
 class ToolProvenanceOperation(pydantic.BaseModel):
     """Base class for typed operations stored in :class:`ToolProvenanceSpec`.
 
-    New operations should keep runtime fields in their decoded Python form, prefer the
-    annotated provenance field aliases in this module for lossless JSON serialization,
-    implement :meth:`apply` to replay the transformation, implement
-    :meth:`expression_code` to emit the public Python expression for the same
-    transformation, and implement :meth:`derivation_label` to describe the step in
-    manager UI.
+    Built-in transforms define the calculation with
+    :class:`~erlab._provenance._calls.CallOperation`.
+    This base also supports existing operations with separate
+    execution and code generation methods, and stored programs with additional
+    trust requirements.
 
     Treat an operation as a value snapshot. Use :meth:`model_copy` to replace nested
     arguments. Nested lists, dictionaries, arrays, and other decoded values keep their

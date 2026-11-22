@@ -6,9 +6,9 @@ import json
 import typing
 from collections.abc import Mapping
 
+from erlab._provenance._model import parse_tool_provenance_spec
 from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool import _serialization
-from erlab.interactive.imagetool._provenance._model import parse_tool_provenance_spec
 from erlab.interactive.imagetool.manager._revisions import (
     _ProvenanceRevision,
     _ProvenanceRevisionStore,
@@ -41,13 +41,9 @@ def retained_revision_ids(
         else set()
     )
     for node in manager._tool_graph.nodes.values():
-        if node._current_revision_id is not None:
-            ids.add(node._current_revision_id)
-        ids.update(
-            revision_id
-            for role, (token, revision_id) in node._revision_ids_by_role.items()
-            if token == node.snapshot_token_for_role(role)
-        )
+        if node._legacy_source_history_id is not None:
+            ids.add(node._legacy_source_history_id)
+        ids.update(node.active_revision_ids())
         ids.update(_spec_revision_ids(node.passive_displayed_provenance_spec))
         ids.update(_spec_revision_ids(node.source_spec))
         ids.update(_script_input_revision_ids(node.active_tool_script_inputs))

@@ -17,7 +17,7 @@ import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool._provenance._operations import RemoveMeshOperation
+from erlab._provenance._operations import RemoveMeshOperation
 
 
 class MeshTool(erlab.interactive.utils.ToolWindow):

@@ -49,8 +49,8 @@ if typing.TYPE_CHECKING:
     import varname
     import xarray as xr
 
+    from erlab._provenance._model import ToolProvenanceOperation
     from erlab.interactive._options.schema import AppOptions
-    from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
 else:
     import lazy_loader as _lazy
 

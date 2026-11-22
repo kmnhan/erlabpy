@@ -7,8 +7,7 @@ import xarray as xr
 from qtpy import QtWidgets
 
 import erlab
-from erlab.interactive._mesh import MeshTool, meshtool
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     FileLoadSource,
     FileReplayCall,
     ScriptInput,
@@ -17,10 +16,8 @@ from erlab.interactive.imagetool._provenance._model import (
     parse_tool_provenance_spec,
     script,
 )
-from erlab.interactive.imagetool._provenance._operations import (
-    RemoveMeshOperation,
-    ScriptCodeOperation,
-)
+from erlab._provenance._operations import RemoveMeshOperation, ScriptCodeOperation
+from erlab.interactive._mesh import MeshTool, meshtool
 
 
 def _exec_generated_code(

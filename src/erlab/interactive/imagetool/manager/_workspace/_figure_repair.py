@@ -27,7 +27,7 @@ if typing.TYPE_CHECKING:
     import os
     from collections.abc import Callable, Hashable, Mapping
 
-    from erlab.interactive.imagetool._provenance._model import ScriptInputDataRole
+    from erlab._provenance._model import ScriptInputDataRole
 
 logger = logging.getLogger(__name__)
 

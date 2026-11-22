@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
+    from erlab._provenance._model import ScriptInput
     from erlab.interactive._fit1d import Fit1DTool
-    from erlab.interactive.imagetool._provenance._model import ScriptInput
     from erlab.interactive.imagetool.manager._wrapper import (
         _ImageToolWrapper,
         _ManagedWindowNode,

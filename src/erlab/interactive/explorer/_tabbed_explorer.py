@@ -10,14 +10,14 @@ import pydantic
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab._provenance._files import (
+    _deserialize_loader_kwargs,
+    _serialize_loader_kwargs,
+)
 from erlab.interactive import _qt_state, _shortcut_sequences
 from erlab.interactive.explorer._base_explorer import (
     DataExplorerTabState,
     _DataExplorer,
-)
-from erlab.interactive.imagetool._load_source import (
-    _deserialize_loader_kwargs,
-    _serialize_loader_kwargs,
 )
 
 

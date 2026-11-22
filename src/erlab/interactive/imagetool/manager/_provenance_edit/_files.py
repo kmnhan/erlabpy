@@ -11,16 +11,14 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.utils
-from erlab.extensions import LoaderDescriptor
-from erlab.extensions._models import _script_name_key
-from erlab.interactive.imagetool._load_source import (
+from erlab._provenance._files import (
     _deserialize_loader_kwargs,
     _extension_loader_identity,
     _load_provenance_from_file_details,
     _loader_callable_text,
     _migrate_legacy_file_data_selection,
 )
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     FileDataSelection,
     FileLoadSource,
     FileReplayCall,
@@ -28,6 +26,8 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
     encode_provenance_value,
 )
+from erlab.extensions import LoaderDescriptor
+from erlab.extensions._models import _script_name_key
 from erlab.interactive.imagetool.manager._dialogs import _LoaderOptionsWidget
 
 if typing.TYPE_CHECKING:

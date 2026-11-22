@@ -31,6 +31,7 @@ import erlab.interactive._figurecomposer._ui._editor_controls as _editor_control
 import erlab.interactive._figurecomposer._ui._figure_window as figure_window_ui
 import erlab.interactive._figurecomposer._ui._tick_params as figurecomposer_tick_params
 import erlab.interactive._stylesheets
+from erlab._provenance._model import script
 from erlab.interactive._completion import CompletingLineEdit, CompletingPlainTextEdit
 from erlab.interactive._figurecomposer import (
     FigureAxesSelectionState,
@@ -87,12 +88,10 @@ from erlab.interactive._figurecomposer._ui._toolbar_dialogs import (
 from erlab.interactive._options import options
 from erlab.interactive._options.core import model_with_workspace_overrides
 from erlab.interactive._options.schema import FigureOptions
-from erlab.interactive.imagetool._provenance._model import script
 from erlab.interactive.imagetool.manager._workspace import (
     _controller as workspace_controller,
 )
-
-from ._common import (
+from tests.interactive.imagetool.manager.figurecomposer._common import (
     _COLLAPSED_LAYOUT_WARNING,
     _activate_combo_index,
     _activate_combo_text,

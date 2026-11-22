@@ -16,21 +16,21 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
 import erlab.interactive.imagetool.slicer
-from erlab.interactive._file_loaders import builtin_file_loader_for_id
-from erlab.interactive.imagetool import _kspace_conversion
-from erlab.interactive.imagetool._mainwindow import ImageTool
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ScriptInput,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     compose_display_provenance,
     compose_full_provenance,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AssignCoord1DOperation,
     AssignScalarCoordOperation,
     ImageToolSelectionSourceBinding,
 )
+from erlab.interactive._file_loaders import builtin_file_loader_for_id
+from erlab.interactive.imagetool import _kspace_conversion
+from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 from erlab.interactive.imagetool.manager._dependency import _combine_source_states
 from erlab.interactive.imagetool.manager._dialogs import (

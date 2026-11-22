@@ -13,14 +13,12 @@ import numpy as np
 import psutil
 
 import erlab
-from erlab.accessors.kspace import IncompleteDataError
-from erlab.constants import AxesConfiguration
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ToolProvenanceOperation,
     operation_group_range,
     stamp_operation_group,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AssignAttrsOperation,
     AssignScalarCoordOperation,
     KspaceConfigurationOperation,
@@ -29,6 +27,8 @@ from erlab.interactive.imagetool._provenance._operations import (
     KspaceSetNormalOperation,
     KspaceWorkFunctionOperation,
 )
+from erlab.accessors.kspace import IncompleteDataError
+from erlab.constants import AxesConfiguration
 
 if typing.TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence

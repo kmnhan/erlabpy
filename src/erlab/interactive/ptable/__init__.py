@@ -4,7 +4,7 @@ import sys
 import types
 from typing import Any
 
-from ._window import PeriodicTableWindow, ptable
+from erlab.interactive.ptable._window import PeriodicTableWindow, ptable
 
 __all__ = ["PeriodicTableWindow", "ptable"]
 

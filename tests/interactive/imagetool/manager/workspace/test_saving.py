@@ -29,24 +29,24 @@ import erlab.interactive.imagetool.manager._workspace._state as workspace_state
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.viewer as imagetool_viewer
-from erlab.interactive import _persistence_constants
-from erlab.interactive._figurecomposer import FigureComposerTool, FigureSourceState
-from erlab.interactive._options.schema import AppOptions
-from erlab.interactive.derivative import DerivativeTool
-from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ReplayStep,
     ScriptInput,
     full_data,
     parse_tool_provenance_spec,
     script,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     ImageToolSelectionSourceBinding,
     IselOperation,
     ScriptCodeOperation,
     ShiftFromInputOperation,
 )
+from erlab.interactive import _persistence_constants
+from erlab.interactive._figurecomposer import FigureComposerTool, FigureSourceState
+from erlab.interactive._options.schema import AppOptions
+from erlab.interactive.derivative import DerivativeTool
+from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import ImageToolManager
 from erlab.interactive.imagetool.manager._extensions._models import (
     _WorkspaceScriptRequirement,
@@ -55,6 +55,7 @@ from erlab.interactive.imagetool.manager._metadata_editor import (
     MetadataCellEdit,
     MetadataField,
 )
+from erlab.interactive.imagetool.manager._operation_graph import _ManagedOperations
 from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 from erlab.interactive.imagetool.manager._workspace import (
     _controller as workspace_controller,
@@ -393,7 +394,8 @@ def test_manager_workspace_restores_revision_history_without_recipe_execution(
             raise AssertionError("workspace load executed provenance")
 
         monkeypatch.setattr(manager, "_apply_provenance", _forbid_replay)
-        manager._provenance_revisions = type(manager._provenance_revisions)()
+        manager.remove_all_tools()
+        assert not manager._provenance_revisions.revision_ids
         assert manager._workspace_controller.loading._load_workspace_file(
             path, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -1395,6 +1397,10 @@ def test_committed_generation_merges_embedded_source_into_live_state(
         _provenance_revisions=revisions,
         _tool_graph=types.SimpleNamespace(nodes={}),
     )
+    manager._operations = _ManagedOperations(manager, revisions)
+    displayed = xr.DataArray([3.0])
+    graph_revision_id = revisions.add(displayed, graph_owned=True)
+    manager._operations.graph.adopt_checkpoint("scan", graph_revision_id, displayed)
     controller = workspace_controller._WorkspaceController.__new__(
         workspace_controller._WorkspaceController
     )
@@ -1444,6 +1450,7 @@ def test_committed_generation_merges_embedded_source_into_live_state(
     assert manager._workspace_state.saved_manifest == snapshot.generation_plan.manifest
     assert unused_revision_id not in revisions
     assert retained_revision_id in revisions
+    xr.testing.assert_identical(revisions.resolve_data(graph_revision_id), displayed)
     assert (
         manager._workspace_state.schema_version
         == _persistence_constants.WORKSPACE_SCHEMA_VERSION
@@ -8036,8 +8043,12 @@ def test_manager_workspace_load_keeps_visible_saved_data_in_memory(
         assert not loaded.data_file_backed
         assert loaded.data_loadable is False
         assert workspace_arrays.dataarray_is_numpy_backed(loaded._data)
-        assert loaded._data.values.flags.writeable
-        np.testing.assert_array_equal(loaded._data.values, data.values)
+        restored = loaded.data
+        assert not restored.values.flags.writeable
+        np.testing.assert_array_equal(restored.values, data.values)
+        manager._data_replace([data + 1.0], [0])
+        xr.testing.assert_identical(loaded.displayed_data, data + 1.0)
+        np.testing.assert_array_equal(restored.values, data.values)
 
 
 def test_manager_workspace_lazy_data_delta_save_uses_pending_group_before_replacing(

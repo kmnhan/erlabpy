@@ -16,12 +16,7 @@ import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._source_labels as manager_source_labels
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
-from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._provenance._execution import (
-    replay_file_provenance,
-    replay_script_provenance,
-)
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     DerivationEntry,
     FileDataSelection,
     ReplayStep,
@@ -39,7 +34,7 @@ from erlab.interactive.imagetool._provenance._model import (
     script,
     stamp_operation_group,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AssignAttrsOperation,
     AssignCoordsOperation,
     InterpolationOperation,
@@ -48,6 +43,11 @@ from erlab.interactive.imagetool._provenance._operations import (
     QSelAggregationOperation,
     RenameOperation,
     ScriptCodeOperation,
+)
+from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool._provenance._execution import (
+    replay_file_provenance,
+    replay_script_provenance,
 )
 from erlab.interactive.imagetool._provenance._trust import (
     script_replay_source_input_names,
@@ -74,8 +74,7 @@ from tests.interactive.imagetool.manager.helpers import (
     select_metadata_rows,
     select_tools,
 )
-
-from ._common import (
+from tests.interactive.imagetool.manager.provenance._common import (
     _add_file_replay_tool,
     _authorize_execution,
     _fake_edit_controller,
@@ -3583,3 +3582,326 @@ def test_source_label_generic_merge_uses_only_primary_file(primary, retained) ->
         manager, source, retained_input_resolver=lambda item: retained
     )
     assert label == ("shift.h5" if primary else "Saved" if retained else "Missing")
+
+
+@pytest.fixture
+def interpolation_tools(manager_context):
+    raw = _provenance_paste_test_data("sample scan").isel(z=0, drop=True)
+    grid = raw.isel(x=[0, 2], y=[0, 2]).rename("target grid")
+    with manager_context() as manager:
+        for array in (raw, grid):
+            manager.add_imagetool(
+                itool(array, manager=False, execute=False), show=False
+            )
+        yield manager, manager._node_for_target(0), manager._node_for_target(1)
+
+
+def _managed_interpolation_dialog(qtbot, source, target, placement="nest"):
+    from erlab.interactive.imagetool.dialogs import InterpolationDialog
+
+    dialog = InterpolationDialog(source.slicer_area)
+    qtbot.addWidget(dialog)
+    dialog.target_tabs.setCurrentIndex(1)
+    dialog.target_tool_selector.set_current_uid(target.uid)
+    dialog.launch_mode_combo.setCurrentIndex(
+        dialog.launch_mode_combo.findData(placement)
+    )
+    return dialog
+
+
+def test_next_inputs_identifies_stale_prerequisites_and_replaced_steps(
+    qtbot, interpolation_tools
+):
+    manager, source, target = interpolation_tools
+    graph = manager._operations.graph
+    _managed_interpolation_dialog(qtbot, source, target).accept()
+    parent = manager._child_node(source._childtool_indices[-1])
+    _managed_interpolation_dialog(qtbot, parent, target).accept()
+    child = manager._child_node(parent._childtool_indices[-1])
+    manager._set_metadata_node(source)
+    assert manager.next_inputs_box.isHidden()
+    changed = target.slicer_area.displayed_data.assign_coords(x=[0.25, 1.75])
+    target.slicer_area.replace_source_data(changed)
+    manager._set_metadata_node(child)
+    assert graph.is_stale(parent.uid)
+    assert graph.is_stale(child.uid)
+    assert parent.display_text in manager.next_inputs_text.text()
+    manager.update_auto_check.click()
+    assert graph.entry(child.uid).auto
+    # A stale manual prerequisite has to publish before Auto can refresh this child.
+    manager._set_metadata_node(parent)
+    manager.update_auto_check.click()
+    qtbot.wait_until(lambda: not graph.is_stale(child.uid))
+    expected = source.slicer_area.displayed_data.interp_like(changed)
+    xr.testing.assert_identical(child.slicer_area.displayed_data, expected)
+    before = graph.current_revision(parent.uid)
+    dialog = _managed_interpolation_dialog(qtbot, parent, target, "replace")
+    dialog.accept()
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+    manager._set_metadata_node(parent)
+    assert before[:8] in manager.next_inputs_text.text()
+    assert graph.current_revision(parent.uid) != before
+
+
+def test_copy_full_code_validates_checkpoint_names_before_copy(
+    qtbot, interpolation_tools, monkeypatch
+):
+    from erlab.interactive.imagetool.manager._console import ToolsNamespace
+
+    manager, source, target = interpolation_tools
+    _managed_interpolation_dialog(qtbot, source, target).accept()
+    child = manager._child_node(source._childtool_indices[-1])
+    graph = manager._operations.graph
+    manager._set_metadata_node(child)
+    copied = []
+    warnings = []
+    suggestions = []
+    inputs = dict(graph.revision(graph.current_revision(child.uid)).producer.inputs)
+    reserved = iter([("np", True), ("sum", True), ("\uff45rlab", True), ("", False)])
+
+    def cancel_name(parent, title, message, *, text):
+        suggestions.append(text)
+        return next(reserved)
+
+    def warn(parent, title, message):
+        warnings.append(message)
+
+    monkeypatch.setattr(QtWidgets.QInputDialog, "getText", cancel_name)
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", warn)
+    monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)
+    manager._metadata_copy_full_action.trigger()
+    assert len(warnings) == 3
+    assert not copied
+    assert suggestions == [f"source_{inputs['data'][:8]}"] * 4
+
+    namespace = {}
+
+    def accept_name(parent, title, message, *, text):
+        slot, key = next((slot, key) for slot, key in inputs.items() if key in message)
+        assert text == f"source_{key[:8]}"
+        name = f"recorded_{slot}"
+        namespace[name] = ToolsNamespace(manager).checkpoint(key)
+        return name, True
+
+    monkeypatch.setattr(QtWidgets.QInputDialog, "getText", accept_name)
+    manager._metadata_copy_full_action.trigger()
+    (code,) = copied
+    exec(code, namespace)  # noqa: S102
+    xr.testing.assert_identical(
+        namespace["interpolated"], child.slicer_area.displayed_data
+    )
+
+
+@pytest.mark.parametrize("placement", ["nest", "detach"])
+def test_failed_interpolation_publication_removes_only_uncommitted_window(
+    qtbot, interpolation_tools, monkeypatch, accept_dialog, placement
+):
+    manager, source, target = interpolation_tools
+    original = set(manager._tool_graph.nodes)
+    graph = manager._operations.graph
+    registered = []
+
+    def reject_checkpoint(revision_id, protected, spec, owner):
+        registered.append(owner)
+        assert owner in manager._tool_graph.nodes
+        raise OSError("Result storage unavailable")
+
+    dialog = _managed_interpolation_dialog(qtbot, source, target, placement)
+    with monkeypatch.context() as patch:
+        patch.setattr(manager._provenance_revisions, "adopt_result", reject_checkpoint)
+        accept_dialog(dialog.accept)
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+    assert len(registered) == 1
+    assert set(manager._tool_graph.nodes) == original
+    assert not graph.entry_ids
+    assert not source._childtool_indices
+    # The same dialog can be retried when storage is available again.
+    dialog.accept()
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+    (output,) = set(manager._tool_graph.nodes) - original
+    xr.testing.assert_identical(
+        manager._node_for_target(output).slicer_area.displayed_data,
+        source.slicer_area.displayed_data.interp_like(
+            target.slicer_area.displayed_data
+        ),
+    )
+
+
+def test_failed_refresh_preserves_the_display_until_target_is_usable(
+    qtbot, interpolation_tools, accept_dialog
+):
+    manager, source, target = interpolation_tools
+    _managed_interpolation_dialog(qtbot, source, target).accept()
+    node = manager._child_node(source._childtool_indices[-1])
+    graph = manager._operations.graph
+    manager._set_metadata_node(node)
+    original = graph.current_revision(node.uid)
+    displayed = node.slicer_area.displayed_data
+    grid = target.slicer_area.displayed_data
+    target.slicer_area.replace_source_data(grid.rename({"x": "a", "y": "b"}))
+
+    def confirm(message):
+        assert "target" in message.text().lower()
+        message.accept()
+
+    accept_dialog(manager.refresh_revision_button.click, accept_call=confirm)
+    assert graph.is_stale(node.uid)
+    assert graph.current_revision(node.uid) == original
+    xr.testing.assert_identical(node.slicer_area.displayed_data, displayed)
+    manager.update_auto_check.click()
+    qtbot.wait_until(lambda: node.source_state == "unavailable")
+    assert graph.current_revision(node.uid) == original
+    xr.testing.assert_identical(node.slicer_area.displayed_data, displayed)
+    changed = grid.assign_coords(x=[0.5, 1.5])
+    target.slicer_area.replace_source_data(changed)
+    qtbot.wait_until(lambda: node.source_state == "fresh")
+    assert not graph.is_stale(node.uid)
+    xr.testing.assert_identical(
+        node.slicer_area.displayed_data,
+        source.slicer_area.displayed_data.interp_like(changed),
+    )
+
+
+def test_filtered_interpolation_refresh_clear_and_copy(
+    qtbot, interpolation_tools, monkeypatch
+):
+    from erlab._provenance._operations import NormalizeOperation
+    from erlab.interactive.imagetool.manager._console import ToolsNamespace
+
+    manager, source, target = interpolation_tools
+    raw = source.slicer_area.displayed_data
+    grid = target.slicer_area.displayed_data
+    _managed_interpolation_dialog(qtbot, source, target).accept()
+    child = manager._child_node(source._childtool_indices[-1])
+    graph = manager._operations.graph
+    area = child.slicer_area
+    manager._set_metadata_node(child)
+    area.apply_filter_operation(NormalizeOperation(dims=("x",), mode="min"))
+    initial = graph.current_revision(child.uid)
+    assert graph.has_recipe(child.uid)
+    assert not manager.next_inputs_box.isHidden()
+    assert graph.source_revision(child.uid) != initial
+    namespace = {}
+
+    def checkpoint_name(key, reserved):
+        name = f"input_{len(namespace)}"
+        namespace[name] = ToolsNamespace(manager).checkpoint(key)
+        return name
+
+    monkeypatch.setattr(manager._details_panel, "_checkpoint_name", checkpoint_name)
+    copied = []
+    monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)
+    manager._metadata_copy_full_action.trigger()
+    exec(copied.pop(), namespace)  # noqa: S102
+    original = raw.interp_like(grid)
+    xr.testing.assert_identical(namespace["interpolated"], area.displayed_data)
+    np.testing.assert_allclose(area.displayed_data, original - original.min("x"))
+
+    with graph.retain(initial):
+        source.slicer_area.replace_source_data((raw * 2).rename(raw.name))
+        assert graph.is_stale(child.uid)
+        manager.refresh_revision_button.click()
+        current = (raw * 2).rename(raw.name).interp_like(grid)
+        np.testing.assert_allclose(area.displayed_data, current - current.min("x"))
+        xr.testing.assert_identical(graph.data(initial), namespace["interpolated"])
+        assert area._accepted_filter_provenance_operation is not None
+        graph.set_auto(child.uid, enabled=True)
+        area.apply_filter_operation(None)
+        assert graph.has_recipe(child.uid)
+        assert graph.entry(child.uid).auto
+        assert not manager.next_inputs_box.isHidden()
+        xr.testing.assert_identical(area.displayed_data, current)
+        assert graph.current_revision(child.uid) == graph.source_revision(child.uid)
+
+
+@pytest.mark.parametrize("edit", ["rename", "assign"])
+def test_authored_edit_of_filtered_stale_interpolation(
+    qtbot, interpolation_tools, monkeypatch, edit
+):
+    from erlab._provenance._operations import NormalizeOperation
+    from erlab.interactive.imagetool.manager._console import ToolsNamespace
+
+    manager, source, target = interpolation_tools
+    raw = source.slicer_area.displayed_data
+    grid = target.slicer_area.displayed_data
+    _managed_interpolation_dialog(qtbot, source, target).accept()
+    child = manager._child_node(source._childtool_indices[-1])
+    area = child.slicer_area
+    graph = manager._operations.graph
+    area.apply_filter_operation(NormalizeOperation(dims=("x",), mode="min"))
+    graph.set_auto(child.uid, enabled=True)
+    manager._set_metadata_node(child)
+    console = ToolsNamespace(manager)
+    namespace = {}
+    copied = []
+
+    def checkpoint(key, _reserved):
+        name = f"input_{len(namespace)}"
+        namespace[name] = console.checkpoint(key)
+        return name
+
+    monkeypatch.setattr(manager._details_panel, "_checkpoint_name", checkpoint)
+    monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)
+
+    def check_display(expected):
+        xr.testing.assert_identical(area.displayed_data, expected)
+        manager._set_metadata_node(child)
+        manager._copy_full_derivation_code()
+        exec(copied.pop(), namespace)  # noqa: S102
+        xr.testing.assert_identical(
+            namespace[manager._operations.output_name(child.uid)], expected
+        )
+
+    def expected_source(data):
+        original = data.interp_like(grid)
+        if edit == "rename":
+            return original.rename("calibrated")
+        edited = original - original.min("x")
+        edited[0, 0] = 1234.0
+        return edited
+
+    previous_source = graph.source_revision(child.uid)
+    previous_display = graph.current_revision(child.uid)
+    changed = (3 * raw).rename(raw.name)
+    with graph.retain(previous_display):
+        source.slicer_area.replace_source_data(changed)
+        assert graph.is_stale(child.uid)
+        if edit == "rename":
+            model = manager.tree_view.model()
+            assert model.setData(model._row_index(child.uid), "calibrated")
+        else:
+            console[0].children[0][0, 0] = 1234.0
+        assert graph.is_stale(child.uid)
+        assert graph.entry(child.uid).auto
+        current = graph.source_revision(child.uid)
+        assert graph.revision(current).producer.inputs == (
+            ("data", previous_source if edit == "rename" else previous_display),
+        )
+        expected = expected_source(raw)
+        if edit == "rename":
+            assert area.has_active_filter
+            assert graph.revision(
+                graph.current_revision(child.uid)
+            ).producer.inputs == (("data", current),)
+            expected = expected - expected.min("x")
+        else:
+            assert not area.has_active_filter
+            assert graph.current_revision(child.uid) == current
+        check_display(expected)
+        manager.refresh_revision_button.click()
+        assert not graph.is_stale(child.uid)
+        refreshed = expected_source(changed)
+        if edit == "rename":
+            check_display(refreshed - refreshed.min("x"))
+            area.apply_filter_operation(None)
+            assert graph.current_revision(child.uid) == graph.source_revision(child.uid)
+        check_display(refreshed)
+        # Auto stays enabled after both edits and after clearing a display filter.
+        latest = (5 * raw).rename(raw.name)
+        source.slicer_area.replace_source_data(latest)
+        qtbot.waitUntil(lambda: not graph.is_stale(child.uid))
+        check_display(expected_source(latest))
+        historical = raw.interp_like(grid)
+        xr.testing.assert_identical(
+            graph.data(previous_display), historical - historical.min("x")
+        )

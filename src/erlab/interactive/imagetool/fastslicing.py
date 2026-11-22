@@ -25,10 +25,8 @@ def _array_rect(
 
 @numba.njit(
     [
-        numba.int64(numba.int32[::1], numba.int32),
-        numba.int64(numba.int64[::1], numba.int64),
-        numba.int64(numba.float32[::1], numba.float32),
-        numba.int64(numba.float64[::1], numba.float64),
+        numba.int64(numba.types.Array(dtype, 1, "C", readonly=True), dtype)
+        for dtype in (numba.int32, numba.int64, numba.float32, numba.float64)
     ],
     cache=True,
 )
@@ -46,10 +44,8 @@ def _index_of_value_nonuniform(arr: npt.NDArray[np.floating], val: np.floating) 
 
 @numba.njit(
     [
-        numba.int32(numba.int32[::1]),
-        numba.int64(numba.int64[::1]),
-        numba.float32(numba.float32[::1]),
-        numba.float64(numba.float64[::1]),
+        dtype(numba.types.Array(dtype, 1, "C", readonly=True))
+        for dtype in (numba.int32, numba.int64, numba.float32, numba.float64)
     ],
     cache=True,
 )

@@ -6,7 +6,7 @@ import ast
 import typing
 
 import erlab.interactive._figurecomposer._codegen
-from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
+from erlab._provenance._operations import ScriptCodeOperation
 
 if typing.TYPE_CHECKING:
     from collections.abc import Mapping

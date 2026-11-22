@@ -84,6 +84,7 @@ if typing.TYPE_CHECKING:
     import h5py
     import xarray as xr
 
+    from erlab._provenance._model import ToolProvenanceSpec
     from erlab.interactive._code_trust._api import _DocumentTrust
     from erlab.interactive._code_trust._core import (
         CodeTrustEntry,
@@ -91,7 +92,6 @@ if typing.TYPE_CHECKING:
         CodeTrustManifest,
     )
     from erlab.interactive.imagetool._mainwindow import ImageTool
-    from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.manager._workspace._state import (
         _WorkspaceStateSnapshot,
@@ -379,9 +379,13 @@ class _WorkspaceController:
         self._normalize_approved_workspace_provenance()
         self._discard_unreachable_provenance_revisions()
 
-    def _discard_unreachable_provenance_revisions(self) -> None:
+    def _discard_unreachable_provenance_revisions(
+        self, extra_roots: frozenset[str] = frozenset()
+    ) -> None:
         self._manager._provenance_revisions.discard_unreachable(
             workspace_revisions.retained_revision_ids(self._manager)
+            | self._manager._operations.graph.revision_ids
+            | extra_roots
         )
 
     def _normalize_approved_workspace_provenance(self) -> None:
@@ -567,7 +571,7 @@ class _WorkspaceController:
             for uid in self._manager._tool_graph.nodes
         }
         revision_caches = {
-            uid: (node._current_revision_id, node._revision_ids_by_role.copy())
+            uid: node.snapshot_revision_bindings()
             for uid, node in self._manager._tool_graph.nodes.items()
         }
         previous_pending = self._code_trust_manifest_binding_pending
@@ -602,11 +606,10 @@ class _WorkspaceController:
         except Exception:
             # A failed action must not retain checkpoint copies that were never
             # published. Their immutable records can be collected when unreachable.
-            for uid, (current, roles) in revision_caches.items():
+            for uid, bindings in revision_caches.items():
                 node = self._manager._tool_graph.nodes.get(uid)
                 if node is not None:
-                    node._current_revision_id = current
-                    node._revision_ids_by_role = roles
+                    node.restore_revision_bindings(bindings)
             raise
         finally:
             self._local_provenance_changes = None

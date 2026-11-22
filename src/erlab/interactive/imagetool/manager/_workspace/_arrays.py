@@ -22,6 +22,7 @@ from xarray.core import indexing, utils
 from xarray.namedarray.utils import is_duck_dask_array
 
 import erlab
+from erlab._provenance._checkpoint import FileVersion
 from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool.manager._workspace import _store as workspace_store
@@ -1254,6 +1255,30 @@ def _workspace_h5py_rebuild_dimension_scales(
                 target_obj.dims[axis].attach_scale(scale)
 
 
+def _workspace_h5_variables_are_local(group: typing.Any, file: typing.Any) -> bool:
+    for name in group:
+        if not isinstance(group.get(name, getlink=True), h5py.HardLink):
+            return False
+        obj = group[name]
+        if not isinstance(obj, h5py.Dataset) or obj.file.id != file.id:
+            return False
+    return True
+
+
+def _workspace_h5_variable_ids(
+    file: typing.Any, group: typing.Any
+) -> tuple[os.stat_result, tuple[tuple[str, int], ...]] | None:
+    """Identify the open file and its complete set of verified local variables."""
+    with contextlib.suppress(OSError, RuntimeError, TypeError, ValueError):
+        handle = file.id.get_vfd_handle()
+        if isinstance(handle, tuple):
+            handle = handle[0]
+        return os.fstat(handle), tuple(
+            (name, int(h5py.h5o.get_info(obj.id).addr)) for name, obj in group.items()
+        )
+    return None
+
+
 def _copy_workspace_h5_group_to_open_file(
     source_file: typing.Any,
     target_file: typing.Any,
@@ -1275,29 +1300,13 @@ def _copy_workspace_h5_group_to_open_file(
     if target_name in parent:
         del parent[target_name]
     shared_key = None
-    if shared_groups is not None and all(
-        isinstance(source_group.get(name, getlink=True), h5py.HardLink)
-        and isinstance(obj, h5py.Dataset)
-        and obj.file.id == source_file.id
-        for name, obj in source_group.items()
+    if shared_groups is not None and _workspace_h5_variables_are_local(
+        source_group, source_file
     ):
-        # Identify the open file, not only its path: the path can be replaced
-        # while a retained reader still refers to the original file.
-        with contextlib.suppress(OSError, RuntimeError, TypeError, ValueError):
-            handle = source_file.id.get_vfd_handle()
-            if isinstance(handle, tuple):
-                handle = handle[0]
-            stat = os.fstat(handle)
-            shared_key = (
-                stat.st_dev,
-                stat.st_ino,
-                stat.st_size,
-                stat.st_mtime_ns,
-                tuple(
-                    (name, int(h5py.h5o.get_info(obj.id).addr))
-                    for name, obj in source_group.items()
-                ),
-            )
+        variable_ids = _workspace_h5_variable_ids(source_file, source_group)
+        if variable_ids is not None:
+            info, ids = variable_ids
+            shared_key = info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, ids
         shared_path = None if shared_key is None else shared_groups.get(shared_key)
         if shared_path is not None:
             shared_group = target_file[shared_path]
@@ -1603,12 +1612,21 @@ def _workspace_h5py_dataset_has_only_independent_tool_items(
     )
 
 
+class _WorkspaceImageBackupCache:
+    """In-memory variables and exact source versions for one Replace transaction."""
+
+    def __init__(self) -> None:
+        self.datasets: dict[tuple[typing.Any, ...], xr.Dataset] = {}
+        self.backing_versions: dict[tuple[pathlib.Path, str], FileVersion] = {}
+
+
 def _read_workspace_dataset_group_h5py(
     fname: str | os.PathLike[str],
     group_path: str,
     *,
     preferred_data_name: str | None = None,
     data_variables: Mapping[Hashable, xr.Variable] | None = None,
+    image_backup: _WorkspaceImageBackupCache | None = None,
 ) -> xr.Dataset | None:
     """Read native dimensions and metadata, optionally borrowing lazy values.
 
@@ -1631,6 +1649,25 @@ def _read_workspace_dataset_group_h5py(
         if group_path not in h5_file or not isinstance(h5_file[group_path], h5py.Group):
             return None
         group = h5_file[group_path]
+        shared_key = None
+        if (
+            image_backup is not None
+            and _workspace_h5_variables_are_local(group, h5_file)
+            and all(not obj.is_virtual and not obj.external for obj in group.values())
+        ):
+            variable_ids = _workspace_h5_variable_ids(h5_file, group)
+            if variable_ids is not None:
+                info, ids = variable_ids
+                version = FileVersion.from_stat(os.path.abspath(fname), info)
+                shared_key = (version, ids)
+                cached = image_backup.datasets.get(shared_key)
+                if cached is not None:
+                    image_backup.backing_versions[(pathlib.Path(fname), group_path)] = (
+                        version
+                    )
+                    ds = cached.copy(deep=False)
+                    ds.attrs = _h5py_attrs_to_dict(group.attrs)
+                    return ds
         datasets: dict[str, h5py.Dataset] = {}
         for name, obj in group.items():
             if not isinstance(
@@ -1847,7 +1884,7 @@ def _read_workspace_dataset_group_h5py(
                     continue
                 data_vars[variable_name] = variable
 
-        return _serialization.restore_private_coords(
+        ds = _serialization.restore_private_coords(
             xr.Dataset(
                 data_vars,
                 coords=coords,
@@ -1855,6 +1892,12 @@ def _read_workspace_dataset_group_h5py(
             ),
             data_name,
         )
+        if image_backup is not None and shared_key is not None:
+            image_backup.datasets[shared_key] = ds
+            image_backup.backing_versions[(pathlib.Path(fname), group_path)] = (
+                shared_key[0]
+            )
+        return ds
 
 
 def _workspace_h5py_data_name(ds: xr.Dataset) -> typing.Hashable | None:

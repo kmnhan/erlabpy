@@ -13,21 +13,15 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab._provenance._operations import DenoiseOperation, TransposeOperation
 from erlab.interactive import _persistence_constants
-from erlab.interactive.imagetool._provenance._operations import (
-    DenoiseOperation,
-    TransposeOperation,
-)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Mapping
 
     import varname
 
-    from erlab.interactive.imagetool._provenance._model import (
-        ToolProvenanceOperation,
-        ToolProvenanceSpec,
-    )
+    from erlab._provenance._model import ToolProvenanceOperation, ToolProvenanceSpec
 else:
     import lazy_loader as _lazy
 

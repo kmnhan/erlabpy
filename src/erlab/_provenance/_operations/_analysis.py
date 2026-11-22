@@ -6,7 +6,7 @@ import contextlib
 import keyword
 import os
 import typing
-from collections.abc import Collection, Hashable, Mapping, Sequence
+from collections.abc import Hashable, Mapping, Sequence
 from numbers import Integral
 
 import numpy as np
@@ -14,13 +14,14 @@ import pydantic
 import xarray as xr
 
 import erlab
-from erlab.interactive.imagetool._provenance._code import (
+from erlab._provenance._calls import Call, CallOperation, InputRef, TupleOutputOperation
+from erlab._provenance._code import (
     _DATASET_MARKER,
     _FIT_DATASET_MARKER,
     _expression_receiver_code,
     _provenance_value_code,
 )
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ConsoleCall,
     ConsoleOperationPattern,
     DerivationEntry,
@@ -41,6 +42,7 @@ from erlab.interactive.imagetool._provenance._model import (
     decode_provenance_value,
     encode_provenance_value,
 )
+from erlab.utils._code import format_1d_numeric_array_code
 
 
 def _require_integer_mapping(value: typing.Any, *, field_name: str) -> typing.Any:
@@ -56,7 +58,7 @@ def _require_integer_mapping(value: typing.Any, *, field_name: str) -> typing.An
     return value
 
 
-class ConcatOperation(ToolProvenanceOperation):
+class ConcatOperation(CallOperation):
     """Concatenate the current array and ordered, separately bound input arrays."""
 
     op: typing.Literal["concat"] = "concat"
@@ -93,35 +95,14 @@ class ConcatOperation(ToolProvenanceOperation):
     def input_slots(self) -> tuple[str, ...]:
         return tuple(f"other_{index}" for index in range(self.input_count - 1))
 
-    def apply_with_inputs(
-        self,
-        data: xr.DataArray,
-        inputs: Mapping[str, xr.DataArray],
-        *,
-        authorization: object | None = None,
-    ) -> xr.DataArray:
-        del authorization
-        return xr.concat(
-            [data, *(inputs[slot] for slot in self.input_slots())], **self.kwargs
+    def invocation(self) -> Call:
+        slots = ("data", *self.input_slots())
+        return Call.function(
+            xr.concat, args=([InputRef(slot) for slot in slots],), kwargs=self.kwargs
         )
 
     def derivation_label(self) -> str:
         return f"Concatenate({_format_derivation_value(self.kwargs)})"
-
-    def expression_code_with_inputs(
-        self,
-        input_name: str,
-        inputs: Mapping[str, str],
-        *,
-        source_name: str | None = None,
-    ) -> str:
-        del source_name
-        input_names = [input_name, *(inputs[slot] for slot in self.input_slots())]
-        kwargs = ", ".join(
-            f"{name}={_provenance_value_code(value)}"
-            for name, value in self.kwargs.items()
-        )
-        return f"xr.concat([{', '.join(input_names)}], {kwargs})"
 
 
 class DenoiseOperation(ToolProvenanceOperation):
@@ -421,9 +402,9 @@ class ShiftFromInputOperation(_BaseShiftOperation):
 
 def _format_qsel_dims_arg(dims: ProvenanceHashableTuple) -> str:
     return (
-        erlab.interactive.utils._parse_single_arg(dims[0])
+        erlab.utils._code._parse_single_arg(dims[0])
         if len(dims) == 1 and isinstance(dims[0], str)
-        else erlab.interactive.utils._parse_single_arg(dims)
+        else erlab.utils._code._parse_single_arg(dims)
     )
 
 
@@ -518,23 +499,6 @@ class QSelAggregationOperation(ToolProvenanceOperation):
         return f"{input_name}.qsel.{self.func}({arg})"
 
 
-def _prepare_interpolation_source(
-    data: xr.DataArray, dimensions: Collection[Hashable]
-) -> xr.DataArray:
-    indexers: dict[Hashable, slice | np.ndarray] = {}
-    for dim in dimensions:
-        values = np.asarray(data[dim].values)
-        if values.ndim != 1:
-            raise ValueError("Input DataArray is not 1-D.")
-        if np.all(values[1:] > values[:-1]):
-            continue
-        if np.all(values[1:] < values[:-1]):
-            indexers[dim] = slice(None, None, -1)
-        else:
-            indexers[dim] = np.argsort(values, kind="stable")
-    return data.isel(indexers) if indexers else data
-
-
 def _interpolation_expression_code(
     input_name: str,
     coords: Mapping[Hashable, str],
@@ -548,12 +512,12 @@ def _interpolation_expression_code(
         coords_code = (
             "{"
             + ", ".join(
-                f"{erlab.interactive.utils._parse_single_arg(dim)}: {value}"
+                f"{erlab.utils._code._parse_single_arg(dim)}: {value}"
                 for dim, value in coords.items()
             )
             + "}"
         )
-    method_code = erlab.interactive.utils._parse_single_arg(method)
+    method_code = erlab.utils._code._parse_single_arg(method)
     return f"{input_name}.interp({coords_code}, method={method_code})"
 
 
@@ -660,7 +624,9 @@ class InterpolationOperation(ToolProvenanceOperation):
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
         coords = self.decoded_coords
-        return _prepare_interpolation_source(data, coords).interp(
+        return erlab.analysis.interpolate._prepare_interpolation_source(
+            data, coords
+        ).interp(
             coords,
             method=self.method,
             assume_sorted=True,
@@ -677,7 +643,7 @@ class InterpolationOperation(ToolProvenanceOperation):
                     + _provenance_value_code(values.to_dict(data="list"))
                     + ")"
                     if isinstance(values, xr.DataArray)
-                    else erlab.interactive.utils.format_1d_numeric_array_code(values)
+                    else format_1d_numeric_array_code(values)
                 )
                 for dim, values in self.decoded_coords.items()
             },
@@ -692,7 +658,7 @@ class InterpolationOperation(ToolProvenanceOperation):
         return f"Interpolate({_format_derivation_value(label_kwargs)})"
 
 
-class InterpolationFromInputOperation(ToolProvenanceOperation):
+class InterpolationFromInputOperation(CallOperation):
     op: typing.Literal["interpolate_from_input"] = "interpolate_from_input"
     live_applicable: typing.ClassVar[bool] = False
     dimensions: NullableProvenanceHashableTuple = None
@@ -713,97 +679,21 @@ class InterpolationFromInputOperation(ToolProvenanceOperation):
     def target_dimensions(
         self, data: xr.DataArray, target: xr.DataArray
     ) -> tuple[Hashable, ...]:
-        if self.dimensions is not None:
-            return self.dimensions
-        return tuple(
-            dim
-            for dim in data.dims
-            if len(target.xindexes.get_all_coords(dim, errors="ignore")) == 1
+        return erlab.analysis.interpolate._target_dimensions(
+            data, target, self.dimensions
         )
 
     def validate_inputs(self, data: xr.DataArray, target: xr.DataArray) -> None:
-        dimensions = self.target_dimensions(data, target)
-        if not dimensions:
-            raise ValueError("The target has no matching dimension coordinates.")
-        for dim in dimensions:
-            if dim not in data.dims:
-                raise ValueError(f"The source dimension {dim!r} is not available.")
-            if dim not in target.dims or dim not in target.coords:
-                raise ValueError(
-                    f"The target dimension coordinate {dim!r} is not available."
-                )
-            for label, coord in (
-                ("source", data[dim]),
-                ("target", target.coords[dim]),
-            ):
-                values = np.asarray(coord.values)
-                if coord.dims != (dim,) or values.ndim != 1:
-                    raise ValueError(
-                        f"The {label} coordinate {dim!r} must be one-dimensional."
-                    )
-                if not np.issubdtype(values.dtype, np.number) or np.issubdtype(
-                    values.dtype, np.complexfloating
-                ):
-                    raise TypeError(
-                        f"The {label} coordinate {dim!r} must contain real numbers."
-                    )
-                if values.size == 0 or not np.all(np.isfinite(values)):
-                    raise ValueError(
-                        f"The {label} coordinate {dim!r} must be nonempty and finite."
-                    )
-                if label == "source" and np.unique(values).size != values.size:
-                    raise ValueError(
-                        f"The source coordinate {dim!r} values must be unique."
-                    )
-
-    def apply_with_inputs(
-        self,
-        data: xr.DataArray,
-        inputs: Mapping[str, xr.DataArray],
-        *,
-        authorization: object | None = None,
-    ) -> xr.DataArray:
-        del authorization
-        target = inputs["target"]
-        self.validate_inputs(data, target)
-        data = _prepare_interpolation_source(data, self.target_dimensions(data, target))
-        if self.dimensions is None:
-            return data.interp_like(target, method=self.method, assume_sorted=True)
-        return data.interp(
-            {dim: target.coords[dim] for dim in self.dimensions},
-            method=self.method,
-            assume_sorted=True,
+        erlab.analysis.interpolate._validate_interp_like(
+            data, target, self.target_dimensions(data, target)
         )
 
-    def expression_code_with_inputs(
-        self,
-        input_name: str,
-        inputs: Mapping[str, str],
-        *,
-        source_name: str | None = None,
-    ) -> str:
-        del source_name
-        target_name = _expression_receiver_code(inputs["target"])
-        if self.dimensions is None:
-            method_code = erlab.interactive.utils._parse_single_arg(self.method)
-            return (
-                f"{_expression_receiver_code(input_name)}.interp_like("
-                f"{target_name}, method={method_code})"
-            )
-        coords: dict[Hashable, str] = {}
-        for dim in self.dimensions:
-            if (
-                isinstance(dim, str)
-                and dim.isidentifier()
-                and not keyword.iskeyword(dim)
-                and not dim.startswith("_")
-                and not hasattr(xr.DataArray, dim)
-            ):
-                coords[dim] = f"{target_name}.{dim}"
-            else:
-                dim_code = erlab.interactive.utils._parse_single_arg(dim)
-                coords[dim] = f"{target_name}.coords[{dim_code}]"
-        return _interpolation_expression_code(input_name, coords, self.method)
+    def invocation(self) -> Call:
+        return Call.function(
+            erlab.analysis.interpolate.interp_like,
+            args=(InputRef("data"), InputRef("target")),
+            kwargs={"dimensions": self.dimensions, "method": self.method},
+        )
 
     def derivation_label(self) -> str:
         label_kwargs = {"dimensions": self.dimensions, "method": self.method}
@@ -850,7 +740,9 @@ class UniformInterpolationOperation(ToolProvenanceOperation):
         return np.linspace(float(endpoints[0]), float(endpoints[1]), size)
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
-        return _prepare_interpolation_source(data, self.sizes).interp(
+        return erlab.analysis.interpolate._prepare_interpolation_source(
+            data, self.sizes
+        ).interp(
             {
                 dim: self._target_values(data, dim, size)
                 for dim, size in self.sizes.items()
@@ -864,14 +756,14 @@ class UniformInterpolationOperation(ToolProvenanceOperation):
     ) -> str:
         target_lines = [
             (
-                f"        {erlab.interactive.utils._parse_single_arg(dim)}: "
+                f"        {erlab.utils._code._parse_single_arg(dim)}: "
                 f"np.linspace(*{input_name}["
-                f"{erlab.interactive.utils._parse_single_arg(dim)}"
+                f"{erlab.utils._code._parse_single_arg(dim)}"
                 f"].values[[0, -1]], {size}),"
             )
             for dim, size in self.sizes.items()
         ]
-        method_code = erlab.interactive.utils._parse_single_arg(self.method)
+        method_code = erlab.utils._code._parse_single_arg(self.method)
         return "\n".join(
             (
                 f"{input_name}.interp(",
@@ -956,7 +848,7 @@ class DivideByCoordOperation(ToolProvenanceOperation):
             and not hasattr(xr.DataArray, self.coord_name)
         ):
             return f"{data_name}.{self.coord_name}"
-        coord_name = erlab.interactive.utils._parse_single_arg(self.coord_name)
+        coord_name = erlab.utils._code._parse_single_arg(self.coord_name)
         return f"{data_name}.coords[{coord_name}]"
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
@@ -1149,7 +1041,7 @@ class ImageDerivativeOperation(ToolProvenanceOperation):
         return "processed_data"
 
 
-class RemoveMeshOperation(ToolProvenanceOperation):
+class RemoveMeshOperation(TupleOutputOperation):
     """Remove a mesh pattern and select one of the two DataArray outputs."""
 
     op: typing.Literal["remove_mesh"] = "remove_mesh"
@@ -1235,77 +1127,22 @@ class RemoveMeshOperation(ToolProvenanceOperation):
             "method": self.method,
         }
 
-    def apply(self, data: xr.DataArray) -> xr.DataArray:
-        corrected, mesh = typing.cast(
-            "tuple[xr.DataArray, xr.DataArray]",
-            erlab.analysis.mesh.remove_mesh(data, **self.kwargs),
+    outputs: typing.ClassVar[tuple[str, ...]] = ("corrected", "mesh")
+
+    @property
+    def selected_output(self) -> str:
+        return self.output
+
+    def invocation(self) -> Call:
+        return Call.function(
+            erlab.analysis.mesh.remove_mesh,
+            args=(InputRef("data"),),
+            kwargs=self.kwargs,
         )
-        return corrected if self.output == "corrected" else mesh
 
     def derivation_label(self) -> str:
         action = "Remove Mesh" if self.output == "corrected" else "Extract Mesh"
         return f"{action}({_format_derivation_value(self.kwargs)})"
-
-    def expression_code(
-        self, input_name: str, *, source_name: str | None = None
-    ) -> str:
-        raise NotImplementedError
-
-    def statement_code(
-        self,
-        input_name: str,
-        *,
-        output_name: str,
-        source_name: str | None = None,
-    ) -> str:
-        return self._remove_mesh_statement_code(
-            input_name,
-            output_name=output_name,
-            reserved_names=(),
-        )
-
-    def _statement_replay_code(
-        self,
-        input_name: str,
-        *,
-        output_name: str,
-        source_name: str | None = None,
-        reserved_names: Collection[str] = (),
-    ) -> str:
-        return self._remove_mesh_statement_code(
-            input_name,
-            output_name=output_name,
-            reserved_names=reserved_names,
-        )
-
-    def _remove_mesh_statement_code(
-        self,
-        input_name: str,
-        *,
-        output_name: str,
-        reserved_names: Collection[str],
-    ) -> str:
-        other_base = "mesh" if self.output == "corrected" else "corrected"
-        unavailable = {input_name, output_name, *reserved_names}
-        other_name = other_base
-        suffix = 2
-        while other_name in unavailable:
-            other_name = f"{other_base}_{suffix}"
-            suffix += 1
-        corrected_name, mesh_name = (
-            (output_name, other_name)
-            if self.output == "corrected"
-            else (other_name, output_name)
-        )
-        return erlab.interactive.utils.generate_code(
-            erlab.analysis.mesh.remove_mesh,
-            [f"|{input_name}|"],
-            self.kwargs,
-            module="era.mesh",
-            assign=(corrected_name, mesh_name),
-            remove_defaults=False,
-            copy=False,
-        )
 
     def preferred_replay_output_name(self) -> str:
         return self.output
@@ -1314,92 +1151,19 @@ class RemoveMeshOperation(ToolProvenanceOperation):
         return "mesh_data"
 
 
-class NormalizeOperation(ToolProvenanceOperation):
+class NormalizeOperation(CallOperation):
     op: typing.Literal["normalize"] = "normalize"
     batch_available: typing.ClassVar[bool] = True
     dims: ProvenanceHashableTuple = ()
     mode: typing.Literal["area", "minmax", "min", "min_area"] = "area"
     denominator_rtol: float = 1e-12
 
-    @staticmethod
-    def _safe_denominator(
-        denominator: xr.DataArray, scale: xr.DataArray, rtol: float
-    ) -> xr.DataArray:
-        threshold = np.maximum(
-            scale * rtol,
-            np.finfo(np.float64).tiny,
+    def invocation(self) -> Call:
+        return Call.function(
+            erlab.analysis.transform.normalize,
+            args=(InputRef("data"), self.dims),
+            kwargs={"mode": self.mode, "denominator_rtol": self.denominator_rtol},
         )
-        return denominator.where(
-            np.isfinite(denominator)
-            & np.isfinite(scale)
-            & (np.abs(denominator) > threshold)
-        )
-
-    @staticmethod
-    def _dims_code(dims: tuple[Hashable, ...]) -> str:
-        return _format_qsel_dims_arg(dims)
-
-    def _finite_abs_scale(self, data: xr.DataArray) -> xr.DataArray:
-        if data.chunks is not None or data.dtype.kind != "f":
-            return abs(data).where(np.isfinite(data)).max(self.dims, skipna=True)
-        finite = np.isfinite(data.data)
-        minimum = data.reduce(np.min, self.dims, where=finite, initial=np.inf)
-        maximum = data.reduce(np.max, self.dims, where=finite, initial=-np.inf)
-        return typing.cast("xr.DataArray", np.maximum(abs(minimum), abs(maximum)))
-
-    @staticmethod
-    def _subtract_and_divide(
-        data: xr.DataArray, minimum: xr.DataArray, denominator: xr.DataArray
-    ) -> xr.DataArray:
-        shifted = data - minimum
-        if (
-            shifted.dtype.kind in "fc"
-            and np.result_type(shifted.dtype, denominator.dtype) == shifted.dtype
-        ):
-            shifted /= denominator
-            return shifted
-        return shifted / denominator
-
-    def apply(self, data: xr.DataArray) -> xr.DataArray:
-        if not self.dims:
-            return data
-
-        if self.mode == "area":
-            finite_abs_scale = self._finite_abs_scale(data)
-            area = self._safe_denominator(
-                data.mean(self.dims),
-                finite_abs_scale,
-                self.denominator_rtol,
-            )
-            return data / area
-
-        if self.mode == "minmax":
-            minimum = data.min(self.dims)
-            maximum = data.max(self.dims)
-            finite_abs_scale = xr.where(
-                abs(minimum) > abs(maximum),
-                abs(minimum),
-                abs(maximum),
-            )
-            denominator = self._safe_denominator(
-                maximum - minimum,
-                finite_abs_scale,
-                self.denominator_rtol,
-            )
-            return self._subtract_and_divide(data, minimum, denominator)
-
-        if self.mode == "min":
-            minimum = data.min(self.dims)
-            return data - minimum
-
-        minimum = data.min(self.dims)
-        finite_abs_scale = self._finite_abs_scale(data)
-        area = self._safe_denominator(
-            data.mean(self.dims),
-            finite_abs_scale,
-            self.denominator_rtol,
-        )
-        return self._subtract_and_divide(data, minimum, area)
 
     def derivation_label(self) -> str:
         label_kwargs = {
@@ -1408,21 +1172,6 @@ class NormalizeOperation(ToolProvenanceOperation):
             "denominator_rtol": self.denominator_rtol,
         }
         return f"Normalize({_format_derivation_value(label_kwargs)})"
-
-    def expression_code(
-        self, input_name: str, *, source_name: str | None = None
-    ) -> str:
-        dims_code = self._dims_code(self.dims)
-        if self.mode == "area":
-            return f"{input_name} / {input_name}.mean({dims_code})"
-        if self.mode == "minmax":
-            minimum: str = f"{input_name}.min({dims_code})"
-            maximum: str = f"{input_name}.max({dims_code})"
-            return f"({input_name} - {minimum}) / ({maximum} - {minimum})"
-        if self.mode == "min":
-            return f"{input_name} - {input_name}.min({dims_code})"
-        minimum = f"{input_name}.min({dims_code})"
-        return f"({input_name} - {minimum}) / {input_name}.mean({dims_code})"
 
 
 class CoarsenOperation(ToolProvenanceOperation):
@@ -1509,9 +1258,7 @@ class CoarsenOperation(ToolProvenanceOperation):
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
-        formatted_kwargs = erlab.interactive.utils.format_kwargs(
-            self._code_coarsen_kwargs()
-        )
+        formatted_kwargs = erlab.utils._code.format_kwargs(self._code_coarsen_kwargs())
         return f"{input_name}.coarsen({formatted_kwargs}).{self.reducer}()"
 
 
@@ -1580,8 +1327,7 @@ class ThinOperation(ToolProvenanceOperation):
         if self.mode == "global":
             return f"{input_name}.thin({int(typing.cast('int', self.factor))})"
         return (
-            f"{input_name}.thin("
-            f"{erlab.interactive.utils.format_call_kwargs(self.factors)})"
+            f"{input_name}.thin({erlab.utils._code.format_call_kwargs(self.factors)})"
         )
 
 

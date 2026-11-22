@@ -1,4 +1,5 @@
 import ast
+import contextlib
 import enum
 import json
 import pathlib
@@ -18,16 +19,11 @@ import erlab.interactive.imagetool.manager._dependency as manager_dependency
 import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
-from erlab.interactive import _persistence_constants
-from erlab.interactive._fit2d import Fit2DTool
-from erlab.interactive.derivative import DerivativeTool
-from erlab.interactive.fermiedge import GoldTool
-from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._provenance._execution import rebuild_script_inputs
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     DerivationEntry,
     FileDataSelection,
     ScriptInput,
+    ScriptInputDataRole,
     ToolProvenanceSpec,
     _ProvenanceDisplayRow,
     full_data,
@@ -36,13 +32,19 @@ from erlab.interactive.imagetool._provenance._model import (
     script_inputs_dependency_refs,
     selection,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AssignAttrsOperation,
     GaussianFilterOperation,
     IselOperation,
     QSelOperation,
     ScriptCodeOperation,
 )
+from erlab.interactive import _persistence_constants
+from erlab.interactive._fit2d import Fit2DTool
+from erlab.interactive.derivative import DerivativeTool
+from erlab.interactive.fermiedge import GoldTool
+from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool._provenance._execution import rebuild_script_inputs
 from erlab.interactive.imagetool.dialogs import SelectionDialog
 from erlab.interactive.imagetool.manager import fetch, replace_data
 from erlab.interactive.imagetool.manager._dialogs import _RenameDialog
@@ -67,8 +69,7 @@ from tests.interactive.imagetool.manager.helpers import (
     set_transform_launch_mode,
     trigger_menu_action,
 )
-
-from ._common import (
+from tests.interactive.imagetool.manager.provenance._common import (
     _authorize_execution,
     _seed_fit2d_param_results,
     _set_selection_point,
@@ -361,13 +362,15 @@ class _ManagedUnaryTool(erlab.interactive.utils.ToolWindow[_ManagedInputTestStat
     StateModel = _ManagedInputTestState
     tool_name = "managed-unary-test"
 
-    def __init__(self, data: xr.DataArray) -> None:
+    def __init__(
+        self, data: xr.DataArray, *, data_role: ScriptInputDataRole = "source"
+    ) -> None:
         super().__init__()
         self._data = data
         self._status = _ManagedInputTestState()
         self.update_calls = 0
         self.set_script_inputs(
-            (ScriptInput(name="data", data_role="source"),),
+            (ScriptInput(name="data", data_role=data_role),),
             primary_input="data",
         )
 
@@ -6743,11 +6746,15 @@ def test_rebuilt_tool_input_captures_follow_adoption(
                 assert store.revision_ids == initial
                 assert tool.script_inputs == (binding,)
             else:
-                if outcome == "rebind":
-                    manager._provenance_revisions = store.copy()
-                assert tool.pending_data is not None
-                tool._data = tool.pending_data
-                tool.finalize_source_refresh()
+                replacement = (
+                    manager._operations.replace_workspace(store.copy())
+                    if outcome == "rebind"
+                    else contextlib.nullcontext()
+                )
+                with replacement:
+                    assert tool.pending_data is not None
+                    tool._data = tool.pending_data
+                    tool.finalize_source_refresh()
                 assert tool.script_inputs[0].revision_id == captured
                 assert manager._provenance_revisions.has_data(captured)
                 if outcome == "rebind":
@@ -6767,16 +6774,6 @@ def test_pending_displayed_inputs_own_checkpoints_through_collection_and_save(
     )
 
     class _DeferredDisplayedInputTool(_ManagedUnaryTool):
-        def __init__(self, data: xr.DataArray) -> None:
-            erlab.interactive.utils.ToolWindow.__init__(self)
-            self._data = data
-            self._status = _ManagedInputTestState()
-            self.update_calls = 0
-            self.set_script_inputs(
-                (ScriptInput(name="data", data_role="displayed"),),
-                primary_input="data",
-            )
-
         def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
             self.pending_data = inputs["data"]
             self._defer_source_refresh()
@@ -6791,7 +6788,7 @@ def test_pending_displayed_inputs_own_checkpoints_through_collection_and_save(
             for _ in range(2)
         ]
         source = manager._node_for_target(source_index)
-        tool = _DeferredDisplayedInputTool(data)
+        tool = _DeferredDisplayedInputTool(data, data_role="displayed")
         target_uid = manager.add_childtool(
             tool, script_inputs={"data": source_index}, show=False
         )

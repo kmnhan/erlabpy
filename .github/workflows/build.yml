@@ -39,12 +39,15 @@ jobs:
       matrix:
         include:
           - os: windows-latest
+            executable: dist/ImageTool Manager/ImageTool Manager.exe
             SUFFIX: windows
             PYTHON_VERSION: "3.14"
           - os: macos-15
+            executable: dist/ImageTool Manager.app/Contents/MacOS/ImageTool Manager
             SUFFIX: macos-arm
             PYTHON_VERSION: "3.14"
           - os: macos-15-intel
+            executable: dist/ImageTool Manager.app/Contents/MacOS/ImageTool Manager
             SUFFIX: macos-intel
             PYTHON_VERSION: "3.13"
     runs-on: ${{ matrix.os }}
@@ -93,6 +96,12 @@ jobs:
 
       - name: Build ImageTool Manager
         run: uv run --no-editable pyinstaller manager.spec
+
+      - name: Check packaged extension execution
+        timeout-minutes: 3
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: uv run --no-sync python scripts/check_packaged_extension.py "${{ matrix.executable }}"
 
       - name: Verify macOS ARM SDK
         if: matrix.SUFFIX == 'macos-arm'

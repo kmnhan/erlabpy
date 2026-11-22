@@ -36,9 +36,9 @@ from erlab.interactive.imagetool.manager._server import _ManagerServer, _Watcher
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
+    from erlab._provenance._files import _LoadSourceDetails
+    from erlab._provenance._model import ToolProvenanceSpec
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
-    from erlab.interactive.imagetool._load_source import _LoadSourceDetails
-    from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
     from erlab.interactive.imagetool.manager import ImageToolManager
     from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 

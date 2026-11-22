@@ -262,7 +262,7 @@ ImageTool. These handles are not {class}`xarray.DataArray` objects, but they sup
 many of the same operations and keep track of the manager history. For example:
 
   ```python
-  # Access the underlying DataArray of the first window
+  # Read the displayed DataArray of the first window
   tools[0].data
 
   # Inspect the child rows under the first window
@@ -293,9 +293,21 @@ many of the same operations and keep track of the manager history. For example:
   diff = tools[0] - tools[1]
   diff.qshow(manager=True)
 
+  # Edit one element and record the change in Manager history
+  tools[0][0, 0] = 0.0
+
   # Replace data in the first window
   tools[0].data = tools[0].assign_coords(time=tools[1].time)
   ```
+
+```{versionchanged} 3.31.0
+A managed ImageTool captures incoming NumPy values and coordinates. An acquisition
+program can reuse its input buffer after the window opens. To publish the next
+scan to the same row, call {func}`erlab.interactive.imagetool.manager.replace_data`.
+To edit values in the console, assign to the row as shown above. Code that wrote
+to `slicer_area.data.values` or `tools[0].data.values` must use one of these
+edit paths so Manager can record the change.
+```
 
 :::{tip}
 Drag one row from the {guilabel}`Data/Tools` tree into the console to insert its

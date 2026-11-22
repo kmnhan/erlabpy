@@ -10,12 +10,13 @@ import numpy as np
 import pydantic
 
 import erlab
-from erlab.interactive.imagetool._provenance._code import (
+from erlab._provenance._calls import Call, CallOperation, InputRef
+from erlab._provenance._code import (
     _TUPLE_MARKER,
     _provenance_numeric_array_code,
     _provenance_value_code,
 )
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     ConsoleCall,
     ConsoleOperationPattern,
     ProvenanceHashable,
@@ -58,7 +59,7 @@ class SwapDimsOperation(ToolProvenanceOperation):
     ) -> str:
         return (
             f"{input_name}.swap_dims("
-            f"{erlab.interactive.utils.format_call_kwargs(self.mapping)})"
+            f"{erlab.utils._code.format_call_kwargs(self.mapping)})"
         )
 
 
@@ -97,12 +98,11 @@ class RenameDimsCoordsOperation(ToolProvenanceOperation):
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
         return (
-            f"{input_name}.rename("
-            f"{erlab.interactive.utils.format_call_kwargs(self.mapping)})"
+            f"{input_name}.rename({erlab.utils._code.format_call_kwargs(self.mapping)})"
         )
 
 
-class AffineCoordOperation(ToolProvenanceOperation):
+class AffineCoordOperation(CallOperation):
     op: typing.Literal["affine_coord"] = "affine_coord"
     batch_available: typing.ClassVar[bool] = True
     coord_name: str
@@ -134,39 +134,16 @@ class AffineCoordOperation(ToolProvenanceOperation):
             )
         return self
 
-    def _resolved_offset(self, data: xr.DataArray) -> float:
-        offset = float(self.offset)
-        if self.offset_coord is None:
-            return offset
-        if self.offset_coord not in data.coords:
-            raise ValueError(
-                f"Offset coordinate {self.offset_coord!r} is not present in the data."
+    def invocation(self) -> Call:
+        kwargs: dict[str, typing.Any] = {"scale": self.scale, "offset": self.offset}
+        if self.offset_coord is not None:
+            kwargs.update(
+                offset_coord=self.offset_coord, offset_coord_sign=self.offset_coord_sign
             )
-        coord = data.coords[self.offset_coord]
-        values = np.asarray(coord.values)
-        if values.ndim != 0:
-            raise ValueError(f"Offset coordinate {self.offset_coord!r} must be scalar.")
-        if values.dtype.kind not in "iuf":
-            raise ValueError(
-                f"Offset coordinate {self.offset_coord!r} must contain a real number."
-            )
-        value = float(values)
-        if not np.isfinite(value):
-            raise ValueError(f"Offset coordinate {self.offset_coord!r} must be finite.")
-        return offset + self.offset_coord_sign * value
-
-    def apply(self, data: xr.DataArray) -> xr.DataArray:
-        coord = data.coords[self.coord_name]
-        return erlab.utils.array.sort_coord_order(
-            data.assign_coords(
-                {
-                    self.coord_name: coord.copy(
-                        data=self.scale * coord.values + self._resolved_offset(data)
-                    )
-                }
-            ),
-            keys=data.coords.keys(),
-            dims_first=False,
+        return Call.function(
+            erlab.analysis.transform.affine_coord,
+            args=(InputRef("data"), self.coord_name),
+            kwargs=kwargs,
         )
 
     def derivation_label(self) -> str:
@@ -179,35 +156,6 @@ class AffineCoordOperation(ToolProvenanceOperation):
             label_kwargs["offset_coord"] = self.offset_coord
             label_kwargs["offset_coord_sign"] = self.offset_coord_sign
         return f"Scale/Offset Coordinate({_format_derivation_value(label_kwargs)})"
-
-    def expression_code(
-        self, input_name: str, *, source_name: str | None = None
-    ) -> str:
-        coord_name_code = repr(self.coord_name)
-        coord_values_code = f"{input_name}[{coord_name_code}].values"
-        scale = float(self.scale)
-        offset = float(self.offset)
-        data_code = coord_values_code
-        if scale != 1.0:
-            scale_code = erlab.interactive.utils._parse_single_arg(scale)
-            data_code = f"{scale_code} * {data_code}"
-        if offset > 0.0:
-            offset_code = erlab.interactive.utils._parse_single_arg(offset)
-            data_code = f"{data_code} + {offset_code}"
-        elif offset < 0.0:
-            offset_code = erlab.interactive.utils._parse_single_arg(abs(offset))
-            data_code = f"{data_code} - {offset_code}"
-        if self.offset_coord is not None:
-            offset_coord_code = repr(self.offset_coord)
-            scalar_offset_code = f"{input_name}[{offset_coord_code}].values.item()"
-            if self.offset_coord_sign == 1:
-                data_code = f"{data_code} + {scalar_offset_code}"
-            else:
-                data_code = f"{data_code} - {scalar_offset_code}"
-        return (
-            f"{input_name}.assign_coords({{{coord_name_code}: "
-            f"{input_name}[{coord_name_code}].copy(data={data_code})}})"
-        )
 
 
 class AssignCoordsOperation(ToolProvenanceOperation):
@@ -332,7 +280,7 @@ class AssignScalarCoordOperation(ToolProvenanceOperation):
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
-        coord_name_code = erlab.interactive.utils._parse_single_arg(self.coord_name)
+        coord_name_code = erlab.utils._code._parse_single_arg(self.coord_name)
         value_code = _provenance_value_code(self.decoded_value)
         return f"{input_name}.assign_coords({{{coord_name_code}: {value_code}}})"
 
@@ -433,8 +381,8 @@ class AssignCoord1DOperation(ToolProvenanceOperation):
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
-        coord_name_code = erlab.interactive.utils._parse_single_arg(self.coord_name)
-        dim_code = erlab.interactive.utils._parse_single_arg(self.dim)
+        coord_name_code = erlab.utils._code._parse_single_arg(self.coord_name)
+        dim_code = erlab.utils._code._parse_single_arg(self.dim)
         values_code = _provenance_numeric_array_code(self.decoded_values)
         return (
             f"{input_name}.assign_coords({{{coord_name_code}: "

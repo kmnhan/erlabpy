@@ -1,6 +1,7 @@
 import ast
 import collections.abc
 import copy
+import csv
 import itertools
 import json
 import pathlib
@@ -17,24 +18,12 @@ from pandas.errors import InvalidIndexError
 from pydantic import ValidationError
 
 import erlab
+import erlab._provenance._files as imagetool_load_source
 import erlab.extensions._api as extension_api
-import erlab.interactive.imagetool._load_source as imagetool_load_source
-from erlab.interactive._code_trust import (
-    create_manifest,
-    issue_execution_capability,
-    new_document_trust,
-)
-from erlab.interactive._code_trust._api import _document_trust_after_save
-from erlab.interactive.imagetool._load_source import (
-    _load_provenance_from_file_details,
-    _load_source_details_from_file,
-    _load_source_details_from_provenance,
-    _register_local_callable_loader,
-    _registered_local_callable_loader,
-)
-from erlab.interactive.imagetool._provenance import _code
-from erlab.interactive.imagetool._provenance import _model as provenance_model
-from erlab.interactive.imagetool._provenance._code import (
+from erlab._provenance import _code
+from erlab._provenance import _model as provenance_model
+from erlab._provenance._calls import Call
+from erlab._provenance._code import (
     _FIT_DATASET_MARKER,
     _MAPPING_MARKER,
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
@@ -50,28 +39,17 @@ from erlab.interactive.imagetool._provenance._code import (
     _validate_active_name,
     _validate_script_replay_code,
 )
-from erlab.interactive.imagetool._provenance._execution import (
+from erlab._provenance._files import (
     _load_file_source_data,
+    _load_provenance_from_file_details,
+    _load_source_details_from_file,
+    _load_source_details_from_provenance,
     _parse_replay_input,
+    _register_local_callable_loader,
+    _registered_local_callable_loader,
     _select_replay_input,
-    can_reload_without_trust,
-    execute_replay_graph,
-    file_load_source_status,
-    replay_file_provenance,
-    replay_script_provenance,
-    script_provenance_replayable,
 )
-from erlab.interactive.imagetool._provenance._graph import (
-    ReplayGraph,
-    ReplayGraphError,
-    ResolvedReplayInput,
-    SelectedProvenanceScope,
-    compile_replay_graph,
-    emit_replay_code,
-    selected_provenance_code,
-    selected_steps_spec,
-)
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._model import (
     _OPERATION_TYPES,
     ConsoleCall,
     ConsoleOperationPattern,
@@ -134,7 +112,7 @@ from erlab.interactive.imagetool._provenance._model import (
     strip_partial_operation_groups,
     to_replay_provenance_spec,
 )
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     AffineCoordOperation,
     AssignAttrsOperation,
     AssignCoord1DOperation,
@@ -174,6 +152,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     ScriptCodeOperation,
     SelectCoordOperation,
     SelOperation,
+    SetItemOperation,
     ShiftFromInputOperation,
     ShiftOperation,
     SliceAlongPathOperation,
@@ -187,6 +166,30 @@ from erlab.interactive.imagetool._provenance._operations import (
     TransposeOperation,
     UniformInterpolationOperation,
     _ModelFitParameterSpec,
+)
+from erlab.interactive._code_trust import (
+    create_manifest,
+    issue_execution_capability,
+    new_document_trust,
+)
+from erlab.interactive._code_trust._api import _document_trust_after_save
+from erlab.interactive.imagetool._provenance._execution import (
+    can_reload_without_trust,
+    execute_replay_graph,
+    file_load_source_status,
+    replay_file_provenance,
+    replay_script_provenance,
+    script_provenance_replayable,
+)
+from erlab.interactive.imagetool._provenance._graph import (
+    ReplayGraph,
+    ReplayGraphError,
+    ResolvedReplayInput,
+    SelectedProvenanceScope,
+    compile_replay_graph,
+    emit_replay_code,
+    selected_provenance_code,
+    selected_steps_spec,
 )
 from erlab.interactive.imagetool._provenance._trust import (
     provenance_code_payload_normalizer,
@@ -330,7 +333,7 @@ def test_provenance_import_keeps_analysis_targets_lazy() -> None:
         "from erlab.interactive.imagetool import provenance\n"
         "assert 'AverageOperation' not in provenance.__all__\n"
         "assert not hasattr(provenance, 'AverageOperation')\n"
-        "assert 'erlab.interactive.imagetool._provenance._operations' "
+        "assert 'erlab._provenance._operations' "
         "not in sys.modules\n"
         "loaded = sorted("
         "name for name in sys.modules if name.startswith('erlab.analysis.') "
@@ -351,7 +354,7 @@ def test_provenance_import_keeps_analysis_targets_lazy() -> None:
 
 def test_console_operation_lookup_loads_catalog_independently() -> None:
     code = (
-        "from erlab.interactive.imagetool._provenance._model import (\n"
+        "from erlab._provenance._model import (\n"
         "    ConsoleCall, operation_from_console_call,\n"
         ")\n"
         "operation = operation_from_console_call(ConsoleCall(\n"
@@ -401,7 +404,7 @@ def test_public_provenance_constructors_expose_required_value_models() -> None:
 def test_provenance_model_registers_operations_in_fresh_process() -> None:
     code = (
         "import importlib.util\n"
-        "from erlab.interactive.imagetool._provenance._model import (\n"
+        "from erlab._provenance._model import (\n"
         "    FileLoadSource, FileReplayCall, ToolProvenanceSpec, file_load,\n"
         "    full_data, parse_tool_provenance_operation,\n"
         "    parse_tool_provenance_spec, script, selection,\n"
@@ -419,7 +422,7 @@ def test_provenance_model_registers_operations_in_fresh_process() -> None:
         "    ],\n"
         "}\n"
         "parsed = parse_tool_provenance_spec(payload)\n"
-        "from erlab.interactive.imagetool._provenance._operations import (\n"
+        "from erlab._provenance._operations import (\n"
         "    AverageOperation, IselOperation, RenameOperation,\n"
         "    ScriptCodeOperation,\n"
         ")\n"
@@ -468,9 +471,9 @@ def test_script_replay_keeps_unused_aliases_lazy() -> None:
         "issue_execution_capability, new_document_trust\n"
         "from erlab.interactive.imagetool._provenance._execution import "
         "replay_script_provenance\n"
-        "from erlab.interactive.imagetool._provenance._model import "
+        "from erlab._provenance._model import "
         "ScriptInput, script\n"
-        "from erlab.interactive.imagetool._provenance._operations import "
+        "from erlab._provenance._operations import "
         "ScriptCodeOperation\n"
         "data = xr.DataArray(np.arange(2.0), dims=('x',))\n"
         "spec = script(\n"
@@ -543,6 +546,7 @@ def _representative_structured_operations() -> tuple[ToolProvenanceOperation, ..
     edge_fit = xr.Dataset({"edge": ("x", [1.0, 2.0, 3.0])})
     vertices = np.array([[0.0, 10.0], [1.0, 11.0], [2.0, 12.0]])
     return (
+        SetItemOperation(key="temperature", value=4.0),
         QSelOperation(kwargs={"x": 1.0}),
         IselOperation(kwargs={"x": slice(0, 2)}),
         SelOperation(kwargs={"y": slice(10.0, 12.0)}),
@@ -1392,6 +1396,129 @@ def test_tool_provenance_discards_saved_cosmetic_coordinate_sorting() -> None:
     assert "sort_coord_order" not in str(spec.model_dump(mode="json"))
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        np.datetime64("2026-03-03T10:00", "m"),
+        np.array([1, 2], dtype="timedelta64[ns]"),
+        np.float32(-0.0),
+        np.array([np.inf, -np.inf, np.nan]),
+        complex(-np.inf, np.nan),
+        np.array([np.nextafter(np.longdouble(1), np.longdouble(2))]),
+        np.longdouble("1.125"),
+        np.clongdouble(1.125 + 2.5j),
+        np.empty((2, 0, 3), dtype="uint16"),
+        np.array([(3, 1.25)], dtype=[("detector", "i4"), ("gain", "f8")]),
+    ],
+)
+def test_copied_call_preserves_calibration_literal_type_shape_and_value(value):
+    data = xr.DataArray([2.0, 5.0], dims="energy")
+    call = Call.method("assign_attrs", kwargs={"detector calibration": value})
+    calculated = call.evaluate({"data": data})
+    notebook = {"np": np, "counts": data.copy(deep=True)}
+    exec("result = " + call.expression({"data": "counts"}), notebook)  # noqa: S102
+    for output in (calculated, notebook["result"]):
+        restored = output.attrs["detector calibration"]
+        assert type(restored) is type(value)
+        assert np.asarray(restored).dtype == np.asarray(value).dtype
+        np.testing.assert_array_equal(restored, value)
+    assert not data.attrs
+
+
+def test_copied_call_preserves_stride_on_a_nonidentifier_dimension():
+    data = xr.DataArray(np.arange(9), dims="time of flight")
+    call = Call.method("isel", kwargs={"time of flight": slice(1, -1, 2)})
+    expected = xr.DataArray([1, 3, 5, 7], dims="time of flight")
+    notebook = {"scan": data}
+    exec("selected = " + call.expression({"data": "scan"}), notebook)  # noqa: S102
+    xr.testing.assert_identical(call.evaluate({"data": data}), expected)
+    xr.testing.assert_identical(notebook["selected"], expected)
+
+
+def test_call_rejects_notebook_literals_and_functions_without_public_names():
+    call = Call.method("assign_attrs", kwargs={"calibration": object()})
+    with pytest.raises(TypeError, match="Cannot emit a Python literal"):
+        call.expression({"data": "image"})
+
+    def local_only(data):
+        return data
+
+    call = Call.function(local_only)
+    with pytest.raises(ValueError, match="has no public export"):
+        call.expression({})
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("bias", -0.125),
+        ("calibration", ("y", [2.0, 4.0], {"units": "eV", "tags": ["sample"]})),
+        ((1, slice(None)), [-7, -9]),
+        ({"x": [0, 2], "y": 0}, [1, 2]),
+        (slice(1, None, 2), float("nan")),
+    ],
+)
+def test_typed_literal_item_assignment_roundtrips_and_keeps_its_input(key, value):
+    import copy
+
+    source = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("x", "y"),
+        coords={"x": [0, 1, 2], "y": [2, 4]},
+        name="scan",
+        attrs={"origin": ["original"]},
+    )
+    source.coords["x"].attrs["units"] = "m"
+    expected = source.copy(deep=True)
+    expected[copy.deepcopy(key)] = copy.deepcopy(value)
+    operation = SetItemOperation.from_literals(key, value)
+    assert operation is not None
+    restored = SetItemOperation.model_validate_json(operation.model_dump_json())
+    if isinstance(key, dict):
+        key["x"].clear()
+    if isinstance(value, list):
+        value.clear()
+    if isinstance(value, tuple):
+        value[1].clear()
+        value[2]["tags"].clear()
+    for captured in (operation, restored):
+        xr.testing.assert_identical(captured.apply(source), expected)
+        for output_name in ("edited", "source"):
+            notebook = {"source": source}
+            code = captured.replay_code("source", output_name=output_name)
+            exec(code, notebook)  # noqa: S102
+            edited = notebook[output_name]
+            xr.testing.assert_identical(edited, expected)
+            edited.values[:] = -100
+            edited.attrs["origin"].append("edited")
+            np.testing.assert_equal(source.values, np.arange(6.0).reshape(3, 2))
+            assert source.attrs["origin"] == ["original"]
+
+
+def test_typed_literal_item_assignment_declines_external_values_and_keys():
+    assert SetItemOperation.from_literals("temperature", np.float32(3)) is None
+    assert SetItemOperation.from_literals("counts", xr.DataArray([1])) is None
+    assert SetItemOperation.from_literals(np.array([True]), 5) is None
+    assert SetItemOperation.from_literals(object(), 2) is None
+    assert SetItemOperation.from_literals((1, "invalid index"), 3) is None
+    assert SetItemOperation.from_literals({"x": slice(None, None, object())}, 3) is None
+    recursive = []
+    recursive.append(recursive)
+    assert SetItemOperation.from_literals("loop", recursive) is None
+    with pytest.raises(ValueError, match="Invalid literal assignment key"):
+        SetItemOperation.model_validate({"key": 2.5, "value": 3})
+
+
+def test_porting_routes_cover_the_registered_operations() -> None:
+    inventory = pathlib.Path(__file__).with_name("provenance_ports.csv")
+    with inventory.open(encoding="utf-8", newline="") as file:
+        routes = list(csv.DictReader(file))
+
+    provenance_model._ensure_operation_catalog_loaded()
+    assert all(row["porting route"].strip() for row in routes)
+    assert sorted(row["operation"] for row in routes) == sorted(_OPERATION_TYPES)
+
+
 def test_registered_provenance_define_operation_code_api() -> None:
 
     structured_operation_types = [
@@ -1546,7 +1673,7 @@ def test_operation_replay_code_preserves_input_expression_grouping(
     right = left * 2.0
     namespace = _exec_generated_code(
         operation.replay_code("left - right", output_name="result"),
-        {"left": left, "right": right},
+        {"left": left, "right": right, "era": erlab.analysis},
     )
     xr.testing.assert_identical(namespace["result"], operation.apply(left - right))
 
@@ -1840,27 +1967,22 @@ def test_operation_code_base_edges() -> None:
 
 
 @pytest.mark.parametrize(
-    ("operation", "expected"),
+    ("mode", "expected_values"),
     [
-        (
-            NormalizeOperation(dims=("x",), mode="area"),
-            'data / data.mean("x")',
-        ),
-        (
-            NormalizeOperation(dims=("x",), mode="min"),
-            'data - data.min("x")',
-        ),
-        (
-            NormalizeOperation(dims=("x",), mode="min_area"),
-            '(data - data.min("x")) / data.mean("x")',
-        ),
+        ("area", [0.5, 1.5]),
+        ("minmax", [0.0, 1.0]),
+        ("min", [0.0, 2.0]),
+        ("min_area", [0.0, 1.0]),
     ],
 )
-def test_normalize_operation_expression_modes(
-    operation: NormalizeOperation,
-    expected: str,
-) -> None:
-    assert operation.expression_code("data") == expected
+def test_normalize_operation_expression_modes(mode, expected_values) -> None:
+    operation = NormalizeOperation(dims=("x",), mode=mode)
+    data = xr.DataArray([1.0, 3.0], dims="x")
+    code = operation.replay_code("data", output_name="normalized")
+    result = _exec_generated_code(code, {"era": erlab.analysis, "data": data})
+    xr.testing.assert_identical(
+        result["normalized"], xr.DataArray(expected_values, dims="x")
+    )
 
 
 @pytest.mark.parametrize("mode", ["area", "minmax", "min", "min_area"])
@@ -1902,7 +2024,7 @@ def test_normalize_avoids_full_size_temporaries(
                 scale = (
                     abs(data).where(np.isfinite(data)).max(operation.dims, skipna=True)
                 )
-            denominator = operation._safe_denominator(
+            denominator = erlab.analysis.transform._safe_denominator(
                 denominator, scale, operation.denominator_rtol
             )
             expected = (data if mode == "area" else data - minimum) / denominator
@@ -1950,7 +2072,7 @@ def test_normalize_preserves_other_dtypes(mode, dtype) -> None:
             if mode == "minmax"
             else abs(data).where(np.isfinite(data)).max("x", skipna=True)
         )
-        denominator = operation._safe_denominator(
+        denominator = erlab.analysis.transform._safe_denominator(
             maximum - minimum if mode == "minmax" else data.mean("x"),
             scale,
             operation.denominator_rtol,
@@ -2637,12 +2759,12 @@ def test_interpolation_nonstring_dimension_serialization(dim) -> None:
     assert parse_tool_provenance_operation(legacy) == operation
     bound = InterpolationFromInputOperation(dimensions=(dim,))
     assert parse_tool_provenance_operation(json.loads(bound.model_dump_json())) == bound
-    expression = ast.parse(
+    call = ast.parse(
         bound.expression_code_with_inputs("data", {"target": "target"}), mode="eval"
     ).body
-    assert isinstance(expression, ast.Call)
-    assert len(expression.args) == 1
-    assert isinstance(expression.args[0], ast.Dict)
+    assert isinstance(call, ast.Call)
+    dims = next(arg.value for arg in call.keywords if arg.arg == "dimensions")
+    assert ast.literal_eval(dims) == (dim,)
 
 
 @pytest.mark.parametrize(
@@ -2702,13 +2824,11 @@ def test_interpolation_from_input_replay_and_code(dimensions) -> None:
     assert provenance_code_trust_entries(restored, location_prefix="interpolate") == ()
     code = spec.display_code()
     assert code is not None
-    namespace = _exec_generated_code(code, inputs)
+    namespace = _exec_generated_code(code, {**inputs, "era": erlab.analysis})
     xr.testing.assert_identical(namespace["interpolated"], expected)
     if dimensions == ("eV",):
-        assert ".interp(eV=target.eV" in code
         assert "hv" in namespace["interpolated"].coords
     elif dimensions is None:
-        assert ".interp_like(target" in code
         assert "hv" not in namespace["interpolated"].coords
 
 
@@ -2736,7 +2856,9 @@ def test_interpolation_from_input_safe_coordinate_code(dim) -> None:
     code = operation.replay_code(
         "data + 1", output_name="result", bound_inputs={"target": "target + 2"}
     )
-    namespace = _exec_generated_code(code, {"data": data, "target": target})
+    namespace = _exec_generated_code(
+        code, {"era": erlab.analysis, "data": data, "target": target}
+    )
     expected = operation.apply_with_inputs(data + 1, {"target": target + 2})
     xr.testing.assert_identical(namespace["result"], expected)
 
@@ -2809,7 +2931,8 @@ def test_interpolation_expression_preserves_input_grouping(dimensions) -> None:
         "data + 1", {"target": "target + 2"}
     )
     namespace = _exec_generated_code(
-        f"result = {expression}", {"data": data, "target": target}
+        f"result = {expression}",
+        {"era": erlab.analysis, "data": data, "target": target},
     )
     xr.testing.assert_identical(
         namespace["result"],
@@ -3351,10 +3474,10 @@ def test_tool_provenance_affine_coord_operation(
 
     code = full_data(operation).to_replay_spec().display_code(parent_data=data)
     assert code is not None
-    call_names = _generated_call_names(code)
-    assert any(call.endswith(".assign_coords") for call in call_names)
-    assert "erlab.utils.array.sort_coord_order" not in call_names
-    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    assert "era.transform.affine_coord" in _generated_call_names(code)
+    namespace = _exec_generated_code(
+        code, {"era": erlab.analysis, "data": data.copy(deep=True)}
+    )
     xr.testing.assert_identical(
         namespace["derived"],
         data.assign_coords(
@@ -3364,45 +3487,6 @@ def test_tool_provenance_affine_coord_operation(
                 )
             }
         ),
-    )
-
-
-@pytest.mark.parametrize(
-    ("scale", "offset", "expected_fragments", "forbidden_fragments"),
-    [
-        (1.0, -3.7, ("['y'].values - 3.7",), ("1.0 *", "+ -3.7")),
-        (2.0, -3.7, ("2.0 *", "['y'].values - 3.7"), ("+ -3.7",)),
-        (
-            1.0,
-            0.0,
-            ("['y'].values)",),
-            ("1.0 *", "+ 0.0", "- 0.0"),
-        ),
-    ],
-)
-def test_tool_provenance_affine_coord_display_code_formats_no_ops(
-    scale: float,
-    offset: float,
-    expected_fragments: tuple[str, ...],
-    forbidden_fragments: tuple[str, ...],
-) -> None:
-    data = _base_data()
-    operation = AffineCoordOperation(
-        coord_name="y",
-        scale=scale,
-        offset=offset,
-    )
-
-    code = full_data(operation).to_replay_spec().display_code(parent_data=data)
-    assert code is not None
-    for fragment in expected_fragments:
-        assert fragment in code
-    for fragment in forbidden_fragments:
-        assert fragment not in code
-
-    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
-    xr.testing.assert_identical(
-        namespace["derived"], _expected_affine_coord(data, "y", scale, offset)
     )
 
 
@@ -3433,7 +3517,9 @@ def test_tool_provenance_affine_coord_uses_scalar_coordinate_offset() -> None:
     code = full_data(operation).to_replay_spec().display_code(parent_data=data)
     assert code is not None
     destination = data.assign_coords(hv=40.0)
-    namespace = _exec_generated_code(code, {"data": destination.copy(deep=True)})
+    namespace = _exec_generated_code(
+        code, {"era": erlab.analysis, "data": destination.copy(deep=True)}
+    )
     xr.testing.assert_identical(
         namespace["derived"],
         destination.assign_coords(
@@ -3462,7 +3548,7 @@ def test_tool_provenance_affine_coord_lazy_scalar_offset_code() -> None:
 
     code = full_data(operation).to_replay_spec().display_code(parent_data=data)
     assert code is not None
-    namespace = _exec_generated_code(code, {"data": data})
+    namespace = _exec_generated_code(code, {"era": erlab.analysis, "data": data})
     xr.testing.assert_identical(
         namespace["derived"],
         data.assign_coords(
@@ -8767,7 +8853,7 @@ def test_trusted_script_replay_supports_standard_imports(
             1.0,
         ),
         (
-            "import erlab.interactive.imagetool._provenance._code as exposed\n"
+            "import erlab._provenance._code as exposed\n"
             "derived = data_0 + exposed.np.float64(1.0)",
             1.0,
         ),
@@ -8796,7 +8882,7 @@ def test_explicit_trust_admits_unrestricted_imports(code: str, offset: float) ->
 def test_trusted_script_cannot_replace_the_import_policy() -> None:
     data = xr.DataArray([1.0], dims=("x",))
     poison = _single_input_script(
-        "framework = erlab.interactive.imagetool._provenance._code\n"
+        "framework = erlab._provenance._code\n"
         "framework._SCRIPT_REPLAY_PREBOUND_IMPORTS = {'numpy': framework}\n"
         "import numpy as imported_numpy\n"
         "derived = data_0 + imported_numpy.float64(1.0)"
@@ -9720,6 +9806,118 @@ def test_console_operations_match_branch_specific_calls() -> None:
     )
 
 
+@pytest.mark.parametrize("container", ["dataset", "tree", "sequence"])
+def test_migrated_file_selection_closes_its_reader_and_preserves_the_selected_array(
+    tmp_path, monkeypatch, container
+):
+    image = xr.DataArray(
+        np.arange(6, dtype="int16").reshape(2, 3), dims=("x", "y"), name="image"
+    )
+    path = tmp_path / "scan.nc"
+    xr.Dataset({"reference": 0, "first": image + 10, "image": image}).to_netcdf(
+        path, engine="h5netcdf"
+    )
+    expected_selection = {
+        "dataset": FileDataSelection(kind="dataset_variable", value="image"),
+        "tree": FileDataSelection(
+            kind="datatree_variable", value=("/detector", "image")
+        ),
+        "sequence": FileDataSelection(kind="sequence_index", value=1),
+    }[container]
+    closed = []
+
+    def open_container(_record, **_kwargs):
+        dataset = xr.open_dataset(path, engine="h5netcdf", chunks={})
+        if container == "tree":
+            result = xr.DataTree.from_dict({"detector": dataset})
+            owner = result["detector"]
+        elif container == "sequence":
+            result = (dataset.first, dataset.image)
+            owner = result[0]
+        else:
+            result = owner = dataset
+        backend_close = dataset._close
+
+        def close():
+            backend_close()
+            closed.append(container)
+
+        owner.set_close(close)
+        return result
+
+    monkeypatch.setattr(
+        imagetool_load_source, "_load_file_source_object", open_container
+    )
+    old_selection = FileDataSelection(kind="parsed_index", value=1)
+    load = (xr.open_dataset, {}, old_selection)
+    assert (
+        imagetool_load_source._migrate_legacy_file_data_selection(path, load)
+        == expected_selection
+    )
+    assert closed == [container]
+
+    missing = FileDataSelection(kind="parsed_index", value=2)
+    with pytest.raises(IndexError, match="out of range"):
+        imagetool_load_source._migrate_legacy_file_data_selection(
+            path, (*load[:2], missing)
+        )
+    assert closed == [container] * 2
+
+    call = FileReplayCall(
+        kind="callable",
+        target="xarray.open_dataset",
+        selection=expected_selection,
+        cast_float64=True,
+    )
+    record = _file_replay_source(path, replay_call=call)
+    with _load_file_source_data(record) as restored:
+        xr.testing.assert_identical(restored.compute(), image.astype("float64"))
+        assert closed == [container] * 2
+    assert closed == [container] * 3
+    bad_record = _file_replay_source(
+        path, replay_call=call.model_copy(update={"selection": missing})
+    )
+    with pytest.raises(IndexError, match="out of range"):
+        _load_file_source_data(bad_record)
+    assert closed == [container] * 4
+
+
+@pytest.mark.parametrize(
+    ("container", "selection", "error", "message"),
+    [
+        (
+            [np.arange(3), object()],
+            FileDataSelection(kind="parsed_index", value=1),
+            TypeError,
+            "must be a DataArray",
+        ),
+        (
+            [xr.DataArray(1.0)],
+            FileDataSelection(kind="parsed_index", value=0),
+            ValueError,
+            "not valid for ImageTool",
+        ),
+        (
+            xr.DataArray([1]),
+            FileDataSelection(kind="dataset_variable", value="scan"),
+            TypeError,
+            "return a Dataset",
+        ),
+        (
+            xr.Dataset(),
+            FileDataSelection(kind="datatree_variable", value=("/scan", "signal")),
+            TypeError,
+            "return a DataTree",
+        ),
+    ],
+)
+def test_file_replay_rejects_changed_loader_output(
+    container, selection, error, message
+):
+    with pytest.raises(error, match=message):
+        _select_replay_input(container, selection)
+
+
 def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(imagetool_load_source, "_LOCAL_CALLABLE_LOADERS", {})
     image = xr.DataArray(
@@ -9851,23 +10049,21 @@ def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -
     )
     datatree_file = tmp_path / "tree.h5"
     tree.to_netcdf(datatree_file, engine="h5netcdf")
-    xr.testing.assert_identical(
-        _load_file_source_data(
-            _file_replay_source(
-                datatree_file,
-                replay_call=FileReplayCall(
-                    kind="callable",
-                    target="xarray.load_datatree",
-                    kwargs={"engine": "h5netcdf"},
-                    selection=FileDataSelection(
-                        kind="datatree_variable",
-                        value=("/leaf", "image"),
-                    ),
+    with _load_file_source_data(
+        _file_replay_source(
+            datatree_file,
+            replay_call=FileReplayCall(
+                kind="callable",
+                target="xarray.open_datatree",
+                kwargs={"engine": "h5netcdf"},
+                selection=FileDataSelection(
+                    kind="datatree_variable",
+                    value=("/leaf", "image"),
                 ),
-            )
-        ),
-        image,
-    )
+            ),
+        )
+    ) as restored:
+        xr.testing.assert_identical(restored, image)
     with pytest.raises(IndexError, match="out of range"):
         _load_file_source_data(
             _file_replay_source(
@@ -9938,13 +10134,13 @@ def test_unregistered_callable_file_replay_does_not_import_target(
         ("xarray.open_dataarray", xr.open_dataarray),
         ("xarray.load_dataset", xr.load_dataset),
         ("xarray.open_dataset", xr.open_dataset),
-        ("xarray.load_datatree", xr.load_datatree),
+        ("xarray.load_datatree", getattr(xr, "load_datatree", None)),
         ("xarray.open_datatree", xr.open_datatree),
     ],
 )
 def test_supported_callable_loader_resolution_survives_local_registry_reset(
     identifier: str,
-    loader: collections.abc.Callable[..., typing.Any],
+    loader: collections.abc.Callable[..., typing.Any] | None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(imagetool_load_source, "_LOCAL_CALLABLE_LOADERS", {})
@@ -10974,9 +11170,7 @@ def test_compatible_python_modules_compose_with_structured_steps(future) -> None
 def test_untrusted_compiler_does_not_inherit_framework_future_flags() -> None:
     import __future__
 
-    from erlab.interactive.imagetool._provenance._code import (
-        _compile_untrusted_script_replay_code,
-    )
+    from erlab._provenance._code import _compile_untrusted_script_replay_code
 
     source = xr.DataArray([1.0, 2.0])
     compiled = _compile_untrusted_script_replay_code("derived = data + 1")
@@ -11089,4 +11283,73 @@ def test_released_display_mapping_stops_at_its_restore_step(kind) -> None:
     assert code is not None
     xr.testing.assert_identical(
         _exec_generated_code(code, {"data": data})["derived"], expected
+    )
+
+
+def test_stored_program_repeated_revision_shares_one_isolated_input() -> None:
+    source = xr.DataArray([1, 2], attrs={"labels": ["initial"]})
+    expected = xr.DataArray([9, 2], attrs={"labels": ["initial", "changed"]})
+    program = script(
+        ScriptCodeOperation(
+            label="Edit input",
+            code=(
+                "left[0] = 9\n"
+                "left.attrs['labels'].append('changed')\n"
+                "left = left + 1\n"
+                "derived = right"
+            ),
+        ),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=tuple(
+            ScriptInput(name=name, node_uid="entry", revision_id="revision")
+            for name in ("left", "right")
+        ),
+    )
+    restored = ToolProvenanceSpec.model_validate_json(program.model_dump_json())
+    actual = replay_script_provenance(
+        restored,
+        {"left": source, "right": source},
+        authorize=_authorize_execution,
+    )
+    xr.testing.assert_identical(actual, expected)
+    graph = compile_replay_graph(restored, display=True)
+    (source_key,) = graph.required_input_keys()
+    code = emit_replay_code(
+        graph,
+        output_name="derived",
+        input_name_overrides={source_key: "scan"},
+    )
+    namespace = {"scan": source.copy(deep=True)}
+    exec(code, namespace)  # noqa: S102 - execute the exported program
+    xr.testing.assert_identical(namespace["derived"], expected)
+    original = xr.DataArray([1, 2], attrs={"labels": ["initial"]})
+    xr.testing.assert_identical(source, original)
+    xr.testing.assert_identical(namespace["scan"], original)
+
+    # An explicit replacement can give each slot an independent caller value.
+    second = source.copy(deep=True)
+    xr.testing.assert_identical(
+        replay_script_provenance(
+            restored, {"left": source, "right": second}, authorize=_authorize_execution
+        ),
+        original,
+    )
+    independent = restored.model_copy(
+        update={
+            "script_inputs": (
+                restored.script_inputs[0],
+                restored.script_inputs[1].model_copy(
+                    update={"revision_id": "different"}
+                ),
+            ),
+        }
+    )
+    xr.testing.assert_identical(
+        replay_script_provenance(
+            independent,
+            {"left": source, "right": source},
+            authorize=_authorize_execution,
+        ),
+        original,
     )

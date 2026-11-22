@@ -24,6 +24,8 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive._fit2d as fit2d_module
+from erlab._provenance._model import ScriptInput, script
+from erlab._provenance._operations import ModelFitOperation, ScriptCodeOperation
 from erlab.interactive import _fit1d as fit1d_module
 from erlab.interactive._code_trust import (
     create_entry,
@@ -35,11 +37,6 @@ from erlab.interactive._code_trust._api import _document_trust_after_save
 from erlab.interactive._code_trust._payloads import store_code_payload_entries
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive.imagetool._provenance._execution import replay_script_provenance
-from erlab.interactive.imagetool._provenance._model import ScriptInput, script
-from erlab.interactive.imagetool._provenance._operations import (
-    ModelFitOperation,
-    ScriptCodeOperation,
-)
 from tests._qt_helpers import signal_receiver_count
 
 

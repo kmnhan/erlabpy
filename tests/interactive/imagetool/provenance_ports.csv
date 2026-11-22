@@ -1,0 +1,53 @@
+operation,porting route
+affine_coord,Coordinate helper that resolves the offset before scaling and adding and restores coordinate order
+assign_attrs,DataArray.assign_attrs
+assign_coord_1d,Coordinate helper that validates the dimension and length and preserves coordinate order
+assign_coords,Coordinate helper that preserves coordinate metadata and order when replacing values
+assign_scalar_coord,Coordinate helper that preserves coordinate order when assigning a scalar
+average,DataArray.qsel.mean
+boxcar_filter,erlab.analysis.image.boxcar_filter
+coarsen,Reduction helper that applies the selected public reducer to DataArray.coarsen with the recorded options
+concat,xarray.concat with an ordered list of input references including repetitions
+correct_with_edge,erlab.analysis.gold.correct_with_edge with an authorized decoded fit model
+denoise,erlab.analysis.image.ml.denoise
+divide_by_coord,Numerical helper that checks the denominator and restores the array name
+drop_scalar_coords,Coordinate helper that checks the coordinates are scalar before DataArray.reset_coords
+extension_routine,Versioned erlab.extensions.run_routine with its registered routine and execution settings
+fillna,DataArray.fillna
+gaussian_filter,erlab.analysis.image.gaussian_filter
+image_derivative,Validated public function from erlab.analysis.image
+interpolate,Interpolation helper that sorts the source as needed before DataArray.interp
+interpolate_from_input,Interpolation helper that validates both grids and uses interp_like or the selected target coordinates
+isel,DataArray.isel
+kspace_configuration,DataArray.kspace.as_configuration
+kspace_convert,DataArray.kspace.convert
+kspace_inner_potential,Public kspace.inner_potential setter on the isolated result
+kspace_set_normal,Mutating kspace.set_normal method on the isolated result
+kspace_work_function,Public kspace.analyzer_work_function setter on the isolated result
+leading_edge,erlab.analysis.interpolate.leading_edge
+mask_with_polygon,erlab.analysis.mask.mask_with_polygon
+model_fit,Fit helper that preserves optional uncertainty and authorized expressions and selects the named output with its validity mask
+normalize,Numerical helper that owns reduction and near-zero denominator handling
+qsel,DataArray.qsel
+qsel_aggregate,Validated public reducer on DataArray.qsel
+remove_mesh,Output selection helper around erlab.analysis.mesh.remove_mesh for the corrected array or mesh
+rename,DataArray.rename with the new array name
+rename_dims_coords,DataArray.rename with the name mapping
+rotate,erlab.analysis.transform.rotate
+script_code,Recorded program or display-only step for a label without code
+sel,DataArray.sel
+select_coord,Coordinate selection helper returning a shallow copy of the named coordinate
+set_item,DataArray item assignment on an independent copy
+shift,erlab.analysis.transform.shift with the effective captured shift
+shift_from_input,Shift helper that applies the recorded sign to the bound shift array before erlab.analysis.transform.shift
+slice_along_path,erlab.analysis.interpolate.slice_along_path
+sort_coord_order,erlab.utils.array.sort_coord_order with the explicit order or imported legacy parent context
+sortby,DataArray.sortby
+source_view,Presentation marker for the selected source view
+squeeze,DataArray.squeeze
+swap_dims,DataArray.swap_dims
+symmetrize,erlab.analysis.transform.symmetrize
+symmetrize_nfold,erlab.analysis.transform.symmetrize_nfold
+thin,DataArray.thin
+transpose,DataArray.transpose
+uniform_interpolation,Interpolation helper that prepares the source and builds uniform target coordinates

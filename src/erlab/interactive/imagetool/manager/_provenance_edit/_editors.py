@@ -11,8 +11,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.utils
-from erlab.interactive.imagetool import _kspace_conversion, dialogs
-from erlab.interactive.imagetool._provenance._operations import (
+from erlab._provenance._operations import (
     ConcatOperation,
     DivideByCoordOperation,
     GaussianFilterOperation,
@@ -20,12 +19,13 @@ from erlab.interactive.imagetool._provenance._operations import (
     ScriptCodeOperation,
     SortByOperation,
 )
+from erlab.interactive.imagetool import _kspace_conversion, dialogs
 from erlab.interactive.imagetool.manager._dialogs import _ConcatDialog
 
 if typing.TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from erlab.interactive.imagetool._provenance._model import (
+    from erlab._provenance._model import (
         ToolProvenanceOperation,
         ToolProvenanceSpec,
         _ProvenanceStepRef,

@@ -7,14 +7,15 @@ import pathlib
 import types
 import typing
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import xarray as xr
 
 import erlab
-from erlab.interactive.imagetool._provenance._code import _provenance_value_code
-from erlab.interactive.imagetool._provenance._model import (
+from erlab._provenance._checkpoint import FileVersion, _read_versioned_file
+from erlab._provenance._code import _provenance_value_code
+from erlab._provenance._model import (
     FileDataSelection,
     FileLoadSource,
     FileReplayCall,
@@ -73,13 +74,76 @@ _SUPPORTED_CALLABLE_LOADERS: Mapping[str, Callable[..., typing.Any]] = (
             "xarray.open_dataarray": xr.open_dataarray,
             "xarray.load_dataset": xr.load_dataset,
             "xarray.open_dataset": xr.open_dataset,
-            "xarray.load_datatree": xr.load_datatree,
             "xarray.open_datatree": xr.open_datatree,
+            # xarray 2024.10 provides open_datatree but not its eager counterpart.
+            **(
+                {"xarray.load_datatree": xr.load_datatree}
+                if hasattr(xr, "load_datatree")
+                else {}
+            ),
         }
     )
 )
 
 _LOCAL_CALLABLE_LOADERS: dict[str, Callable[..., typing.Any]] = {}
+_MAX_STORAGE_LINKS = 256
+
+
+def _single_netcdf_file(path: str) -> bool:
+    """Check the storage layout without reading any dataset values."""
+    with open(path, "rb") as stream:
+        if stream.read(4) in {b"CDF\x01", b"CDF\x02", b"CDF\x05"}:
+            return True
+
+    import h5py
+
+    if not h5py.is_hdf5(path):
+        return False
+
+    with h5py.File(path, "r") as handle:
+        inspected = 0
+
+        def unverified(name: bytes, info: typing.Any) -> bool | None:
+            nonlocal inspected
+            inspected += 1
+            if inspected > _MAX_STORAGE_LINKS:
+                return True
+            if info.type == h5py.h5l.TYPE_SOFT:
+                return None
+            if info.type != h5py.h5l.TYPE_HARD:
+                return True
+            item = handle[name]
+            if isinstance(item, h5py.Dataset):
+                layout = item.id.get_create_plist()
+                if (
+                    layout.get_layout() == h5py.h5d.VIRTUAL
+                    or layout.get_external_count()
+                ):
+                    return True
+            return None
+
+        # H5Lvisit sees external links without resolving or opening them.
+        return handle.id.links.visit(unverified, info=True) is None
+
+
+def _capture_loader_file(
+    path: str | os.PathLike[str], loader: object, kwargs: Mapping[str, typing.Any]
+) -> FileVersion | None:
+    """Identify a local xarray file before opening it with a known backend."""
+    if not any(loader is known for known in _SUPPORTED_CALLABLE_LOADERS.values()):
+        return None
+    if kwargs.get("engine") not in {None, "h5netcdf", "netcdf4", "scipy"}:
+        return None
+    if kwargs.get("driver") or (kwargs.get("backend_kwargs") or {}).get("driver"):
+        return None
+    try:
+        version = FileVersion.capture(path)
+        if _single_netcdf_file(version.path):
+            return version
+    except (ImportError, KeyError, OSError, RuntimeError, ValueError):
+        pass
+    # Unrecognized layouts and multi-file stores use an owned checkpoint.
+    return None
 
 
 def _file_path_stem(path: str | os.PathLike[str]) -> str:
@@ -274,7 +338,7 @@ class _ResolvedLoadFunc:
         """Return human-readable kwargs text for the file-source details dialog."""
         if not self.kwargs:
             return "(none)"
-        return erlab.interactive.utils.format_kwargs(
+        return erlab.utils._code.format_kwargs(
             typing.cast(
                 "dict[typing.Hashable, typing.Any]",
                 _loader_kwargs_for_code(self.kwargs),
@@ -295,13 +359,17 @@ class _ResolvedLoadFunc:
             cast_float64=self.cast_float64,
         )
 
-    def load_code(self, file_path: Path, *, assign: str) -> str | None:
+    def load_code(
+        self, file_path: Path, *, assign: str, backing: FileVersion | None = None
+    ) -> str | None:
         """Return user-facing Python that reloads the same selected file data."""
         if self.selection.kind == "parsed_index" or not self.loader_expr:
             return None
 
         imports = list(self.imports)
-        call_args = self._call_args(file_path)
+        call_args = self._call_args(file_path, recorded=backing is not None)
+        if backing is not None:
+            imports.append("import erlab")
         if self.kind == "extension_loader" and any(
             "np." in argument for argument in call_args
         ):
@@ -315,16 +383,69 @@ class _ResolvedLoadFunc:
             lines.append("")
         lines.extend(self.setup_lines)
 
-        call_expr = _file_data_selection_code(call_expr, self.selection)
-        if self.cast_float64:
-            call_expr = f'{call_expr}.astype("float64")'
+        if backing is None:
+            call_expr = _file_data_selection_code(call_expr, self.selection)
+            if self.cast_float64:
+                call_expr = f'{call_expr}.astype("float64")'
+        else:
+            file_args = [repr(backing.path)]
+            native = (
+                self.kind == "callable"
+                and self.target in _SUPPORTED_CALLABLE_LOADERS
+                and self.selection.kind
+                in {"dataarray", "dataset_variable", "datatree_variable"}
+            )
+            if native:
+                file_args.append(self.loader_expr)
+                if self.kwargs:
+                    options = _provenance_value_code(
+                        _loader_kwargs_for_code(self.kwargs)
+                    )
+                    file_args.append(f"read_kwargs={options}")
+                if self.selection.kind == "dataset_variable":
+                    file_args.append(
+                        f"variable={_provenance_value_code(self.selection.value)}"
+                    )
+                elif self.selection.kind == "datatree_variable":
+                    node, key = typing.cast(
+                        "tuple[str, typing.Hashable]", self.selection.value
+                    )
+                    file_args.extend(
+                        (
+                            f"node_path={node!r}",
+                            f"variable={_provenance_value_code(key)}",
+                        )
+                    )
+            else:
+                file_args.append(f"lambda path: {call_expr}")
+                if self.selection.kind != "dataarray":
+                    container = {
+                        "dataset_variable": "dataset",
+                        "datatree_variable": "tree",
+                        "sequence_index": "arrays",
+                    }[self.selection.kind]
+                    selected = _file_data_selection_code(container, self.selection)
+                    file_args.append(f"select=lambda {container}: {selected}")
+            if self.cast_float64:
+                file_args.append('dtype="float64"')
+            file_args.extend(
+                (
+                    f"device={backing.device}",
+                    f"inode={backing.inode}",
+                    f"size={backing.size}",
+                    f"modified_ns={backing.modified_ns}",
+                    f"changed_ns={backing.changed_ns}",
+                )
+            )
+            call_expr = f"erlab.io.read_file_version({', '.join(file_args)})"
         lines.append(f"{assign} = {call_expr}")
         return "\n".join(lines)
 
-    def _call_args(self, file_path: Path) -> list[str]:
+    def _call_args(self, file_path: Path, *, recorded: bool = False) -> list[str]:
         """Return loader call arguments, using compact scan-number syntax when safe."""
+        path_expr = "path" if recorded else repr(str(file_path))
         if self.kind == "extension_loader":
-            call_args = [f"pathlib.Path({str(file_path)!r})"]
+            call_args = [f"pathlib.Path({path_expr})"]
             call_args.extend(
                 f"{name}={_provenance_value_code(value)}"
                 for name, value in _loader_kwargs_for_code(self.kwargs).items()
@@ -333,12 +454,12 @@ class _ResolvedLoadFunc:
         kwargs_str = _format_call_kwargs(self.kwargs)
         scan_call_args = (
             _scan_number_load_call_args(file_path, self.loader_name, self.kwargs)
-            if self.loader_name is not None
+            if self.loader_name is not None and not recorded
             else None
         )
         if scan_call_args is not None:
             return scan_call_args
-        call_args = [repr(str(file_path))]
+        call_args = [path_expr]
         if kwargs_str:
             call_args.append(kwargs_str)
         return call_args
@@ -346,7 +467,7 @@ class _ResolvedLoadFunc:
 
 def _format_call_kwargs(kwargs: dict[str, typing.Any]) -> str:
     return (
-        erlab.interactive.utils.format_call_kwargs(
+        erlab.utils._code.format_call_kwargs(
             typing.cast(
                 "dict[typing.Hashable, typing.Any]",
                 _loader_kwargs_for_code(kwargs),
@@ -466,7 +587,7 @@ def _scan_number_load_call_args(
     call_args = [repr(scan_num), f"data_dir={str(data_dir)!r}"]
     if load_kwargs:
         call_args.append(
-            erlab.interactive.utils.format_call_kwargs(
+            erlab.utils._code.format_call_kwargs(
                 typing.cast(
                     "dict[typing.Hashable, typing.Any]",
                     _loader_kwargs_for_code(load_kwargs),
@@ -582,6 +703,7 @@ def _extension_loader_load_code(
     *,
     assign: str,
     loader_expression: str,
+    backing: FileVersion | None = None,
 ) -> str:
     """Build one structured file load from an existing script binding."""
     replay_call = typing.cast("FileReplayCall", load_source.replay_call)
@@ -600,7 +722,9 @@ def _extension_loader_load_code(
         extension_source_hash=typing.cast("str", replay_call.source_hash),
         extension_capability_id=typing.cast("str", replay_call.capability_id),
     )
-    code = resolved.load_code(pathlib.Path(load_source.path), assign=assign)
+    code = resolved.load_code(
+        pathlib.Path(load_source.path), assign=assign, backing=backing
+    )
     if code is None:
         raise ValueError("extension loaders do not support parsed-index selections")
     return code
@@ -779,7 +903,7 @@ def _load_source_details(
     kwargs_text = "(unavailable)"
     if load_func is not None:
         kwargs_text = (
-            erlab.interactive.utils.format_kwargs(
+            erlab.utils._code.format_kwargs(
                 typing.cast("dict[typing.Hashable, typing.Any]", load_func[1])
             )
             if load_func[1]
@@ -861,7 +985,7 @@ def _load_source_details_from_provenance(
 
 def _default_load_source_name(file_path: Path) -> str:
     """Choose a non-conflicting variable name for copied file-load code."""
-    name = erlab.interactive.utils.IdentifierValidator().fixup(file_path.stem)
+    name = erlab.utils.misc._normalize_identifier(file_path.stem)
     return "source_data" if name in _RESERVED_REPLAY_SOURCE_NAMES else name
 
 
@@ -870,6 +994,7 @@ def _load_provenance_from_file_details(
     load_func: _LoadFunc | None,
     *,
     source_input_dtype: np.dtype[typing.Any] | str | None = None,
+    cast_float64: bool | None = None,
     replay_steps: Sequence[ReplayStep] = (),
     replay_stages: Sequence[ReplayStage] = (),
 ) -> ToolProvenanceSpec | None:
@@ -882,6 +1007,8 @@ def _load_provenance_from_file_details(
     )
     if resolved is None:
         return None
+    if cast_float64 is not None:
+        resolved = replace(resolved, cast_float64=cast_float64)
     details = _load_source_details(file_path, load_func, resolved)
     seed_code = resolved.load_code(file_path, assign="derived")
     if seed_code is None and resolved.kind != "extension_loader":
@@ -915,11 +1042,6 @@ def _migrate_legacy_file_data_selection(
     if resolved.selection.kind != "parsed_index":
         return resolved.selection
 
-    from erlab.interactive.imagetool._provenance._execution import (
-        _load_file_source_object,
-        _semantic_file_data_selection,
-    )
-
     load_source = FileLoadSource(
         path=str(file_path),
         loader_label=resolved.loader_label,
@@ -934,4 +1056,228 @@ def _migrate_legacy_file_data_selection(
         loaded = loader(file_path, **kwargs)
     else:
         loaded = _load_file_source_object(load_source)
-    return _semantic_file_data_selection(loaded, resolved.selection)
+    close = erlab.io.utils._take_file_closer(loaded)
+    try:
+        return _semantic_file_data_selection(loaded, resolved.selection)
+    finally:
+        if close is not None:
+            close()
+
+
+def _processed_replay_ndim(darr: xr.DataArray) -> int:
+    if darr.ndim == 1:
+        return 2
+    if darr.ndim > 4:
+        return len(tuple(size for size in darr.shape if size != 1))
+    return darr.ndim
+
+
+def _reducible_replay_shape(darr: xr.DataArray) -> bool:
+    return _processed_replay_ndim(darr) >= 2
+
+
+def _parse_replay_dataset(ds: xr.Dataset) -> tuple[xr.DataArray, ...]:
+    return tuple(
+        darr for darr in ds.data_vars.values() if _reducible_replay_shape(darr)
+    )
+
+
+def _parse_replay_input(data: typing.Any) -> list[xr.DataArray]:
+    input_cls = data.__class__.__name__
+    parsed: typing.Any = data
+    if isinstance(data, np.ndarray | xr.DataArray):
+        parsed = (data,)
+    elif isinstance(data, xr.Dataset):
+        parsed = _parse_replay_dataset(data)
+    elif isinstance(data, xr.DataTree):
+        parsed = tuple(
+            darr for leaf in data.leaves for darr in _parse_replay_dataset(leaf.dataset)
+        )
+
+    if len(parsed) == 0:
+        raise ValueError(f"No valid data for ImageTool found in {input_cls}")
+    if not isinstance(next(iter(parsed)), xr.DataArray | np.ndarray):
+        raise TypeError(
+            f"Unsupported input type {input_cls}. Expected DataArray, Dataset, "
+            "DataTree, numpy array, or a list of DataArray or numpy arrays."
+        )
+    return [
+        xr.DataArray(item) if not isinstance(item, xr.DataArray) else item
+        for item in parsed
+    ]
+
+
+def _require_replay_dataarray(data: typing.Any) -> xr.DataArray:
+    if isinstance(data, np.ndarray):
+        data = xr.DataArray(data)
+    if not isinstance(data, xr.DataArray):
+        raise TypeError(
+            f"Selected file data must be a DataArray, got {type(data).__name__!r}"
+        )
+    if not _reducible_replay_shape(data):
+        raise ValueError("Selected file data is not valid for ImageTool")
+    return data
+
+
+def _select_replay_input(
+    data: typing.Any,
+    selection: FileDataSelection,
+) -> xr.DataArray:
+    selection = _semantic_file_data_selection(data, selection)
+    if selection.kind == "dataarray":
+        return _require_replay_dataarray(data)
+    if selection.kind == "dataset_variable":
+        if not isinstance(data, xr.Dataset):
+            raise TypeError(
+                "Dataset variable file selections require the loader to return "
+                "a Dataset"
+            )
+        try:
+            selected = data[selection.value]
+        except KeyError as err:
+            raise KeyError(
+                f"Selected file variable {selection.value!r} was not found"
+            ) from err
+        return _require_replay_dataarray(selected)
+    if selection.kind == "datatree_variable":
+        if not isinstance(data, xr.DataTree):
+            raise TypeError(
+                "DataTree variable selections require the loader to return a DataTree"
+            )
+        node_path, variable = typing.cast(
+            "tuple[str, typing.Hashable]", selection.value
+        )
+        try:
+            selected = data[node_path].dataset[variable]
+        except KeyError as err:
+            raise KeyError(
+                f"Selected file DataTree variable {variable!r} at "
+                f"{node_path!r} was not found"
+            ) from err
+        return _require_replay_dataarray(selected)
+    if selection.kind == "sequence_index":
+        if isinstance(data, str | bytes) or not isinstance(data, Sequence):
+            raise TypeError(
+                "Sequence-index file selections require the loader to return a sequence"
+            )
+        index = typing.cast("int", selection.value)
+        try:
+            selected = data[index]
+        except IndexError as err:
+            raise IndexError(
+                f"Selected file sequence index {index} is out of range"
+            ) from err
+        return _require_replay_dataarray(selected)
+
+    raise ValueError(f"Unsupported file data selection kind {selection.kind!r}")
+
+
+def _semantic_file_data_selection(
+    data: typing.Any,
+    selection: FileDataSelection,
+) -> FileDataSelection:
+    """Resolve a legacy parsed index to stable loader-output semantics."""
+    if selection.kind != "parsed_index":
+        return selection
+
+    index = typing.cast("int", selection.value)
+    if isinstance(data, np.ndarray | xr.DataArray):
+        if index != 0:
+            raise IndexError("Selected file replay index is out of range for 1 array")
+        return FileDataSelection(kind="dataarray")
+    if isinstance(data, xr.Dataset):
+        variables = tuple(
+            name
+            for name, darr in data.data_vars.items()
+            if _reducible_replay_shape(darr)
+        )
+        if index >= len(variables):
+            raise IndexError(
+                f"Selected file replay index {index} is out of range for "
+                f"{len(variables)} parsed arrays"
+            )
+        return FileDataSelection(kind="dataset_variable", value=variables[index])
+    if isinstance(data, xr.DataTree):
+        variables = tuple(
+            (str(leaf.path), name)
+            for leaf in data.leaves
+            for name, darr in leaf.dataset.data_vars.items()
+            if _reducible_replay_shape(darr)
+        )
+        if index >= len(variables):
+            raise IndexError(
+                f"Selected file replay index {index} is out of range for "
+                f"{len(variables)} parsed arrays"
+            )
+        return FileDataSelection(kind="datatree_variable", value=variables[index])
+    if isinstance(data, str | bytes) or not isinstance(data, Sequence):
+        _parse_replay_input(data)
+        raise TypeError("Unsupported file loader output")
+    if index >= len(data):
+        raise IndexError(
+            f"Selected file replay index {index} is out of range for "
+            f"{len(data)} parsed arrays"
+        )
+    _require_replay_dataarray(data[index])
+    return FileDataSelection(kind="sequence_index", value=index)
+
+
+def _load_file_source_object(
+    load_source: FileLoadSource,
+    *,
+    backing: FileVersion | None = None,
+    extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
+) -> typing.Any:
+    call = load_source.replay_call
+    if call is None:
+        raise ValueError("File load source does not define replay metadata")
+    file_path = pathlib.Path(load_source.path)
+    if call.kind == "erlab_loader":
+        func = erlab.io.loaders[call.target].load
+    elif call.kind == "extension_loader":
+        if extension_loader_executor is not None:
+            return extension_loader_executor(load_source)
+        return erlab.extensions.run_loader(
+            file_path,
+            registered_script=call.target,
+            source_hash=typing.cast("str", call.source_hash),
+            loader_id=typing.cast("str", call.capability_id),
+            parameters=_deserialize_loader_kwargs(call.kwargs),
+        )
+    else:
+        func = _registered_local_callable_loader(call.target)
+        if func is None:
+            raise ValueError(
+                f"Callable file loader {call.target!r} is not registered locally"
+            )
+
+    return _read_versioned_file(
+        func, file_path, _deserialize_loader_kwargs(call.kwargs), backing
+    )
+
+
+def _load_file_source_data(
+    load_source: FileLoadSource,
+    *,
+    backing: FileVersion | None = None,
+    extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
+) -> xr.DataArray:
+    call = load_source.replay_call
+    if call is None:
+        raise ValueError("File load source does not define replay metadata")
+    loaded = _load_file_source_object(
+        load_source,
+        backing=backing,
+        extension_loader_executor=extension_loader_executor,
+    )
+    close = erlab.io.utils._take_file_closer(loaded)
+    try:
+        data = _select_replay_input(loaded, call.selection)
+        if call.cast_float64:
+            data = data.astype(np.float64)
+        data.set_close(close)
+        close = None
+        return data
+    finally:
+        if close is not None:
+            close()
