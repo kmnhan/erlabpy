@@ -10,7 +10,7 @@ track the framework changes and the checks that exercise them together.
 | --- | --- | --- |
 | 1. Own revisions and notebook names | A checkpoint owns its categorical labels. The name dialog and exporter use one Python identifier rule. | A producer overwrites its numeric labels. Copy Full Code is executed after the dialog rejects an invalid or reserved name. |
 | 2. Compose the displayed result | An entry holds its raw and displayed revisions. Its source recipe and Auto setting survive an accepted filter. An edit declares which role it consumes. | Accept, change and clear a filter on a stale interpolation. Rename its raw source and edit its displayed values. Run the copied Python, Refresh, Auto and Reload → Open as New. Close one of two windows that share a revision. |
-| 3. Record file ingress and edits | Keep the verified file read, selected array and subsequent typed operations in the graph. Publish the complete source and display together. | Execute copied code after a rename, transpose, filter and literal item assignment. Replace the file, Reload and check edited and untouched cells. An unsupported value uses the exact named checkpoint. Rejecting a staged edit leaves the former revision set intact. |
+| 3. Record file ingress and edits | Keep the verified file read, selected array and subsequent typed operations in the graph. Publish the complete source and display together. | Execute copied code after a rename, transpose, filter and literal item assignment. Replace the file, Reload and check edited and untouched cells. An unsupported value uses the exact named checkpoint. Rejecting a staged edit leaves the former revision set intact. An in-memory source that arrives filtered keeps its raw checkpoint and the accepted operation, including when a different filter is being previewed. |
 | 4. Replace a document as one transaction | The document owns its graph and revision store. A failed Replace restores both and resumes its queued work. Successful Replace releases the outgoing document. | Replace a workspace while a filtered interpolation has Auto queued. Check restored revision IDs, values, bindings and the next update. Check release of windows, scientific arrays and file handles. |
 | 5. Unify extension requests | Source and packaged interpreters share one worker protocol. Working directory, module search order and execution settings take effect before decoding the job. Deferred work retains Dask scheduling annotations. | Run eager and deferred jobs in a real Manager. Exercise a distributed retry, a fork during a request, a daemon process and a startup failure followed by recovery. |
 | 6. Verify the integrated contract | Verify the combined workflows on both Qt bindings, supported dependencies and shipped executables. Measure the affected workloads. | The [pull request](https://github.com/kmnhan/erlabpy/pull/682) tracks the full suite and checks on the current revision. The [package build](https://github.com/kmnhan/erlabpy/actions/runs/44991882732) computes an extension result on Windows and both macOS architectures. |
@@ -30,7 +30,24 @@ in `d2c31655`. The extension module passed all 88 tests with subprocess
 coverage. The full macOS ARM Manager ran an eager job and a deferred job.
 A coverage run also identified a test that imported pytest’s copy of the test
 module in a spawned daemon. The daemon now receives the executable command
-as data and imports the installed library independently.
+as data and imports the installed library independently. The packaged build
+at `e1ff30f9` passed on Windows, Apple silicon and Intel macOS. On each
+platform the worker imported the bundled scientific libraries under the
+recorded settings and computed the two expected Dask chunks.
+
+The full PyQt6 run also found a store test double that described superseded
+revision fields and a test tool that initialized itself through a reloaded
+Qt class. The store test now consumes current bindings from the window.
+The tool uses its own superclass. The store and wrapper modules passed
+199 checks, and the sequence that reloads Qt utilities before exercising
+the four tool outcomes passed.
+
+At `8fee21a0`, initial observation uses the same source and displayed roles
+for in-memory and file inputs. Copy Full Code on an already-filtered source
+and on its interpolation child executes with the original raw input. Closing
+the last child preserves the source’s export. A different active preview
+leaves the accepted filter intact. The graph, Manager and rollback selection
+passed 212 tests under each Qt binding.
 
 ### Measurements after the integrated review
 
