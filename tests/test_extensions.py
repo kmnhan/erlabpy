@@ -1397,6 +1397,111 @@ def test_recorded_routine_recovers_after_worker_exit(
     xr.testing.assert_identical(recovered, data)
 
 
+@pytest.mark.parametrize("packaged", [False, True])
+def test_worker_installs_import_context_before_loading_operands(
+    tmp_path, monkeypatch, recorded_worker_owner, packaged
+):
+    import dask.array as da
+
+    from erlab.extensions import _routine
+
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    for directory, scale in ((selected, 2), (tmp_path, 7)):
+        (directory / "operand_calibration.py").write_text(
+            "import xarray as xr\n"
+            "KEEP = xr.get_options()['keep_attrs']\n"
+            f"def calibrate(block):\n    return block * {scale}\n"
+        )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.syspath_prepend("")
+    monkeypatch.syspath_prepend(str(selected))
+    if packaged:
+        monkeypatch.setattr(
+            _routine, "sys", types.SimpleNamespace(frozen=True, path=sys.path)
+        )
+    script = tmp_path / "routine.py"
+    script.write_text(
+        "import xarray as xr\nfrom erlab.extensions import routine\n"
+        "import operand_calibration\n"
+        "@routine()\ndef observe(data: xr.DataArray) -> xr.DataArray:\n"
+        "    return data.compute().assign_attrs(keep=operand_calibration.KEEP)\n"
+    )
+    with xr.set_options(keep_attrs=True):
+        import operand_calibration
+
+        try:
+            values = da.ones(1, chunks=1).map_blocks(operand_calibration.calibrate)
+            result = run_routine(
+                xr.DataArray(values, name="signal"),
+                script=script,
+                routine_id="observe",
+                execution_options={"keep_attrs": False},
+            )
+            xr.testing.assert_identical(
+                result, xr.DataArray([2.0], name="signal", attrs={"keep": False})
+            )
+        finally:
+            sys.modules.pop("operand_calibration", None)
+
+
+def test_forked_process_starts_its_own_worker(recorded_worker_owner):
+    import multiprocessing
+    import os
+    import socket
+    from concurrent.futures import ThreadPoolExecutor
+
+    if "fork" not in multiprocessing.get_all_start_methods():
+        pytest.skip("requires POSIX fork")
+
+    from erlab._provenance._settings import ExecutionSettings
+    from erlab.extensions import _routine
+
+    settings = ExecutionSettings.capture()
+
+    def wait_for_release(port):
+        import os
+        import socket
+
+        with socket.create_connection(("127.0.0.1", port), timeout=20) as connection:
+            connection.recv(1)
+        return os.getpid()
+
+    def run_child(result_pipe):
+        result_pipe.send(_routine.routine_processes.run(settings, os.getpid))
+        _routine.routine_processes._retire()
+
+    fork = multiprocessing.get_context("fork")
+    with socket.socket() as listener, ThreadPoolExecutor(1) as pool:
+        listener.bind(("127.0.0.1", 0))
+        listener.settimeout(20)
+        listener.listen()
+        parent = pool.submit(
+            recorded_worker_owner.run,
+            settings,
+            wait_for_release,
+            listener.getsockname()[1],
+        )
+        with listener.accept()[0] as connection:
+            receive, send = fork.Pipe(duplex=False)
+            child = fork.Process(target=run_child, args=(send,))
+            child.start()
+            send.close()
+            try:
+                connection.sendall(b"x")
+                parent_pid = parent.result(timeout=20)
+                assert receive.poll(20)
+                assert receive.recv() != parent_pid
+                child.join(10)
+                assert child.exitcode == 0
+                assert recorded_worker_owner.run(settings, os.getpid) == parent_pid
+            finally:
+                if child.is_alive():
+                    child.terminate()
+                    child.join(10)
+                receive.close()
+
+
 def test_recorded_extension_computes_on_distributed_workers(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1487,7 +1592,10 @@ def test_recorded_worker_expires_after_the_last_request(
     from erlab.extensions import _subprocess
 
     monkeypatch.setattr(_subprocess, "_IDLE_SECONDS", 0.5)
-    worker = _subprocess.SubprocessWorker(ExecutionSettings.capture())
+    context = _subprocess.WorkerContext(
+        ExecutionSettings.capture(), tuple(sys.path), os.getcwd()
+    )
+    worker = _subprocess.SubprocessWorker(context)
     try:
         pid = worker.run(os.getpid)
         child = psutil.Process(pid)

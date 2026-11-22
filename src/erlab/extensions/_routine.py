@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextvars
 import copy
-import multiprocessing
 import os
 import sys
 import threading
@@ -16,14 +15,18 @@ import xarray as xr
 
 from erlab.extensions._api import _invoke_routine, _load_script_bytes
 from erlab.extensions._models import ExtensionExecutionError, ExtensionImportError
+from erlab.extensions._subprocess import (
+    FrozenWorker,
+    SubprocessWorker,
+    WorkerContext,
+    WorkerStopped,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping
-    from concurrent.futures import Executor
     from pathlib import Path
 
     from erlab._provenance._settings import ExecutionSettings
-    from erlab.extensions._subprocess import SubprocessWorker
 
 _T = typing.TypeVar("_T")
 _worker_settings: contextvars.ContextVar[ExecutionSettings | None] = (
@@ -48,10 +51,9 @@ class RoutineProcesses:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._admission = threading.Lock()
-        self._executor: Executor | None = None
-        self._process: SubprocessWorker | None = None
+        self._worker: FrozenWorker | SubprocessWorker | None = None
         self._owners = 0
-        self._context: tuple[ExecutionSettings, tuple[str, ...], str] | None = None
+        self._context: WorkerContext | None = None
 
     def acquire(self) -> None:
         with self._lock:
@@ -60,7 +62,7 @@ class RoutineProcesses:
     def release(self) -> None:
         with self._lock:
             self._owners -= 1
-            if self._owners or (self._process is None and self._executor is None):
+            if self._owners or self._worker is None:
                 return
         # A worker can still be publishing its last result. Release it after that
         # job drains, without waiting for python shutdown on the GUI thread.
@@ -75,12 +77,16 @@ class RoutineProcesses:
 
     def _retire(self) -> None:
         with self._lock:
-            executor, self._executor = self._executor, None
-            process, self._process = self._process, None
-        if executor is not None:
-            executor.shutdown()
-        if process is not None:
-            process.close()
+            worker, self._worker = self._worker, None
+        if worker is not None:
+            worker.close()
+
+    def _after_fork(self) -> None:
+        if isinstance(self._worker, SubprocessWorker):
+            self._worker.disown_after_fork()
+        self._worker = None
+        self._lock = threading.Lock()
+        self._admission = threading.Lock()
 
     def run(
         self,
@@ -91,51 +97,33 @@ class RoutineProcesses:
         # Bound queued IPC payloads. Native subprocess pipes also work in
         # daemonic distributed workers and do not need a resource tracker.
         with self._admission:
-            context = (settings, tuple(sys.path), os.getcwd())
-            if self._context is not None and self._context != context:
-                # An imported dependency may cache xarray options at import time.
+            context = WorkerContext(settings, tuple(sys.path), os.getcwd())
+            if self._context != context:
                 self._retire()
-            self._context = context
-            if not getattr(sys, "frozen", False):
-                from erlab.extensions._subprocess import SubprocessWorker
-
-                with self._lock:
-                    if self._process is None:
-                        self._process = SubprocessWorker(settings)
-                    process = self._process
-                return process.run(function, *args)
-
-            # A frozen executable uses multiprocessing's freeze_support entry
-            # point and cannot start the interpreter with python -m.
-            from joblib.externals.loky import BrokenProcessPool, ProcessPoolExecutor
-
-            if multiprocessing.current_process().daemon:
-                raise ExtensionExecutionError(
-                    "This packaged Dask worker cannot start an extension interpreter. "
-                    "Use Dask's threaded scheduler or start a non-daemonic worker."
-                )
+                self._context = context
             with self._lock:
-                if self._executor is None:
-                    self._executor = ProcessPoolExecutor(
-                        max_workers=1,
-                        context=multiprocessing.get_context("spawn"),
-                        timeout=5,
+                if self._worker is None:
+                    worker_type = (
+                        FrozenWorker
+                        if getattr(sys, "frozen", False)
+                        else SubprocessWorker
                     )
-                executor = self._executor
+                    self._worker = worker_type(context)
+                worker = self._worker
             try:
-                return executor.submit(
-                    _run_with_settings, settings, function, *args
-                ).result()
-            except BrokenProcessPool as error:
-                with self._lock:
-                    self._executor = None
-                executor.shutdown()
-                raise ExtensionExecutionError(
-                    "The extension process stopped. Run the routine again."
-                ) from error
+                return worker.run(function, *args)
+            except WorkerStopped:
+                self._retire()
+                raise
 
 
 routine_processes = RoutineProcesses()
+
+
+if hasattr(os, "register_at_fork"):
+    # Resolve the current owner when the child starts. Its locks and file
+    # descriptors belong to the parent process.
+    os.register_at_fork(after_in_child=lambda: routine_processes._after_fork())
 
 
 def _run_isolated(
