@@ -1,5 +1,21 @@
 # ImageTool provenance redesign
 
+## Current goal and acceptance
+
+The integrated review at `7de1ab29` exposed disagreements between the
+graph, its Manager projection, and worker startup. Close this goal by making
+each decision in one place. Update these steps when a reproduction changes
+the contract or when verified work closes a step.
+
+| Step | Contract and acceptance |
+| --- | --- |
+| 1. Own revisions and notebook names | A producer can reuse numeric category labels without changing history. The name dialog and exporter accept the same normalized Python identifiers. |
+| 2. Compose the displayed result | An entry keeps its source recipe and Auto setting. An accepted display operation records an application on the source revision. Accept, change, clear, Refresh, and follow the filtered result. Compare the display, historical data, and executed Python. |
+| 3. Record file ingress and subsequent changes | Bind the verified read to the original file result. Compose evidenced edits on that revision, and capture opaque values explicitly. Exercise a console item edit, a rename, and a filtered file. Copied Python must retain the filter and original file whenever both are known. |
+| 4. Replace a document as one transaction | The active document owns its graph and revision store. A failed Replace restores that owner, including its bindings and Auto. A successful Replace retires it and its pending work. |
+| 5. Unify extension requests | Both worker transports install the same settings and import paths before decoding each job. Keep deferred scheduler annotations and isolate worker ownership across a fork. Exercise actual execution and measure the affected worker costs. |
+| 6. Verify the integrated contract | Run the combined workflows on both Qt bindings, check relevant speed and memory, and check CI on the pushed revision. Record any limits at the affected step. |
+
 ## First milestone
 
 Define and test the Qt-free contract for a provenance operation across the whole
