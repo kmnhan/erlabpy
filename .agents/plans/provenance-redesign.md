@@ -65,10 +65,24 @@ tests passed under PyQt6. Three alternating comparisons on the one-edge graph
 benchmark gave median Refresh times of 0.185 and 0.184 ms before and after
 the rewrite with 1,000 entries. With 10,000 entries they were 0.185 and 0.186 ms.
 
-Step 5 remains open on the Linux coverage worker. Its startup hook examines
-the import path before the packaged worker initializer. The spawn context
-must preserve valid path entries throughout startup. Step 6 includes a full
-macOS Manager application build and a paired benchmark on a growing grid.
+At `4bafbc5e` both launch modes use the same interpreter protocol and
+lifecycle. The packaged Manager enters worker mode before constructing a
+window. Both launch modes set the working directory and import path before
+deserializing the next request. Linux coverage had exposed an invalid path
+inserted by multiprocessing before the previous initializer could run. The
+new worker starts directly. At `d2c31655` a launch that cannot connect
+releases its process, and the same owner can start a healthy replacement.
+All 88 extension tests passed with subprocess coverage locally. The combined
+extension and Manager modules passed 318 tests under PySide6 before the
+startup timeout regression was added. Step 6 now requires executing a job
+inside each release executable and checking the hosted Linux coverage result.
+
+The 128-row replacement benchmark retained the original graph on failure and
+released every outgoing scientific buffer on success. Across six additional
+accepted Replace pairs the median change in peak physical footprint was
+−0.10 MiB. The median change measured from the start of Replace through
+Manager shutdown was −0.15 MiB. Individual peak differences ranged from
+−0.88 to +3.02 MiB on this shared macOS host.
 
 ## First milestone
 
