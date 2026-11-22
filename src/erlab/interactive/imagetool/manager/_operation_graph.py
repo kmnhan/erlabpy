@@ -36,6 +36,7 @@ from erlab._provenance._model import (
     ScriptInput,
     recipe,
 )
+from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping
@@ -46,7 +47,6 @@ if typing.TYPE_CHECKING:
     from erlab._provenance._model import ToolProvenanceOperation, ToolProvenanceSpec
     from erlab.interactive.imagetool import ImageTool
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
-    from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
     from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
 
 
@@ -82,18 +82,58 @@ class _Placement:
 
 
 class _ManagedOperations:
-    def __init__(self, manager: ImageToolManager) -> None:
+    def __init__(
+        self,
+        manager: ImageToolManager,
+        revisions: _ProvenanceRevisionStore | None = None,
+    ) -> None:
         self.manager = manager
+        self.revisions = (
+            revisions if revisions is not None else _ProvenanceRevisionStore()
+        )
+        self._deferred_auto: Callable[[], None] | None = None
         self.graph = ProvenanceGraph(
             read_file=_read_file,
             install=self._install,
-            schedule_auto=lambda callback: erlab.interactive.utils.single_shot(
-                manager, 0, callback
-            ),
+            schedule_auto=self._schedule_auto,
         )
         self._tokens: dict[str, str] = {}
         self._placements: dict[str, _Placement] = {}
         self._installing: set[str] = set()
+
+    def _schedule_auto(self, callback: Callable[[], None]) -> None:
+        def run() -> None:
+            if self.manager._operations is self:
+                callback()
+            else:
+                self._deferred_auto = callback
+
+        erlab.interactive.utils.single_shot(self.manager, 0, run)
+
+    @contextmanager
+    def replace_workspace(self, revisions: _ProvenanceRevisionStore) -> Iterator[None]:
+        """Activate a separate graph and checkpoint store for the incoming document."""
+        incoming = _ManagedOperations(self.manager, revisions)
+        self.manager._operations = incoming
+        try:
+            yield
+        except BaseException:
+            self.manager._operations = self
+            incoming.discard_workspace()
+            if self._deferred_auto is not None:
+                callback, self._deferred_auto = self._deferred_auto, None
+                self._schedule_auto(callback)
+            raise
+        else:
+            self.discard_workspace()
+
+    def discard_workspace(self) -> None:
+        # Releasing rows also releases their graph-owned checkpoint projections.
+        self._deferred_auto = None
+        for uid in self.graph.entry_ids:
+            self.graph.remove_entry(uid)
+        self._tokens.clear()
+        self.revisions.discard_unreachable(())
 
     def observe(
         self, node: _ManagedWindowNode, *, displayed_data: xr.DataArray | None = None
@@ -128,17 +168,26 @@ class _ManagedOperations:
             backing=backing if file_load else None,
         )
         self.graph.on_release(
-            revision, functools.partial(self._release_input, store, weakref.ref(node))
+            revision,
+            functools.partial(
+                self._release_input, store, weakref.ref(self.manager), uid
+            ),
         )
         self._tokens[uid] = node.snapshot_token
 
     @staticmethod
     def _release_input(
         store: _ProvenanceRevisionStore,
-        owner: weakref.ReferenceType[_ManagedWindowNode],
+        manager_ref: weakref.ReferenceType[ImageToolManager],
+        uid: str,
         revision: str,
     ) -> None:
-        node = owner()
+        manager = manager_ref()
+        node = (
+            None
+            if manager is None or manager._provenance_revisions is not store
+            else manager._tool_graph.nodes.get(uid)
+        )
         if node is not None and any(
             revision == key and token == node.snapshot_token_for_role(role)
             for role, (token, key) in node._revision_ids_by_role.items()

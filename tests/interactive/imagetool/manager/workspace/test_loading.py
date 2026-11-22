@@ -5216,6 +5216,132 @@ def test_workspace_failed_load_restores_revision_ownership(
         )
 
 
+@pytest.mark.parametrize("broken", [False, True])
+def test_workspace_replacement_owns_interpolation_history_and_pending_auto(
+    qtbot, tmp_path, manager_context, monkeypatch, broken
+):
+    import gc
+
+    from erlab.interactive.imagetool.dialogs import InterpolationDialog
+    from erlab.interactive.imagetool.manager._console import ToolsNamespace
+
+    raw = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        coords={"x": [0.0, 1.0, 2.0], "y": [0.0, 1.0, 2.0, 3.0]},
+        dims=("x", "y"),
+        name="spectrum",
+    )
+    expected = raw.isel(x=[0, 2], y=[1, 3])
+    path = tmp_path / "incoming.itws"
+    with manager_context() as manager:
+
+        def add(array):
+            return manager._node_for_target(
+                manager.add_imagetool(
+                    itool(array, manager=False, execute=False), show=False
+                )
+            )
+
+        source = add(raw)
+        grid = add(xr.zeros_like(expected).rename("grid"))
+        dialog = InterpolationDialog(source.slicer_area)
+        dialog.target_tabs.setCurrentIndex(1)
+        dialog.target_tool_selector.set_current_uid(grid.uid)
+        dialog.accept()
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+        child_uid = source._childtool_indices[-1]
+        session = manager._operations
+        graph = session.graph
+        child_revision = graph.current_revision(child_uid)
+        original = graph.current_revision(source.uid)
+        loader = manager._workspace_controller.loading
+        if broken:
+            with h5py.File(path, "w") as document:
+                document.attrs["imagetool_workspace_schema_version"] = 4
+                document.create_group("0")
+        else:
+            manager._workspace_controller.saving._save_workspace_document(path)
+
+        ToolsNamespace(manager)[source.index][:] = 40.0
+        qtbot.wait_until(lambda: graph.is_stale(child_uid))
+        graph_ids = graph.revision_ids
+        current_inputs = graph.next_inputs(child_uid)
+        # Queue a genuine Auto refresh on the last turn of the old document.
+        # Replace drains GUI events while the incoming windows are installed.
+        backup = loader._workspace_replace_backup_for_load
+
+        def queue_auto_after_backup(path):
+            result = backup(path)
+            manager._node_for_target(child_uid)._set_source_auto_update(True)
+            return result
+
+        remove_all = manager.remove_all_tools
+
+        def close_windows():
+            remove_all()
+            QtWidgets.QApplication.processEvents()
+            assert graph.current_revision(child_uid) == child_revision
+
+        def replace_workspace():
+            with monkeypatch.context() as boundary:
+                boundary.setattr(
+                    loader,
+                    "_workspace_replace_backup_for_load",
+                    queue_auto_after_backup,
+                )
+                boundary.setattr(manager, "remove_all_tools", close_windows)
+                return loader._load_workspace_file(
+                    path, replace=True, associate=True, mark_dirty=False, select=False
+                )
+
+        if broken:
+            with pytest.raises(ValueError, match="No workspace windows"):
+                replace_workspace()
+            assert manager._operations is session
+            assert graph.revision_ids == graph_ids
+            assert graph.next_inputs(child_uid) == current_inputs
+            restored_source = manager._node_for_target(source.uid)
+            assert restored_source.revision_id_for_role(
+                "displayed", graph_owned=True
+            ) == graph.current_revision(source.uid)
+            child = manager._node_for_target(child_uid)
+            assert child.source_auto_update
+            manager._set_metadata_node(child)
+            assert not manager.next_inputs_box.isHidden()
+            assert child.current_revision_id == child_revision
+            xr.testing.assert_identical(
+                ToolsNamespace(manager).checkpoint(original), raw
+            )
+            xr.testing.assert_identical(graph.data(child_revision), expected)
+            qtbot.wait_until(
+                lambda: graph.current_revision(child_uid) != child_revision
+            )
+            xr.testing.assert_identical(
+                child.slicer_area.displayed_data, xr.full_like(expected, 40)
+            )
+            # Releasing the last follower keeps each restored source's checkpoint.
+            grid_revision = graph.current_revision(grid.uid)
+            manager._remove_uid_target(child_uid)
+            assert grid.uid not in graph
+            xr.testing.assert_identical(
+                manager._provenance_revisions.resolve_data(grid_revision),
+                xr.zeros_like(expected).rename("grid"),
+            )
+        else:
+            assert replace_workspace()
+            assert manager._operations is not session
+            assert manager._provenance_revisions is not session.revisions
+            assert not graph.entry_ids
+            assert not session.revisions.revision_ids
+            child = manager._node_for_target(child_uid)
+            assert child.current_revision_id == child_revision
+            xr.testing.assert_identical(child.data_for_role("source"), expected)
+            old_graph = weakref.ref(graph)
+            del session, graph
+            gc.collect()
+            assert old_graph() is None
+
+
 def test_manager_workspace_replace_load_failure_restores_previous_workspace(
     qtbot,
     tmp_path,

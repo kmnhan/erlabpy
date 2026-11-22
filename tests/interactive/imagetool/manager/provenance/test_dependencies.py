@@ -1,4 +1,5 @@
 import ast
+import contextlib
 import enum
 import json
 import pathlib
@@ -6742,11 +6743,15 @@ def test_rebuilt_tool_input_captures_follow_adoption(
                 assert store.revision_ids == initial
                 assert tool.script_inputs == (binding,)
             else:
-                if outcome == "rebind":
-                    manager._provenance_revisions = store.copy()
-                assert tool.pending_data is not None
-                tool._data = tool.pending_data
-                tool.finalize_source_refresh()
+                replacement = (
+                    manager._operations.replace_workspace(store.copy())
+                    if outcome == "rebind"
+                    else contextlib.nullcontext()
+                )
+                with replacement:
+                    assert tool.pending_data is not None
+                    tool._data = tool.pending_data
+                    tool.finalize_source_refresh()
                 assert tool.script_inputs[0].revision_id == captured
                 assert manager._provenance_revisions.has_data(captured)
                 if outcome == "rebind":

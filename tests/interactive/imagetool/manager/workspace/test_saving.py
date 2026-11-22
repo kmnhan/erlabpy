@@ -393,7 +393,8 @@ def test_manager_workspace_restores_revision_history_without_recipe_execution(
             raise AssertionError("workspace load executed provenance")
 
         monkeypatch.setattr(manager, "_apply_provenance", _forbid_replay)
-        manager._provenance_revisions = type(manager._provenance_revisions)()
+        manager.remove_all_tools()
+        assert not manager._provenance_revisions.revision_ids
         assert manager._workspace_controller.loading._load_workspace_file(
             path, replace=True, associate=True, mark_dirty=False, select=False
         )

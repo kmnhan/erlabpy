@@ -60,7 +60,6 @@ from erlab.interactive.imagetool.manager._registry import (
     reserve_manager_record,
     unregister_manager_record,
 )
-from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 from erlab.interactive.imagetool.manager._widgets import (
     _LINKER_COLORS,
@@ -120,6 +119,7 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool._mainwindow import ImageTool
     from erlab.interactive.imagetool._provenance._graph import ResolvedReplayInput
     from erlab.interactive.imagetool.manager._dependency import _DependencyStatus
+    from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
     from erlab.interactive.imagetool.manager._server import (
         _ManagerServer,
         _WatcherServer,
@@ -307,7 +307,6 @@ class ImageToolManager(_ImageToolManagerBase):
         )
 
         self._workspace_state = _ManagerWorkspaceState()
-        self._provenance_revisions = _ProvenanceRevisionStore()
         self._interaction_gate = _ManagerInteractionGate(self)
         self._interaction_gate.register_window(self)
         self._retired_windows: dict[int, QtWidgets.QWidget] = {}
@@ -1384,6 +1383,10 @@ class ImageToolManager(_ImageToolManagerBase):
                 self._workspace_state.closing_document = (
                     previous_closing_workspace_document
                 )
+
+    @property
+    def _provenance_revisions(self) -> _ProvenanceRevisionStore:
+        return self._operations.revisions
 
     @property
     def ntools(self) -> int:

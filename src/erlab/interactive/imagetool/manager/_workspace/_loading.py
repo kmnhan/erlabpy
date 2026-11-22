@@ -986,8 +986,9 @@ class _WorkspaceLoader:
         profiler: _WorkspaceLoadProfiler,
     ) -> Iterator[None]:
         """Commit workspace nodes and their checkpoint sources together."""
-        revisions = self._manager._provenance_revisions
-        previous_revision_ids = revisions.revision_ids
+        previous_operations = self._manager._operations
+        revisions = previous_operations.revisions
+        previous_revision_ids = frozenset() if replace else revisions.revision_ids
         incoming_revisions = revisions.stage() if replace else revisions
         if manifest is not None and workspace_path is not None:
             workspace_revisions.restore_revision_store(
@@ -1000,11 +1001,16 @@ class _WorkspaceLoader:
         if replace:
             with profiler.stage("rollback backup"):
                 backup = self._workspace_replace_backup_for_load(workspace_path)
-        previous_revisions = revisions.copy() if replace else None
         graph = self._manager._tool_graph
-        previous_bindings = {
-            uid: node.current_revision_id for uid, node in graph.nodes.items()
-        }
+        previous_bindings = (
+            {
+                uid: (node.current_revision_id, node._revision_ids_by_role.copy())
+                for uid, node in graph.nodes.items()
+            }
+            if replace
+            else {}
+        )
+        existing_uids = set() if replace else set(graph.nodes)
         previous_scripts = self._manager._workspace_state.extension_scripts.copy()
         previous_roots = self._revision_load_roots
         incoming_ids = (
@@ -1015,49 +1021,53 @@ class _WorkspaceLoader:
                 for entry in manifest.get("provenance_revisions", ())
             )
         )
+        transaction = (
+            previous_operations.replace_workspace(incoming_revisions)
+            if replace
+            else contextlib.nullcontext()
+        )
         try:
-            with incoming_revisions.retain(incoming_ids) as roots:
-                self._revision_load_roots = roots
+            with transaction:
                 try:
-                    if replace:
-                        with (
-                            self._controller._workspace_load_context(),
-                            profiler.stage("ui catch-up"),
-                        ):
-                            self._manager._workspace_state.advance_document_identity()
-                            self._manager.remove_all_tools()
-                            self._controller._drain_workspace_restore_events()
-                        manifest_link_id = (
-                            None
-                            if manifest is None
-                            else manifest.get("workspace_link_id")
-                        )
-                        self._manager._workspace_state.link_id = (
-                            str(manifest_link_id)
-                            if manifest_link_id
-                            else uuid.uuid4().hex
-                        )
-                    self._manager._provenance_revisions = incoming_revisions
-                    yield
-                except Exception:
+                    with incoming_revisions.retain(incoming_ids) as roots:
+                        self._revision_load_roots = roots
+                        if replace:
+                            with (
+                                self._controller._workspace_load_context(),
+                                profiler.stage("ui catch-up"),
+                            ):
+                                self._manager._workspace_state.advance_document_identity()
+                                self._manager.remove_all_tools()
+                                self._controller._drain_workspace_restore_events()
+                            manifest_link_id = (
+                                None
+                                if manifest is None
+                                else manifest.get("workspace_link_id")
+                            )
+                            self._manager._workspace_state.link_id = (
+                                str(manifest_link_id)
+                                if manifest_link_id
+                                else uuid.uuid4().hex
+                            )
+                        yield
+                except BaseException:
                     with self._controller._workspace_load_context():
                         imported_roots = [
                             index
                             for index, node in graph.root_wrappers.items()
-                            if replace or node.uid not in previous_bindings
+                            if node.uid not in existing_uids
                         ]
                         imported_figures = [
-                            uid
-                            for uid in graph.figure_uids
-                            if replace or uid not in previous_bindings
+                            uid for uid in graph.figure_uids if uid not in existing_uids
                         ]
                         self._manager._remove_imagetools(
                             imported_roots, child_uids=imported_figures
                         )
                         self._controller._drain_workspace_restore_events()
-                        if previous_revisions is not None:
-                            self._manager._provenance_revisions = previous_revisions
                         if backup is not None:
+                            # The rollback loaders can add or prune checkpoints while
+                            # rebuilding windows. Keep the original session intact.
+                            self._manager._operations.discard_workspace()
                             try:
                                 self._restore_replaced_workspace_backup(backup)
                             except Exception:
@@ -1067,10 +1077,11 @@ class _WorkspaceLoader:
                                 previous_scripts
                             )
                         if replace:
-                            for uid, revision_id in previous_bindings.items():
+                            for uid, (revision_id, roles) in previous_bindings.items():
                                 node = graph.nodes.get(uid)
                                 if node is not None:
-                                    node.restore_current_revision_id(revision_id)
+                                    node._current_revision_id = revision_id
+                                    node._revision_ids_by_role = roles
                     raise
         finally:
             self._revision_load_roots = previous_roots
@@ -1079,7 +1090,7 @@ class _WorkspaceLoader:
             if self._manager._provenance_revisions is incoming_revisions:
                 incoming_revisions.discard_unreachable(
                     workspace_revisions.retained_revision_ids(self._manager)
-                    | (frozenset() if replace else previous_revision_ids)
+                    | previous_revision_ids
                 )
 
     def _restore_workspace_state_snapshot(
